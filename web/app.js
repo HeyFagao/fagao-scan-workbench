@@ -19,6 +19,7 @@
   let state = null, snapshot = null, section = 'overview', loadingVersion = 0, pendingText = null, viewGeneration = 0, refreshGeneration = 0, pendingViewMutations = 0;
   let saving = Promise.resolve(), pollTimer = null, toastTimer = null;
   let contentPanel=null, contentPanelSequence=0;
+  let overviewChannel='全部', dashboardCategoryMetric='primary_median';
   let overview=null, overviewLoading=false, overviewError='', overviewPlatform='fanqie', overviewRequest=0, overviewNextAt=0, overviewRefreshing=false, overviewPollKey='';
   let listWindow={key:'',count:20}, listObserver=null, lastListScrollAt=0, navigationGeneration=0;
   const HEIYAN_BOOKLIST='https://docs.qq.com/sheet/DYVNwaVJZV2ZxTWl3?tab=q1ans7';
@@ -53,6 +54,30 @@
   }
   function scopeKey(id=platformID(),options=optionsFor(id)) { return [id,options.mode || (id==='heiyan'||id==='fanqie_short'?'short':'long'),options.channel,options.category,options.board,options.period || (id==='ciweimao'?'月榜':''),options.limit ?? '',options.max_pages ?? 100,options.detail_budget ?? ''].join('|'); }
   function sameScope(item,id=platformID(),options=optionsFor(id)) { return item?.platform===id && ['channel','category','board'].every(key=>String(item[key] || '')===String(options[key] || '')); }
+  function bestSnapshotForScope(id=platformID(),options=optionsFor(id)){
+    // Match overview._latest_current: choose a precise version per source,
+    // then compare the source calendar day and actual coverage across sources.
+    const count=item=>Array.isArray(item.books)?item.books.length:Number.isFinite(item.books_count)?item.books_count:Number.isFinite(item.count)?item.count:0;
+    const compare=(left,right)=>{for(let index=0;index<left.length;index++){if(left[index]!==right[index])return left[index]>right[index]?1:-1;}return 0;};
+    const sourceVersion=item=>{
+      const value=typeof item.data_date==='string'?item.data_date.trim():'',match=value.match(/^(\d{4}-\d{2}-\d{2})(?:$|[T ])/);
+      if(!match)return null;
+      const day=Date.parse(match[1]+'T00:00:00Z');
+      if(!Number.isFinite(day) || new Date(day).toISOString().slice(0,10)!==match[1])return null;
+      let normalized=value.replace(' ','T');
+      if(normalized.length>10 && !/(?:Z|[+-]\d{2}:?\d{2})$/i.test(normalized))normalized+='Z';
+      const stamp=Date.parse(normalized);return Number.isFinite(stamp)?{stamp,day}:null;
+    };
+    const sourceKey=item=>{const version=sourceVersion(item),collected=Date.parse(item.collected_at || item.created_at || '');return [version?.stamp || 0,version?count(item):0,version && item.complete===true?1:0,Number.isFinite(collected)?collected:0,String(item.id || '')];};
+    const bySource=new Map();
+    for(const item of state?.snapshots || []){
+      if(!sameScope(item,id,options))continue;
+      const source=item.source_id || 'direct',previous=bySource.get(source);
+      if(!previous || compare(sourceKey(item),sourceKey(previous))>0)bySource.set(source,item);
+    }
+    const priority=item=>[sourceVersion(item)?.day || 0,item.complete===true?1:0,count(item),(item.source_id || 'direct')==='direct'?1:0,...sourceKey(item)];
+    return [...bySource.values()].reduce((best,item)=>!best || compare(priority(item),priority(best))>0?item:best,null);
+  }
   function viewingHistory(){return historyViews[mode()]===view().snapshot_id && !!view().snapshot_id;}
   function setHistory(snapshotId,targetMode=mode()){
     if(snapshotId)historyViews[targetMode]=snapshotId;else delete historyViews[targetMode];
@@ -202,14 +227,15 @@
       body += '</div>'+renderDetail(books)+'</div>';
       if(snapshot.warnings?.length)body+=`<div class="source-warnings">${snapshot.warnings.map(w=>`<p>${escape(readableWarning(w))}</p>`).join('')}</div>`;
       const source = safeURL(snapshot.source_url);
-      body += `<div class="source-note"><span>来源数据日期：${escape(snapshot.data_date || '原站未提供')} · ${isLibrary?'书库顺序不代表热度排名':'名次以本次原始榜单为准'}</span>${source?`<a href="${escape(source)}" target="_blank" rel="noopener noreferrer">查看来源 ↗</a>`:''}</div>`;
+      body += `<div class="source-note"><span>来源数据日期：${escape(snapshot.data_date || '原站未提供')} · ${isLibrary?'书库顺序不代表热度排名':snapshot.source_id && snapshot.source_id!=='direct'?'来源列表位置不代表原榜名次':'名次以本次原始榜单为准'}</span>${source?`<a href="${escape(source)}" target="_blank" rel="noopener noreferrer">查看来源 ↗</a>`:''}</div>`;
     }
     body += '</section>';
     if (p.message && !isLibrary) body += `<p class="collection-hint">${escape(p.message)}</p>`;
     $('#content').innerHTML = body;
   }
   function overviewJob(){return overview?.update || (state?.jobs || []).find(job=>job.kind==='overview') || null;}
-  function overviewRunning(){return ['queued','running','pending','cancelling'].includes(overviewJob()?.status);}
+  function overviewJobActive(job){return ['queued','running','pending','cancelling'].includes(job?.status) || job?.public_source?.status==='running';}
+  function overviewRunning(){return overviewJobActive(overviewJob());}
   function compactNumber(value){
     if(!Number.isFinite(value))return '—';
     return Math.abs(value)>=100000000?(value/100000000).toLocaleString('zh-CN',{maximumFractionDigits:1})+'亿':Math.abs(value)>=10000?(value/10000).toLocaleString('zh-CN',{maximumFractionDigits:1})+'万':value.toLocaleString('zh-CN',{maximumFractionDigits:1});
@@ -218,35 +244,88 @@
     const sid=book.snapshot_id || book.selection?.snapshot_id, bid=book.book_id || book.selection?.book_id;
     return sid && bid ? `<button class="overview-book-link ${extra}" data-action="overview-book" data-snapshot="${escape(sid)}" data-book="${escape(bid)}">${escape(label)}</button>`:`<span>${escape(label)}</span>`;
   }
-  function overviewCandidate(book,index,growth=false){
-    const sid=book.snapshot_id || book.selection?.snapshot_id, bid=book.book_id || book.selection?.book_id;
-    const metric=book.primary_count ?? book.read_count, metricName=book.primary_label || (overviewPlatform==='fanqie'?'在读':'来源指标');
-    return `<article class="overview-book-card"><div class="overview-book-heading"><span class="overview-card-number">${String(index+1).padStart(2,'0')}</span><span>${escape(book.channel || '')} · ${escape(book.category || book.board || '')}</span></div><button class="overview-book-main" data-action="overview-book" data-snapshot="${escape(sid)}" data-book="${escape(bid)}">${cover({title:book.title,cover_url:book.cover_url})}<span><strong>${escape(book.title)}</strong><small>${escape(book.author || '来源未提供作者')}</small><span class="overview-source-rank">${escape(book.board || '')}${Number.isFinite(book.rank)?' · 原榜 #'+book.rank:''}</span></span></button><div class="overview-book-metrics"><span>${escape(metricName)} <strong>${compactNumber(metric)}</strong></span>${Number.isFinite(book.word_count)?`<span>字数 <strong>${compactNumber(book.word_count)}</strong></span>`:''}</div>${growth?`<p class="overview-growth">${Number.isFinite(book.metric_delta ?? book.read_delta)?`${escape(metricName)}增加 ${compactNumber(book.metric_delta ?? book.read_delta)}`:Number.isFinite(book.rank_delta)?`原榜前进 ${book.rank_delta} 名`:''}<span>间隔 ${statNumber(book.interval_days)} 天</span></p>`:Number.isFinite(book.reads_per_10k_words)?`<p class="overview-efficiency">每万字在读 <strong>${compactNumber(book.reads_per_10k_words)}</strong></p>`:''}</article>`;
+  function dashboardView(panel){
+    const dashboard=panel?.dashboard, channels=dashboard?.channel_options || ['全部'];
+    const channel=overviewPlatform==='fanqie' && channels.includes(overviewChannel)?overviewChannel:'全部';
+    return {data:dashboard?.views?.[channel],channel,channels};
+  }
+  function chartCard(title,meta,body,extra=''){
+    return `<section class="data-card ${extra}"><header class="data-card-head"><h2>${escape(title)}</h2><span>${escape(meta || '')}</span></header>${body}</section>`;
+  }
+  function distributionChart(items,label,validCount){
+    const rows=(items || []).filter(item=>Number.isFinite(item.count) && item.count>=0), max=Math.max(0,...rows.map(item=>item.count));
+    if(!max)return `<div class="chart-unavailable">来源暂未提供可统计的${escape(label)}<small>缺失值不记为零</small></div>`;
+    return `<div class="histogram" role="img" aria-label="${escape(label)}分布，${statNumber(validCount)} 本有效样本"><div class="histogram-axis"><span>${compactNumber(max)}</span><span>${compactNumber(max/2)}</span><span>0 本</span></div><div class="histogram-plot"><div class="histogram-grid" aria-hidden="true"><i></i><i></i><i></i></div>${rows.map(item=>`<div class="histogram-column" title="${escape(item.label)}：${statNumber(item.count)} 本${Number.isFinite(item.primary_median)?'；指标中位数 '+statNumber(item.primary_median):''}" data-bin-label="${escape(item.label)}" data-count="${item.count}"><strong>${compactNumber(item.count)}</strong><div class="histogram-bar-area"><span class="histogram-bar" style="height:${item.count/max*100}%"></span></div><small>${escape(item.label)}</small></div>`).join('')}</div></div><div class="chart-caption">有效样本 <strong>${statNumber(validCount)}</strong> 本</div>`;
+  }
+  function categoryChart(data,metric){
+    const byValue=dashboardCategoryMetric==='primary_median' && data.kpis.valid_primary_count>0;
+    const rows=[...(data.categories || [])].filter(item=>Number.isFinite(byValue?item.primary_median:item.count)).sort((a,b)=>(byValue?b.primary_median-a.primary_median:b.count-a.count)).slice(0,8);
+    const max=Math.max(0,...rows.map(item=>byValue?item.primary_median:item.count));
+    const choice=`<div class="chart-switch" aria-label="分类统计指标"><button data-action="dashboard-category-metric" data-metric="count" aria-pressed="${!byValue}">样本量</button><button data-action="dashboard-category-metric" data-metric="primary_median" aria-pressed="${byValue}" ${data.kpis.valid_primary_count?'':'disabled'}>中位${escape(metric)}</button></div>`;
+    if(!rows.length)return choice+`<div class="chart-unavailable">来源暂未提供${byValue?escape(metric):'分类'}数据<small>切换统计指标查看已有样本</small></div>`;
+    return choice+`<div class="category-bar-chart" role="img" aria-label="分类${byValue?'中位'+escape(metric):'样本量'}横向条形图"><div class="category-bar-scale"><span>0</span><span>${compactNumber(max/2)}</span><span>${compactNumber(max)}${byValue?'':' 本'}</span></div>${rows.map(item=>{const value=byValue?item.primary_median:item.count;return `<div class="category-bar-row" title="${escape(item.channel)} · ${escape(item.category)}：${statNumber(item.count)} 本；中位${escape(metric)} ${statNumber(item.primary_median)}"><div class="category-bar-label"><strong>${escape(item.category)}</strong><small>${escape(item.channel==='男频'?'男':item.channel==='女频'?'女':item.channel)}</small></div><div class="category-bar-track"><span style="width:${max?value/max*100:0}%"></span></div><strong class="category-bar-value">${compactNumber(value)}</strong></div>`;}).join('')}</div><div class="chart-caption">显示前 ${rows.length} 个分类 · 各分类单独统计</div>`;
+  }
+  function axisTicks(max){
+    if(max<=0)return [0,1];
+    const power=Math.pow(10,Math.floor(Math.log10(max))), step=power*(max/power>5?2:max/power>2?1:.5);
+    const result=[0];for(let value=step;value<=max && result.length<7;value+=step)result.push(value);
+    if(result.length<2)result.push(max);return result;
+  }
+  function scatterChart(data,metric){
+    const points=(data.scatter?.points || []).filter(item=>Number.isFinite(item.word_count) && item.word_count>=0 && Number.isFinite(item.primary_count) && item.primary_count>=0);
+    if(!points.length)return `<div class="chart-unavailable">暂无同时具备字数与${escape(metric)}的样本<small>取得完整指标后显示散点，不补造数据</small></div>`;
+    const maxX=Math.max(1,...points.map(item=>item.word_count)),maxY=Math.max(1,...points.map(item=>item.primary_count));
+    const positive=points.map(item=>item.primary_count).filter(value=>value>0),minY=Math.min(...positive),logY=positive.length>1 && maxY/Math.max(1,minY)>100;
+    const xTicks=axisTicks(maxX),yTicks=logY?[0,...[1,10,100,1000,10000,100000,1000000,10000000,100000000].filter(value=>value<=maxY).filter((value,index,all)=>index>=Math.max(0,all.length-5))]:axisTicks(maxY);
+    const x=value=>57+value/maxX*350,y=value=>216-(logY?Math.log1p(value)/Math.log1p(maxY):value/maxY)*174;
+    const metricUnit=overviewPlatform==='fanqie'?'人':'票';
+    return `<div class="scatter-wrap"><svg class="scatter-chart" viewBox="0 0 438 258" role="group" aria-label="字数与${escape(metric)}关系散点图${logY?'，纵轴为对数(1+数值)刻度':''}"><title>每个点是一部作品；横轴字数，纵轴${escape(metric)}。点击查看原榜作品。</title>${yTicks.map(value=>`<line x1="57" x2="407" y1="${y(value)}" y2="${y(value)}" class="chart-grid-line"/><text x="48" y="${y(value)+4}" text-anchor="end" class="chart-tick">${compactNumber(value)}</text>`).join('')}${xTicks.map(value=>`<line x1="${x(value)}" x2="${x(value)}" y1="42" y2="216" class="chart-grid-line vertical"/><text x="${x(value)}" y="235" text-anchor="middle" class="chart-tick">${compactNumber(value)}</text>`).join('')}<text x="57" y="25" class="chart-axis-title">${escape(metric)} · ${metricUnit}${logY?' · log(1+x)':''}</text><text x="407" y="254" text-anchor="end" class="chart-axis-title">字数</text>${points.map(item=>{const sid=item.snapshot_id || item.selection?.snapshot_id,bid=item.book_id || item.selection?.book_id,label=`${item.title} · ${item.channel || ''} · ${statNumber(item.word_count)} 字 · ${metric} ${statNumber(item.primary_count)}${metricUnit}`;return `<circle class="scatter-dot ${item.channel==='女频'?'female':'male'}" cx="${x(item.word_count).toFixed(2)}" cy="${y(item.primary_count).toFixed(2)}" r="4.1" tabindex="0" role="button" aria-label="${escape(label)}" data-action="overview-book" data-snapshot="${escape(sid)}" data-book="${escape(bid)}" data-words="${item.word_count}" data-primary="${item.primary_count}"><title>${escape(label)}</title></circle>`;}).join('')}</svg></div><div class="chart-caption"><span>${overviewPlatform==='fanqie'?'<i class="legend-dot male"></i>男频 <i class="legend-dot female"></i>女频 · ':''}显示 ${points.length} / ${statNumber(data.scatter?.total)} 本${data.scatter?.sampled?' · 分位抽样':''}</span><span>${logY?'对数(1+数值) · ':''}点击看作品</span></div>`;
+  }
+  function compactBars(rows,label){
+    const items=(rows || []).slice(0,8),max=Math.max(0,...items.map(item=>Number(item.count) || 0));
+    if(!max)return `<div class="chart-unavailable compact">暂无${escape(label)}统计</div>`;
+    return `<div class="compact-bars" role="img" aria-label="${escape(label)}分布">${items.map(item=>`<div title="${escape(item.label || item.word)}：${statNumber(item.count)} 本${Number.isFinite(item.share)?'，'+statNumber(item.share)+'%':''}"><span>${escape(item.label || item.word)}</span><i><b style="width:${item.count/max*100}%"></b></i><strong>${compactNumber(item.count)}<small>${Number.isFinite(item.share)?statNumber(item.share)+'%':'本'}</small></strong></div>`).join('')}</div>`;
+  }
+  function dashboardSources(data){
+    const sources=data.sources || [];
+    if(!sources.length)return '';
+    const dates=[...new Set(sources.flatMap(source=>source.dates || []).map(value=>String(value).slice(0,10)))].sort();
+    const sampleScopes=[...new Set(sources.filter(source=>source.source_id!=='direct').map(source=>source.sample_scope).filter(Boolean))];
+    const dateRange=dates.length>1?dates[0]+'—'+dates.at(-1):dates[0] || '日期未提供';
+    return `<details class="dashboard-sources"><summary><span>来源 · ${sources.map(source=>escape(source.label)).join(' + ')}</span><span>${escape(dateRange)}${sampleScopes.length?' · '+escape(sampleScopes.join('；')):''} · 查看口径</span></summary><ul>${sources.map(source=>{const url=safeURL(source.url),precision=source.metric_precision==='source_display_rounded'?'在读沿用来源显示精度':/^[a-z0-9_:-]+$/i.test(source.metric_precision || '')?'沿用来源指标精度':source.metric_precision;return `<li>${url?`<a href="${escape(url)}" target="_blank" rel="noopener noreferrer">${escape(source.label)} ↗</a>`:`<strong>${escape(source.label)}</strong>`} · ${escape(source.scope || '')} · ${statNumber(source.snapshot_count)} 个分类 · ${escape(source.sample_scope || '')}${precision?` · ${escape(precision)}`:''}</li>`;}).join('')}</ul></details>`;
+  }
+  function growthTable(data){
+    const growth=data.growth,items=(growth?.items || []).slice(0,10);
+    if(!growth?.available || !items.length)return '';
+    return `<section class="data-card radar-card growth-card"><header class="data-card-head"><div><h2>在读变化排行</h2><p>按同一来源与实际日期比较 · 来源快照可能与当前汇总范围不同</p></div><span>${statNumber(growth.compared_count)} 本可比较</span></header><div class="radar-table-wrap" tabindex="0" role="region" aria-label="在读变化数值表"><table class="radar-table"><thead><tr><th>作品 / 数据来源</th><th>来源快照在读</th><th>在读增量</th><th>变化率</th><th>比较日期</th></tr></thead><tbody>${items.map((item,index)=>{const sid=item.snapshot_id || item.selection?.snapshot_id,bid=item.book_id || item.selection?.book_id;return `<tr><td><button class="radar-book" data-action="overview-book" data-snapshot="${escape(sid)}" data-book="${escape(bid)}"><span class="radar-row-number">${String(index+1).padStart(2,'0')}</span>${cover({title:item.title,cover_url:item.cover_url})}<span><strong>${escape(item.title)}</strong><small>${escape(item.source_name || '')} · ${escape(item.category || '')}${Number.isFinite(item.rank)?' · 原榜 #'+item.rank:' · 原榜名次未提供'}</small></span></button></td><td>${compactNumber(item.primary_count ?? item.read_count)}</td><td class="${item.delta>0?'positive':''}">${signedNumber(item.delta)}</td><td>${Number.isFinite(item.delta_rate)?signedNumber(item.delta_rate)+'%':'—'}</td><td>${escape(String(item.baseline_data_date || '').slice(0,10))} → ${escape(String(item.data_date || '').slice(0,10))}<small>实际间隔 ${statNumber(item.interval_days)} 天</small></td></tr>`;}).join('')}</tbody></table></div><div class="chart-caption">展示增量前 ${items.length} 本 · 基期在读为 0 时不计算变化率</div></section>`;
+  }
+  function radarTable(data,panel){
+    const radar=data.blackhorse || {},fanqie=overviewPlatform==='fanqie',items=radar.items || [],criteria=radar.criteria || [];
+    const title=fanqie?'黑马候选雷达':'榜单头部样本';
+    let body=`<section class="data-card radar-card"><header class="data-card-head"><div><h2>${title}</h2><p>${fanqie?'以字数窗口与在读筛选，按每万字在读排序':'按当前原榜名次排列'}</p></div><span>${statNumber(fanqie?radar.eligible_count:items.length)} 本${fanqie?'命中':''}</span></header>${fanqie?`<div class="radar-rule-line">${criteria.map(item=>`<span>${escape(item)}</span>`).join('')}<span class="radar-formula">E = 在读 ÷ 万字数</span></div>`:''}`;
+    if(!items.length)body+=`<div class="chart-unavailable compact">${fanqie?'当前样本没有命中筛选条件的作品':'当前榜单尚无有效作品'}<small>${fanqie?'继续更新分类后自动补充；不添加示例书填充':''}</small></div>`;
+    else body+=`<div class="radar-table-wrap" tabindex="0" role="region" aria-label="${title}数值表"><table class="radar-table"><thead><tr><th>作品 / 原榜</th><th>${escape(panel.metric_label)}</th><th>字数</th>${fanqie?'<th>每万字在读</th><th>在读增量</th><th>加权指数</th>':''}</tr></thead><tbody>${items.slice(0,10).map((item,index)=>{const sid=item.snapshot_id || item.selection?.snapshot_id,bid=item.book_id || item.selection?.book_id;return `<tr><td><button class="radar-book" data-action="overview-book" data-snapshot="${escape(sid)}" data-book="${escape(bid)}"><span class="radar-row-number">${String(index+1).padStart(2,'0')}</span>${cover({title:item.title,cover_url:item.cover_url})}<span><strong>${escape(item.title)}</strong><small>${escape(item.category || item.board)}${Number.isFinite(item.rank)?' · 原榜 #'+item.rank:' · 原榜名次未提供'}</small></span></button></td><td>${compactNumber(item.primary_count ?? item.read_count)}</td><td>${compactNumber(item.word_count)}</td>${fanqie?`<td class="radar-efficiency">${compactNumber(item.efficiency ?? item.reads_per_10k_words)}</td><td class="${Number.isFinite(item.delta)&&item.delta>0?'positive':''}">${Number.isFinite(item.delta)?signedNumber(item.delta):'—'}${Number.isFinite(item.interval_days)?`<small>间隔 ${statNumber(item.interval_days)} 天</small>`:''}</td><td>${Number.isFinite(item.score)?statNumber(item.score):'—'}</td>`:''}</tr>`;}).join('')}</tbody></table></div>`;
+    if(fanqie)body+=`<details class="radar-method"><summary>黑马计算口径 <span>${statNumber(radar.scored_count)} 本有历史增量</span></summary><p>${escape(radar.formula || '')}</p><p>加权指数仅在同一来源、同榜、同作品有可比较历史时计算；空值表示缺少依据，筛选结果不代表收益预测。</p></details>`;
+    return body+'</section>';
   }
   function renderOverview(){
-    const data=overview, panels=data?.platforms || [], panel=panels.find(item=>item.platform===overviewPlatform), job=overviewJob(), running=overviewRunning();
-    let html=`<div class="page-head overview-head"><div><div class="eyebrow">发糕选题情报 <span class="dot">/</span> 自动汇总</div><h1>先看趋势，再选故事。</h1><p>番茄新书、起点与刺猬猫榜单，一处发现方向和作品。</p></div><div class="head-actions"><button class="button secondary" data-action="overview-refresh" ${running || overviewRefreshing?'disabled':''}>${running || overviewRefreshing?'<span class="spinner"></span>正在更新':'↻ 更新总览'}</button></div></div>`;
-    html+=`<div class="overview-collection-status" role="status"><span class="status-dot ${overviewError?'':'online'}"></span><span>${escape(running?(job.message || '正在后台汇总榜单，取得的内容会陆续显示'):overviewError || (data?'已有结果已载入 · 自动检查更新':'正在读取本机保存的榜单…'))}</span>${Number.isFinite(job?.progress?.completed_categories)?`<small>已完成 ${job.progress.completed_categories} 个分类</small>`:''}${running?`<button data-action="cancel-job" data-id="${escape(job.id)}">暂停更新</button>`:''}</div>`;
-    html+=`<nav class="overview-tabs" aria-label="总览平台">${[{id:'fanqie',name:'番茄小说',board:'男频 · 女频新书榜'},{id:'qidian',name:'起点中文网',board:'月票榜'},{id:'ciweimao',name:'刺猬猫',board:'月票榜'}].map(item=>`<button data-action="overview-platform" data-platform="${item.id}" aria-pressed="${overviewPlatform===item.id}"><strong>${item.name}</strong><span>${item.board}</span>${panels.find(p=>p.platform===item.id)?.summary?.books?`<small>${compactNumber(panels.find(p=>p.platform===item.id).summary.books)} 本</small>`:''}</button>`).join('')}</nav>`;
-    if(!panel || !panel.summary?.books){
-      html+=`<section class="overview-empty"><div class="overview-kicker">${escape(nameOf(overviewPlatform))} · ${overviewPlatform==='fanqie'?'仅新书榜':'月票榜'}</div><h2>${running?'正在整理第一批作品':'这里会汇总值得关注的作品'}</h2><p>${overviewPlatform==='fanqie'?'男频、女频新书榜的各分类会自动汇总，阅读榜不计入。':'从来源榜单提取真实作品、标题结构与可比较的指标。'}${running?'取得第一批内容后即显示，后续继续补充。':'本机还没有可用于此总览的榜单记录。'}</p><div class="overview-empty-sections"><span>题材方向</span><span>爆款公式观察</span><span>潜力作品</span></div>${overviewError?'<button class="button secondary" data-action="overview-retry">重新读取</button>':''}</section>`;
-      $('#content').innerHTML=html;return;
+    const panels=overview?.platforms || [],panel=panels.find(item=>item.platform===overviewPlatform),job=overviewJob(),running=overviewRunning();
+    const {data,channel,channels}=dashboardView(panel),metric=panel?.metric_label || (overviewPlatform==='fanqie'?'在读':'月票'),coverage=panel?.coverage || {};
+    let html=`<div class="page-head overview-head data-overview-head"><div><div class="eyebrow">发糕情报室 <span class="dot">/</span> 数据总览</div><h1>榜单数据总览</h1></div><div class="head-actions"><button class="button secondary" data-action="overview-refresh" ${running || overviewRefreshing?'disabled':''}>${running || overviewRefreshing?'<span class="spinner"></span>更新中':'↻ 更新数据'}</button></div></div>`;
+    html+=`<div class="overview-collection-status" role="status"><span class="status-dot ${overviewError?'':'online'}"></span><span>${escape(running?(job.public_source?.status==='running' && !['queued','running','pending','cancelling'].includes(job.status)?'正在补充公开榜单快照，已有数据可继续浏览':job.message || '正在更新，已有数据可继续查看'):overviewError || (overview?'本机数据已载入 · 自动检查更新':'正在读取本机保存的榜单…'))}</span>${running?`<button data-action="cancel-job" data-id="${escape(job.id)}">暂停</button>`:`<small>${coverage.latest_collected_at?date(coverage.latest_collected_at):''}</small>`}</div>`;
+    html+=`<nav class="overview-tabs data-platform-tabs" aria-label="总览平台">${[{id:'fanqie',name:'番茄小说',board:'男频 · 女频新书榜'},{id:'qidian',name:'起点中文网',board:'月票榜'},{id:'ciweimao',name:'刺猬猫',board:'月票榜'}].map(item=>`<button data-action="overview-platform" data-platform="${item.id}" aria-pressed="${overviewPlatform===item.id}"><strong>${item.name}</strong><span>${item.board}</span><small>${statNumber(panels.find(p=>p.platform===item.id)?.summary?.books || 0)} 本</small></button>`).join('')}</nav>`;
+    html+=`<div class="overview-scope dashboard-scope"><span>${overviewPlatform==='fanqie'?'仅新书榜 · 阅读榜不参与汇总':'月票榜 · 使用本平台原始指标'}</span>${overviewPlatform==='fanqie'?`<div class="chart-switch channel-switch" aria-label="汇总频道">${channels.map(value=>`<button data-action="dashboard-channel" data-channel="${escape(value)}" aria-pressed="${channel===value}">${value==='全部'?'全部频道':escape(value)}</button>`).join('')}</div>`:''}</div>`;
+    if(!panel?.summary?.books || !data){
+      html+=`<section class="overview-empty"><h2>${running?'正在整理第一批数据':'等待可用的榜单数据'}</h2><p>${overviewPlatform==='fanqie'?'自动汇总男频、女频新书榜各分类。':'自动读取本平台月票榜。'}取得数据后即显示统计。</p><div class="overview-empty-sections"><span>分类对比</span><span>字数分布</span><span>黑马雷达</span></div>${overviewError?'<button class="button secondary" data-action="overview-retry">重新读取</button>':''}</section>`;$('#content').innerHTML=html;return;
     }
-    const summary=panel.summary || {}, coverage=panel.coverage || {}, formulas=panel.formulas || [], candidates=panel.candidates || [], categories=panel.categories || [], growth=panel.growth || {};
-    html+=`<div class="overview-scope"><strong>${escape(panel.scope_label || (overviewPlatform==='fanqie'?'番茄 · 男频及女频新书榜':'月票榜'))}</strong><span>${overviewPlatform==='fanqie'?'仅新书榜 · 阅读榜不参与汇总':'保留原平台指标与排名'}</span></div>`;
-    html+=`<div class="overview-stat-grid"><div><span>已汇总作品</span><strong>${compactNumber(summary.books)}<small> 本</small></strong><p>跨分类去重后计数</p></div><div><span>覆盖分类</span><strong>${statNumber(coverage.category_count)}${Number.isFinite(coverage.expected_category_count)?`<small> / ${coverage.expected_category_count}</small>`:''}</strong><p>${coverage.complete?'当前来源分类已读取':'内容会随采集陆续补充'}</p></div><div><span>可观察的标题结构</span><strong>${formulas.length}<small> 类</small></strong><p>每一种均附真实样本</p></div><div><span>最近采集</span><strong class="overview-time">${escape(date(coverage.latest_collected_at))}</strong><p>来源日期见下方覆盖详情</p></div></div>`;
-    html+=`<section class="overview-section"><div class="overview-section-head"><div><div class="overview-kicker">TITLE PATTERNS</div><h2>爆款公式观察</h2><p>从上榜书名归纳可借鉴的结构，点样本继续看开头与情节。</p></div><span class="overview-label">样本规律 · 不代表收益保证</span></div>`;
-    if(formulas.length)html+=`<div class="formula-grid">${formulas.slice(0,6).map((formula,i)=>`<article class="formula-card"><div class="formula-top"><span>${String(i+1).padStart(2,'0')}</span><small>${statNumber(formula.count)} 本样本 · ${statNumber(formula.share)}%</small></div><h3>${escape(formula.title)}</h3><p class="formula-expression">${escape(formula.formula)}</p><div class="formula-examples">${(formula.examples || []).slice(0,3).map(book=>overviewBookLink(book,book.title+' ↗')).join('')}</div></article>`).join('')}</div>`;
-    else html+='<p class="overview-no-data">当前书名没有命中既定结构；更多分类完成后继续补充，不凭空生成公式。</p>';
-    html+='</section>';
-    const hasGrowth=growth.available && growth.items?.length;
-    html+=`<section class="overview-section"><div class="overview-section-head"><div><div class="overview-kicker">BOOKS TO WATCH</div><h2>${hasGrowth?'黑马观察 · 真实上升样本':overviewPlatform==='fanqie'?'新书潜力样本':'值得关注的榜上作品'}</h2><p>${escape(hasGrowth?'对照同平台、同榜型和同分类的不同来源日期。':panel.candidate_basis || (overviewPlatform==='fanqie'?'结合在读与字数寻找值得先读的作品，保留各自原榜位置。':'按本平台的原榜顺序展示，不与其他平台混排。'))}</p></div><span class="overview-label">${hasGrowth?'有历史对照':'当前榜单样本'}</span></div>`;
-    const featured=hasGrowth?growth.items:candidates;
-    html+=featured.length?`<div class="overview-book-grid">${featured.slice(0,6).map((book,i)=>overviewCandidate(book,i,hasGrowth)).join('')}</div>`:`<p class="overview-no-data">当前样本指标不足，取得更多有效书目后展示。</p>`;
-    if(!hasGrowth)html+=`<p class="overview-footnote">${escape(growth.reason || '积累不同日期的榜单后，这里会展示可核对的上升作品。')}</p>`;
-    html+='</section>';
-    html+=`<div class="overview-bottom-grid"><section class="overview-section"><div class="overview-section-head"><div><div class="overview-kicker">CATEGORIES</div><h2>题材方向</h2><p>按已取得样本观察，点击作品可追溯出处。</p></div></div><div class="overview-categories">${categories.slice(0,10).map((category,i)=>`<article><span class="category-index">${String(i+1).padStart(2,'0')}</span><div><h3>${escape(category.category)}<small>${escape(category.channel || '')}</small></h3>${category.example?overviewBookLink(category.example):''}</div><span class="category-metric"><strong>${compactNumber(category.average_metric)}</strong><small>平均${escape(panel.metric_label || '来源指标')}</small></span></article>`).join('')}</div></section><section class="overview-section"><div class="overview-section-head"><div><div class="overview-kicker">TITLE KEYWORDS</div><h2>高频书名元素</h2><p>在本平台已汇总书名中出现的关键词。</p></div></div><div class="overview-keywords">${(panel.keywords || []).slice(0,16).map(item=>`<span><strong>${escape(item.word)}</strong><small>${statNumber(item.count)} 本</small></span>`).join('') || '<p class="overview-no-data">暂无命中关键词的书名。</p>'}</div><div class="overview-reading-note"><h3>看到方向，再看作品。</h3><p>点开样本书名，查看简介、目录与正文，再回 WorkBuddy 说“分析刚选的这本”。</p></div></section></div>`;
-    html+=`<details class="overview-coverage"><summary>数据覆盖与统计口径 <span>${coverage.complete?'当前范围已读取':'正在积累来源记录'}</span></summary><p>来源数据日期：${escape((coverage.source_dates || []).join('、') || '来源未提供')}。不同日期不伪装成同一天；各分类名次不合成为全站排名。</p>${coverage.missing_channels?.length?`<p>尚未取得：${escape(coverage.missing_channels.join('、'))}。</p>`:''}<ul>${(panel.methods || []).map(method=>`<li>${escape(method)}</li>`).join('')}</ul></details>`;
+    const kpi=data.kpis || {},fanqie=overviewPlatform==='fanqie';
+    html+=dashboardSources(data);
+    html+=`<div class="dashboard-kpis" aria-label="${escape(channel)}统计指标"><div data-kpi="books"><span>已汇总作品</span><strong>${statNumber(kpi.books)}<small>本</small></strong><p>${escape(channel)} · 按作品 ID 去重</p></div><div data-kpi="primary_median"><span>${escape(metric)}中位数</span><strong>${compactNumber(kpi.primary_median)}<small>${fanqie?'人':'票'}</small></strong><p>P90 ${compactNumber(kpi.primary_p90)} · 有效 ${statNumber(kpi.valid_primary_count)} 本</p></div><div data-kpi="words_median"><span>字数中位数</span><strong>${compactNumber(kpi.words_median)}<small>字</small></strong><p>有效 ${statNumber(kpi.valid_words_count)} 本</p></div><div data-kpi="blackhorse_count"><span>${fanqie?'黑马候选':'覆盖榜单'}</span><strong>${fanqie?statNumber(kpi.blackhorse_count):statNumber(coverage.category_count)}<small>${fanqie?'本':'个'}</small></strong><p>${fanqie?'8–15 万字 · 在读 ≥ 1 万':panel.scope_label}</p></div></div>`;
+    html+=`<div class="dashboard-chart-grid">${chartCard('赛道对比','TOP 8',categoryChart(data,metric),'category-card')}${data.scatter?.total?chartCard('字数 × '+metric,fanqie?'每个点代表一本新书':'每个点代表一本作品',scatterChart(data,metric),'scatter-card'):chartCard('书名长度分布','字符',distributionChart(data.title_length_bins,'书名长度',kpi.valid_title_count),'distribution-card')}${kpi.valid_words_count?chartCard('字数分布','本',distributionChart(data.word_bins,'字数',kpi.valid_words_count),'distribution-card'):chartCard('作品状态分布','来源状态',distributionChart(data.status,'作品状态',kpi.books),'distribution-card')}${kpi.valid_primary_count?chartCard(metric+'分布','本',distributionChart(data.primary_bins,metric,kpi.valid_primary_count),'distribution-card'):chartCard('书名关键词分布',metric+'未提供',compactBars(data.keywords,'书名元素'),'small-data-card')}</div>`;
+    html+=radarTable(data,panel);
+    if(fanqie)html+=growthTable(data);
+    html+=`<div class="dashboard-secondary-grid">${chartCard('书名结构分布','可重叠命中',compactBars(data.patterns,'书名结构'),'small-data-card')}${chartCard('高频书名元素','命中作品数',compactBars(data.keywords,'书名元素'),'small-data-card')}${chartCard('作品状态','来源状态',compactBars(data.status,'作品状态'),'small-data-card')}</div>`;
+    html+=`<details class="overview-coverage"><summary>数据覆盖与统计口径 <span>${statNumber(coverage.category_count)}${Number.isFinite(coverage.expected_category_count)?' / '+coverage.expected_category_count:''} 个分类 · ${coverage.complete?'当前范围已读取':'持续补充中'}</span></summary><p>来源日期：${escape((coverage.source_dates || []).join('、') || '原站未提供')}。统计仅覆盖已取得的作品，缺失指标不记为零。</p><ul>${[...new Set([...(data.methods || []),...(data.scatter?.sampled?[data.scatter.selection_method]:[]),...(panel.methods || [])])].map(method=>`<li>${escape(method)}</li>`).join('')}</ul></details>`;
     $('#content').innerHTML=html;
   }
   async function loadOverview(){
@@ -273,13 +352,13 @@
     finally{overviewRefreshing=false;if(section==='overview')render();}
   }
   async function pollOverview(){
-    const job=overviewJob();if(!job || !['queued','running','pending','cancelling'].includes(job.status))return;
+    const job=overviewJob();if(!overviewJobActive(job))return;
     const result=await api(`/api/jobs/${encodeURIComponent(job.id)}`), next=result.job || result;
     if(overview)overview.update=next;
     state.jobs=state.jobs.map(item=>item.id===next.id?next:item);
-    const key=JSON.stringify([next.id,next.status,next.progress,next.partial_snapshot_id,next.message]);
+    const key=JSON.stringify([next.id,next.status,next.progress,next.partial_snapshot_id,next.message,next.public_source?.status,next.public_source?.snapshot_count,next.public_source?.updated_at,next.public_source?.finished_at,next.updated_at]);
     if(key!==overviewPollKey){overviewPollKey=key;await loadOverview();}
-    if(!['queued','running','pending','cancelling'].includes(next.status)){overviewNextAt=Date.now()+(['failed','cancelled','interrupted'].includes(next.status)?300000:AUTO_TTL);await refresh();}
+    if(!overviewJobActive(next)){overviewNextAt=Date.now()+(['failed','cancelled','interrupted'].includes(next.status)?300000:AUTO_TTL);await refresh();}
     else if(section==='overview')render();
   }
   function continuationJob(){return !viewingHistory() && (state?.jobs || []).find(job=>!['text','overview'].includes(job.kind) && job.platform===platformID() && (!job.options || scopeKey(job.platform,job.options)===scopeKey()) && (job.waiting_for_more || job.paused_for_demand) && (!view().selected_id || !job.partial_snapshot_id || job.partial_snapshot_id===snapshot?.id));}
@@ -434,7 +513,7 @@
     const id=platformID(), options={...optionsFor(id),...patch};
     savedOptions[id]=options;try{localStorage.setItem('fagao-collection-options',JSON.stringify(savedOptions));}catch{}
     setHistory(null);latestResults.delete(scopeKey());
-    const matching=state.snapshots.find(item=>sameScope(item,id,options));
+    const matching=bestSnapshotForScope(id,options);
     await updateView({snapshot_id:matching?.id || null,selected_id:null,page:1,filters:{query:'',sort:'source',favorites:false}});
     await maybeAutoCollect();
   }
@@ -634,17 +713,19 @@
     if(a==='close-dialog'){$('#dialog').close();return;}
     if(a==='mode') {
       if(!await syncNavigationState())return;section='browse';const target=el.dataset.mode, previous=state.views[target] || {}, id=previous.platform || (target==='short'?'heiyan':'fanqie');
-      const matching=state.snapshots.find(item=>sameScope(item,id,{...defaults[id],...savedOptions[id]}));
+      const matching=bestSnapshotForScope(id,{...defaults[id],...savedOptions[id]});
       await updateView(previous.snapshot_id?{mode:target}:{mode:target,platform:id,snapshot_id:matching?.id || null,selected_id:null});await maybeAutoCollect();return;
     }
     if(a==='platform') {
       if(!await syncNavigationState())return;
-      section='browse';const id=el.dataset.platform, existing=state.snapshots.find(s=>sameScope(s,id,optionsFor(id)));setHistory(null);
+      section='browse';const id=el.dataset.platform, existing=bestSnapshotForScope(id,optionsFor(id));setHistory(null);
       if(id===platformID() && view().snapshot_id){await loadSnapshot();await maybeAutoCollect();return;}
       await updateView({platform:id,snapshot_id:existing?.id || null,selected_id:null,page:1,filters:{query:'',sort:'source',favorites:false}});await maybeAutoCollect();return;
     }
     if(a==='section'){navigationGeneration++;section=el.dataset.section;render();if(section==='overview'){await loadOverview();await maybeAutoOverview();}return;}
     if(a==='overview-platform'){navigationGeneration++;overviewPlatform=el.dataset.platform;render();return;}
+    if(a==='dashboard-channel'){overviewChannel=el.dataset.channel;render();return;}
+    if(a==='dashboard-category-metric'){dashboardCategoryMetric=el.dataset.metric;render();return;}
     if(a==='overview-refresh'){await refreshOverview(false);return;}
     if(a==='overview-book'){await openRecord(el);return;}
     if(a==='overview-retry'){await loadOverview();await refreshOverview(false);return;}
@@ -760,6 +841,7 @@
   });
   $('#dialog').addEventListener('click',(event)=>{if(event.target===$('#dialog')){const r=$('#dialog').getBoundingClientRect();if(event.clientX<r.left || event.clientX>r.right || event.clientY<r.top || event.clientY>r.bottom)$('#dialog').close();}});
   window.addEventListener('scroll',()=>{lastListScrollAt=Date.now();const sentinel=$('#list-end');if(sentinel && sentinel.getBoundingClientRect().top<window.innerHeight+240)loadMoreBooks().catch(error=>notice(error.message));},{passive:true});
+  document.addEventListener('keydown',event=>{if((event.key==='Enter' || event.key===' ') && event.target.matches?.('.scatter-dot')){event.preventDefault();dispatch(event.target).catch(error=>notice(error.message));}});
   document.addEventListener('visibilitychange',()=>{if(!document.hidden && state)refresh().catch(e=>notice(e.message));});
   refresh().catch(error=>{$('#server-label').textContent='本地服务未连接';$('#server-dot').classList.remove('online');$('#content').innerHTML=pageHead('欢迎回来','打开本地工作台后，就可以继续上次的选书。')+'<section class="surface">'+empty('暂时连接不上本地服务','请通过“发糕扫榜”启动入口重新打开，或让 WorkBuddy 帮你启动工作台。','<button class="button primary" data-action="retry">重新连接</button>','↻')+'</section>';notice(error.message);});
 })();

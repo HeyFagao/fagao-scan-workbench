@@ -20,6 +20,8 @@ def source(platform, options, count=10, complete=True):
 class OverviewJobsTest(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory(); self.store=Store(self.tmp.name); self.manager=JobManager(self.store)
+        self.public_patch=patch('fagao.public_rankings.sync_public_rankings',return_value={'snapshots':[]})
+        self.public_fetch=self.public_patch.start(); self.addCleanup(self.public_patch.stop)
         self.options={'channel':'女频','category':'古言脑洞','board':'新书榜','max_pages':100,'limit':10000}
 
     def tearDown(self):

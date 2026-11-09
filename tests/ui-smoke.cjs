@@ -9,13 +9,14 @@ const errors=[], collections=[], overviewUpdates=[];
 const pause=ms=>new Promise(r=>setTimeout(r,ms));
 async function wait(fn,msg){for(let i=0;i<150;i++){if(await fn())return;await pause(20)}throw new Error(msg)}
 async function api(path,body){const r=await fetch(base+path,body?{method:'POST',headers:{'Content-Type':'application/json','X-Fagao-Request':'1'},body:JSON.stringify(body)}:{});const j=await r.json();assert(!j.error,JSON.stringify(j));return j;}
-async function open({stale=false,freshSnapshot=null,history=false,expiredHeiyan=false,holdCollection=false,forceConnectedHeiyan=false,collectionResponse=null,contentFixture=false,storedOptions=null,startHome=false,collectionFixture=null}={}){
+async function open({stale=false,freshSnapshot=null,history=false,expiredHeiyan=false,holdCollection=false,forceConnectedHeiyan=false,collectionResponse=null,contentFixture=false,storedOptions=null,startHome=false,collectionFixture=null,lateOverview=false}={}){
   const vc=new VirtualConsole();vc.on('jsdomError',e=>errors.push(String(e)));
   const dom=new JSDOM(await (await fetch(base+'/')).text(),{url:base+'/',runScripts:'outside-only',pretendToBeVisual:true,virtualConsole:vc});
   const makeHold=()=>{let release;const promise=new Promise(resolve=>{release=resolve});return {promise,release,captured:false}};
   let mockAuth=null;
   const control={pending:null,viewPending:null,collectionPending:holdCollection?makeHold():null,stateRequests:0,holdNextState(){return this.pending=makeHold()},holdNextView(){return this.viewPending=makeHold()}};dom.control=control;
   control.moreRequests=[];control.collectionJob=null;control.collectionPolls=0;
+  control.overviewPolls=0;control.overviewReads=0;control.overviewJob=lateOverview?{id:'qa-overview-late',kind:'overview',status:'completed',message:'直采检查完成',public_source:{status:'running',snapshot_count:0,updated_at:'2026-11-09T12:00:00Z'}}:null;
   control.catalogRequests=[];control.textRequests=[];control.textAssets=[];control.textJob=null;control.textPolls=0;control.cancelCalls=0;
   control.finishText=({cancelled=false}={})=>{
     const job=control.textJob, asset={id:'qa-asset-'+control.textRequests.length,snapshot_id:job.snapshot_id,book_id:job.book_id,title:job.title,platform:'fanqie',scope:'第 1—3 章；实际取得第 1、3 章，缺失第 2 章',chapters:[{index:1,title:'第一章'},{index:3,title:'第三章'}],missing:[{index:2,chapter:'第二章',reason:'平台暂未提供正文'}],coverage_complete:false,complete:false,cancelled,characters:66,created_at:'2026-11-09T12:00:00Z',acquisition:'public_download'};
@@ -25,6 +26,7 @@ async function open({stale=false,freshSnapshot=null,history=false,expiredHeiyan=
     const pathname=new URL(path,base).pathname;
     if(pathname==='/api/view' && control.viewPending && !control.viewPending.captured){const held=control.viewPending;held.captured=true;await held.promise;}
     if(pathname==='/api/overview/refresh'){overviewUpdates.push(JSON.parse(init.body));return Response.json({status:'fresh',retry_after_seconds:900});}
+    if(pathname==='/api/jobs/qa-overview-late'){control.overviewPolls++;return Response.json(control.overviewJob);}
     if(pathname==='/api/collect'){
       if(control.collectionPending && !control.collectionPending.captured){const held=control.collectionPending;held.captured=true;await held.promise;}
       const body=JSON.parse(init.body);collections.push(body);
@@ -50,6 +52,7 @@ async function open({stale=false,freshSnapshot=null,history=false,expiredHeiyan=
     if(pathname.startsWith('/api/texts/qa-asset-'))return Response.json({...control.textAssets.find(item=>pathname.endsWith('/'+item.id)),content:'这是实际取得部分正文的测试夹具。<script>unsafe()</script>'});
     if(pathname==='/api/auth')throw new Error('UI smoke must not start a platform login or browser.');
     const response=await fetch(new URL(path,base),init);
+    if(pathname==='/api/overview' && lateOverview){control.overviewReads++;const data=await response.json();data.update=control.overviewJob;return Response.json(data);}
     if(pathname==='/api/state' || pathname==='/api/view'){
       if(pathname==='/api/state')control.stateRequests++;
       const data=await response.json();if(control.collectionJob)data.jobs=[control.collectionJob,...(data.jobs || [])];if(contentFixture){data.jobs=[...(control.textJob?[control.textJob]:[]),...(data.jobs || [])];data.texts=[...control.textAssets,...(data.texts || [])];}if(stale)data.snapshots.forEach(item=>{item.collected_at='2020-01-01T00:00:00Z';});if(expiredHeiyan)data.auth={...data.auth,heiyan:{state:'expired',message:'测试登录已过期'}};if(forceConnectedHeiyan)data.auth={...data.auth,heiyan:mockAuth || {state:'connected'}};
@@ -202,9 +205,9 @@ async function open({stale=false,freshSnapshot=null,history=false,expiredHeiyan=
  await api('/api/import/snapshot',{snapshot:{platform:'fanqie',channel:'男频',category:'玄幻脑洞',board:'阅读榜',data_date:'2026-11-09',books:[{id:'qa-excluded-reading',title:'阅读榜不应汇总的样本',rank:1,metrics:[{name:'在读',value:99999999},{name:'字数',value:10000}]}]}});
  dom=await open({startHome:true});d=dom.window.document;
  assert.match(d.querySelector('.overview-scope').textContent,/阅读榜不参与/);assert(!d.querySelector('#content').textContent.includes('阅读榜不应汇总的样本'),'reading board polluted homepage');
- assert(d.querySelector('.formula-card'),'source-backed formula missing');assert(d.querySelector('.overview-book-card'),'candidate source books missing');
+ assert(d.querySelector('.compact-bars'),'source-backed title distribution missing');assert(d.querySelector('.scatter-dot'),'numeric source sample missing');assert(!d.querySelector('.formula-card'),'large formula cards still dominate the homepage');
  const reference=d.querySelector('[data-action="overview-book"]'), referencedSnapshot=reference.dataset.snapshot, referencedBook=reference.dataset.book;
- reference.click();await wait(()=>d.querySelector('.detail h2'),'overview sample did not open');const exact=await api('/api/state');assert.equal(exact.views.long.snapshot_id,referencedSnapshot);assert.equal(exact.views.long.selected_id,referencedBook);await pause(80);dom.window.close();
+ reference.dispatchEvent(new dom.window.MouseEvent('click',{bubbles:true}));await wait(()=>d.querySelector('.detail h2'),'overview sample did not open');const exact=await api('/api/state');assert.equal(exact.views.long.snapshot_id,referencedSnapshot);assert.equal(exact.views.long.selected_id,referencedBook);await pause(80);dom.window.close();
  // A real source first batch is visible before a later network batch; a fixed
  // selection can follow a verified same-job prefix without changing old tasks.
  const firstBooks=Array.from({length:10},(_,i)=>({id:'qa-stream-'+i,title:'逐步加载作品'+i,rank:i+1,summary:'本地测试夹具'}));
@@ -231,5 +234,79 @@ async function open({stale=false,freshSnapshot=null,history=false,expiredHeiyan=
  assert.match(d.querySelector('.book-row').textContent,/首页后台已缓存/);await wait(()=>dom.control.collectionPending.captured,'background collection was not held');assert.equal((await api('/api/state')).views.long.snapshot_id,seeded.id);dom.control.collectionPending.release();await pause(150);dom.window.close();
  // Returning home wins over a slower platform-navigation metadata request.
  dom=await open({startHome:true});d=dom.window.document;const lateNavigation=dom.control.holdNextState();d.querySelector('[data-action="platform"][data-platform="fanqie"]').click();await wait(()=>lateNavigation.captured,'platform metadata request was not held');d.querySelector('[data-section="overview"]').click();lateNavigation.release();await pause(120);assert(d.querySelector('.overview-tabs'),'late platform navigation overrode return-home');assert.equal(d.querySelector('[data-section="overview"]').getAttribute('aria-current'),'true');dom.window.close();
- assert.deepEqual(errors,[]);console.log(JSON.stringify({passed:true,checks:72,layout_verified:false,external_platform_requests:0}));
+ // Chart marks, channel changes and candidate cells are checked against the
+ // actual API rather than a mocked dashboard response or decorative fixtures.
+ let dashboardChecks=0;
+ const dashboardCheck=check=>{check();dashboardChecks++;};
+ const metricBook=(id,title,reads,words,rank=1)=>({id,title,rank,metrics:[{name:'在读',value:reads},{name:'字数',value:words}],status:'连载中'});
+ const maleScope={platform:'fanqie',channel:'男频',category:'玄幻脑洞',board:'新书榜'};
+ const publicScope={...maleScope,source_id:'github:scoful/FanqieRankTracker',provenance:{repo_url:'https://github.com/scoful/FanqieRankTracker',sample_limit:20,metric_precision:'source_display_rounded'}};
+ await api('/api/import/snapshot',{snapshot:{...publicScope,data_date:'2026-11-03',books:[{id:'qa-public-growth',title:'公开快照增长样本',metrics:[{name:'在读',value:10000}]}]}});
+ const publicSource=await api('/api/import/snapshot',{snapshot:{...publicScope,data_date:'2026-11-10',books:[{id:'qa-public-growth',title:'公开快照增长样本',metrics:[{name:'在读',value:30000}]}]}});
+ await api('/api/import/snapshot',{snapshot:{...maleScope,data_date:'2026-11-08',books:[metricBook('qa-male-history','开局：有历史的男频样本',50000,100000),metricBook('qa-male-flat','重生：零增长样本',20000,100000,2)]}});
+ const maleSource=await api('/api/import/snapshot',{snapshot:{...maleScope,data_date:'2026-11-10',books:[metricBook('qa-male-history','开局：有历史的男频样本',70000,100000),metricBook('qa-male-missing','系统：没有历史的样本',60000,120000,2),metricBook('qa-male-flat','重生：零增长样本',20000,100000,3),metricBook('qa-zero','零指标有效样本',0,0,4),metricBook('qa-large','大数值样本',10000000,2000000,5)]}});
+ const femaleSource=await api('/api/import/snapshot',{snapshot:{platform:'fanqie',channel:'女频',category:'古言脑洞',board:'新书榜',data_date:'2026-11-10',books:[metricBook('qa-female-eight','穿越后：八万字样本',20000,80000),metricBook('qa-female-fifteen','女帝：十五万字样本',10000,150000,2)]}});
+ await api('/api/import/snapshot',{snapshot:{platform:'qidian',channel:'男频',category:'全部',board:'月票榜',data_date:'2026-11-10',books:[{id:'qa-ticket',title:'起点月票样本',rank:1,metrics:[{name:'月票',value:50},{name:'字数',value:300000}]}]}});
+ await api('/api/import/snapshot',{snapshot:{platform:'ciweimao',channel:'综合',category:'全部',board:'月票榜',period:'月榜',data_date:'2026-11-10',books:[{id:'qa-no-ticket',title:'穿越：来源无票数的样本',rank:1}]}});
+ const dashboardResponse=await api('/api/overview'), fanqieDashboard=dashboardResponse.platforms.find(item=>item.platform==='fanqie').dashboard;
+ dom=await open({startHome:true});d=dom.window.document;
+ const kpiValue=name=>d.querySelector(`[data-kpi="${name}"] strong`).childNodes[0].textContent.replaceAll(',','');
+ dashboardCheck(()=>assert.equal(Number(kpiValue('books')),fanqieDashboard.views['全部'].kpis.books));
+ dashboardCheck(()=>assert.equal(d.querySelectorAll('.dashboard-chart-grid > .data-card').length,4));
+ dashboardCheck(()=>{assert(d.querySelector('.scatter-chart'));assert.equal(d.querySelectorAll('.formula-card').length,0);assert(!d.querySelector('.overview-coverage').open);});
+ d.querySelector('[data-action="dashboard-channel"][data-channel="男频"]').click();
+ const maleView=fanqieDashboard.views['男频'];
+ dashboardCheck(()=>{assert.equal(Number(kpiValue('books')),maleView.kpis.books);assert.equal(d.querySelector('[data-channel="男频"]').getAttribute('aria-pressed'),'true');});
+ dashboardCheck(()=>{assert.equal(d.querySelectorAll('.scatter-dot').length,maleView.scatter.points.length);assert.equal(d.querySelectorAll('.scatter-dot.female').length,0);});
+ dashboardCheck(()=>{const zero=d.querySelector('.scatter-dot[data-book="qa-zero"]');assert.equal(zero.dataset.words,'0');assert.equal(zero.dataset.primary,'0');assert.match(zero.getAttribute('aria-label'),/在读 0人/);});
+ dashboardCheck(()=>{assert.match(d.querySelector('.scatter-card').textContent,/对数\(1\+数值\)/);for(const point of d.querySelectorAll('.scatter-dot')){assert(Number.isFinite(Number(point.getAttribute('cx'))));assert(Number.isFinite(Number(point.getAttribute('cy'))));}});
+ dashboardCheck(()=>{const hist=d.querySelector('.histogram[aria-label^="字数分布"]');assert.deepEqual([...hist.querySelectorAll('[data-count]')].map(item=>Number(item.dataset.count)),maleView.word_bins.map(item=>item.count));assert.match(hist.textContent,/0 本/);});
+ dashboardCheck(()=>{const hist=d.querySelector('.histogram[aria-label^="在读分布"]');assert.deepEqual([...hist.querySelectorAll('[data-count]')].map(item=>Number(item.dataset.count)),maleView.primary_bins.map(item=>item.count));});
+ d.querySelector('[data-action="dashboard-category-metric"][data-metric="primary_median"]').click();
+ dashboardCheck(()=>{assert.match(d.querySelector('.category-bar-chart').getAttribute('aria-label'),/中位在读/);assert.match(d.querySelector('.category-bar-value').textContent,/6万/);});
+ dashboardCheck(()=>{const row=d.querySelector('.radar-book[data-book="qa-male-history"]').closest('tr');assert.match(row.textContent,/\+20,000/);assert.match(row.textContent,/间隔 2 天/);assert.equal(row.cells[5].textContent,'4,220');});
+ dashboardCheck(()=>{const row=d.querySelector('.radar-book[data-book="qa-male-missing"]').closest('tr');assert.equal(row.cells[4].textContent,'—');assert.equal(row.cells[5].textContent,'—');assert.equal(row.querySelector('button').dataset.snapshot,maleSource.id);});
+ dashboardCheck(()=>{const row=d.querySelector('.radar-book[data-book="qa-male-flat"]').closest('tr');assert.match(row.cells[4].textContent,/^0/);assert.equal(row.cells[5].textContent,'1,200');});
+ dashboardCheck(()=>{assert.match(d.querySelector('.overview-coverage').textContent,/区间包含下界、不含上界/);assert.match(d.querySelector('.radar-method').textContent,/0.6/);});
+ dashboardCheck(()=>{assert.match(d.querySelector('.dashboard-sources summary').textContent,/每分类最多 20 本公开样本，非全榜/);assert.match(d.querySelector('.dashboard-sources').textContent,/在读沿用来源显示精度/);assert(!d.querySelector('.dashboard-sources').textContent.includes('source_display_rounded'));});
+ dashboardCheck(()=>{const row=d.querySelector('.growth-card [data-book="qa-public-growth"]').closest('tr');assert.equal(row.querySelector('button').dataset.snapshot,publicSource.id);assert.match(row.textContent,/原榜名次未提供/);assert.match(row.textContent,/\+20,000/);assert.match(row.textContent,/\+200%/);assert.match(row.textContent,/实际间隔 7 天/);});
+ dashboardCheck(()=>{assert(!d.querySelector('.scatter-dot[data-book="qa-public-growth"]'));assert(!d.querySelector('.radar-card:not(.growth-card) [data-book="qa-public-growth"]'));assert.match(d.querySelector('.radar-method').textContent,/同一来源/);});
+ d.querySelector('[data-action="dashboard-channel"][data-channel="女频"]').click();
+ dashboardCheck(()=>{assert.equal(Number(kpiValue('books')),fanqieDashboard.views['女频'].kpis.books);assert.equal(d.querySelectorAll('.scatter-dot.male').length,0);assert.equal(d.querySelectorAll('.radar-table tbody tr').length,2);});
+ dashboardCheck(()=>{const point=d.querySelector('.scatter-dot[data-book="qa-female-eight"]');assert.equal(point.dataset.snapshot,femaleSource.id);assert.match(point.querySelector('title').textContent,/80,000 字 · 在读 20,000人/);});
+ d.querySelector('[data-action="overview-platform"][data-platform="ciweimao"]').click();
+ dashboardCheck(()=>{assert(!d.querySelector('.scatter-chart'));assert(d.querySelector('.histogram[aria-label^="书名长度分布"]'));assert.match(d.querySelector('[data-kpi="primary_median"] strong').textContent,/—/);});
+ dashboardCheck(()=>{assert.match(d.querySelector('.radar-card .data-card-head>span').textContent,/1 本/);assert.match(d.querySelector('.category-bar-chart').getAttribute('aria-label'),/样本量/);assert(d.querySelector('[data-metric="primary_median"]').disabled);});
+ d.querySelector('[data-action="overview-platform"][data-platform="qidian"]').click();
+ dashboardCheck(()=>{assert.match(d.querySelector('.scatter-chart').getAttribute('aria-label'),/月票/);assert.match(d.querySelector('.scatter-dot').getAttribute('aria-label'),/月票 50票/);assert(!d.querySelector('.radar-rule-line'));});
+ d.querySelector('[data-action="overview-platform"][data-platform="fanqie"]').click();
+ d.querySelector('.scatter-dot[data-book="qa-female-eight"]').dispatchEvent(new dom.window.KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}));
+ await wait(()=>d.querySelector('.detail h2')?.textContent==='穿越后：八万字样本','keyboard chart reference did not open exact work');
+ const fromChart=await api('/api/state');dashboardCheck(()=>{assert.equal(fromChart.views.long.snapshot_id,femaleSource.id);assert.equal(fromChart.views.long.selected_id,'qa-female-eight');});await pause(80);dom.window.close();
+ // Normal browsing selects the latest useful source, while explicit history
+ // stays pinned. Later imports alone must not win over fuller same-day data.
+ const directFull=await api('/api/import/snapshot',{snapshot:{...maleScope,data_date:'2026-11-12T06:00:00+08:00',complete:false,books:Array.from({length:297},(_,index)=>({id:'qa-full-'+index,title:'完整直采样本'+index,rank:index+1}))}});
+ const publicBooks=Array.from({length:20},(_,index)=>({id:'qa-top-'+index,title:'公开来源样本'+index,source_position:index+1,metrics:[{name:'在读',value:1000+index}]}));
+ const sameDayPublic=await api('/api/import/snapshot',{snapshot:{...publicScope,data_date:'2026-11-12T23:00:00+08:00',complete:false,books:publicBooks}});
+ await api('/api/view',{mode:'long',platform:'qidian',snapshot_id:null,selected_id:null});
+ dom=await open({startHome:true,storedOptions:{fanqie:{...maleScope}}});d=dom.window.document;
+ d.querySelector('[data-action="platform"][data-platform="fanqie"]').click();await wait(()=>d.querySelector('.book-row')?.textContent.includes('完整直采样本'),'same-day public Top20 displaced fuller direct cache');
+ dashboardCheck(()=>assert.equal(d.querySelector('#snapshot-select')?.value || d.querySelector('.snapshot-select')?.value,directFull.id));
+ const newerPublic=await api('/api/import/snapshot',{snapshot:{...publicScope,data_date:'2026-11-13',complete:false,books:publicBooks}});
+ d.querySelector('[data-action="platform"][data-platform="qidian"]').click();await wait(()=>d.querySelector('.book-row')?.textContent.includes('起点月票样本'),'comparison platform did not open');
+ d.querySelector('[data-action="platform"][data-platform="fanqie"]').click();await wait(()=>d.querySelector('.book-row')?.textContent.includes('公开来源样本'),'newer public date did not take priority');
+ const latestBrowsing=await api('/api/state');dashboardCheck(()=>{assert.equal(latestBrowsing.views.long.snapshot_id,newerPublic.id);assert.match(d.querySelector('.source-note').textContent,/来源列表位置不代表原榜名次/);assert(!d.querySelector('.source-note').textContent.includes('名次以本次原始榜单为准'));});
+ d.querySelector('[data-section="history"]').click();d.querySelector(`[data-action="open-record"][data-snapshot="${sameDayPublic.id}"]`).click();await wait(()=>d.querySelector('.source-note')?.textContent.includes('2026-11-12T23:00:00+08:00'),'explicit public history was replaced by latest snapshot');
+ const fixedPublic=await api('/api/state');dashboardCheck(()=>assert.equal(fixedPublic.views.long.snapshot_id,sameDayPublic.id));await pause(80);dom.window.close();
+ // Public-source work may finish after the direct branch is already terminal.
+ dom=await open({startHome:true,lateOverview:true});d=dom.window.document;
+ await wait(()=>dom.control.overviewPolls>0,'terminal direct job stopped polling its running public branch');
+ const readsBeforePublic=dom.control.overviewReads;
+ await api('/api/import/snapshot',{snapshot:{...publicScope,data_date:'2026-11-14',books:[{id:'qa-late-public',title:'晚到的公开快照',metrics:[{name:'在读',value:5000}]}]}});
+ dom.control.overviewJob={...dom.control.overviewJob,public_source:{status:'completed',snapshot_count:1,updated_at:'2026-11-09T12:00:10Z'}};
+ await wait(()=>dom.control.overviewReads>readsBeforePublic && d.querySelector('[data-action="overview-refresh"]')?.disabled===false,'late public completion did not refresh the dashboard');
+ const lateData=(await api('/api/overview')).platforms.find(item=>item.platform==='fanqie').dashboard.views['全部'];
+ dashboardCheck(()=>{assert.equal(Number(d.querySelector('[data-kpi="books"] strong').childNodes[0].textContent.replaceAll(',','')),lateData.kpis.books);assert.equal(d.querySelector('[data-action="overview-refresh"]').disabled,false);});
+ await pause(80);dom.window.close();
+ assert.deepEqual(errors,[]);console.log(JSON.stringify({passed:true,checks:72+dashboardChecks,dashboard_checks:dashboardChecks,layout_verified:false,external_platform_requests:0}));
 })().catch(e=>{console.error(e);process.exitCode=1;process.exit(1)});

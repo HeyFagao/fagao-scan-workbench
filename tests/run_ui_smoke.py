@@ -5,10 +5,11 @@ import sys
 import tempfile
 import threading
 from pathlib import Path
+from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from fagao.store import Store
 from fagao.server import WorkbenchServer
-with tempfile.TemporaryDirectory() as directory:
+with tempfile.TemporaryDirectory() as directory, patch('fagao.public_rankings.sync_public_rankings', return_value={'snapshots':[]}):
     store=Store(directory)
     s=store.save_snapshot({'platform':'fanqie','channel':'女频','category':'古言脑洞','board':'新书榜','books':[
       {'id':'qa-a','title':'测试作品甲','rank':2,'summary':'隔离测试样本，非真实榜单'},

@@ -175,7 +175,12 @@ class Store:
             if not isinstance(tags,list): tags=[]
             metrics=b.get('metrics',[])
             if not isinstance(metrics,list): metrics=[]
-            valid.append({'id':bid,'title':text(b['title'],500),'author':text(b.get('author'),500),'status':text(b.get('status'),60) if isinstance(b.get('status'),str) else '','summary':text(b.get('summary')),'rank':rank,'url':safe_url(b.get('url')),'cover_url':safe_cover_url(b.get('cover_url')),'tags':[text(t,100) for t in tags[:30]],'metrics':[{'name':text(m.get('name'),100),'value':text(m.get('value'),100),'unit':text(m.get('unit'),30)} for m in metrics[:10] if isinstance(m,dict)]})
+            valid.append({'id':bid,'title':text(b['title'],500),'author':text(b.get('author'),500),'status':text(b.get('status'),60) if isinstance(b.get('status'),str) else '','summary':text(b.get('summary')),'rank':rank,'url':safe_url(b.get('url')),'cover_url':safe_cover_url(b.get('cover_url')),'tags':[text(t,100) for t in tags[:30]],'metrics':[{'name':text(m.get('name'),100),'value':str(m['value'])[:100] if m.get('value') is not None and not isinstance(m.get('value'),bool) else '','unit':text(m.get('unit'),30)} for m in metrics[:10] if isinstance(m,dict)]})
+            position=b.get('source_position')
+            if isinstance(position,int) and not isinstance(position,bool) and 1<=position<=10000:
+                valid[-1]['source_position']=position
+            if b.get('rank_semantics') in ('source_list_position','original_rank'):
+                valid[-1]['rank_semantics']=b['rank_semantics']
         warnings=data.get('warnings') or []
         if not isinstance(warnings,list): raise AppError('invalid_warnings','warnings 必须是字符串数组。')
         collected=data.get('collected_at')
@@ -190,6 +195,17 @@ class Store:
         if pagination is not None: snap['pagination']=pagination
         snap['complete']=data.get('complete') if isinstance(data.get('complete'),bool) else None
         snap['rank_version']=text(data.get('rank_version'),100) or None
+        snap['source_id']=text(data.get('source_id'),180) or 'direct'
+        snap['source_revision']=text(data.get('source_revision'),180) or None
+        provenance=data.get('provenance')
+        if isinstance(provenance,dict):
+            snap['provenance']={key:text(provenance[key],800) for key in (
+                'source_id','source_revision','source_date','fetched_at','scope','rank_semantics',
+                'metric_unit','metric_precision','source_name') if key in provenance}
+            for key in ('source_url','repo_url'):
+                if key in provenance: snap['provenance'][key]=safe_url(provenance[key])
+            if isinstance(provenance.get('sample_limit'),int) and not isinstance(provenance['sample_limit'],bool):
+                snap['provenance']['sample_limit']=max(0,min(10000,provenance['sample_limit']))
         snap['period']=text(data.get('period'),100) or None
         snap['categories']=[]
         raw_categories=data.get('categories')
@@ -474,7 +490,10 @@ class Store:
     def recover_jobs(self):
         with self.connect() as c:
             for r in c.execute('SELECT id,body FROM jobs').fetchall():
-                j=json.loads(r['body'])
+                j=json.loads(r['body']); changed=False
                 if j.get('status') in ('running','pending','cancelling'):
-                    j.update(status='interrupted',message='上次采集因程序退出而中断，可重试；已有榜单仍保留。',finished_at=now())
-                    c.execute('UPDATE jobs SET body=? WHERE id=?',(dumps(j),r['id']))
+                    j.update(status='interrupted',message='上次采集因程序退出而中断，可重试；已有榜单仍保留。',finished_at=now()); changed=True
+                if j.get('public_source',{}).get('status')=='running':
+                    j['public_source']={**j['public_source'],'status':'interrupted',
+                        'message':'上次公开快照同步因程序退出而中断，已有数据保留。','finished_at':now()}; changed=True
+                if changed: c.execute('UPDATE jobs SET body=? WHERE id=?',(dumps(j),r['id']))
