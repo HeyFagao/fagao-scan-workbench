@@ -14,6 +14,7 @@ import re
 import time
 import urllib.error
 import urllib.request
+from . import network
 
 from .collectors import CollectorError
 from .store import safe_cover_url
@@ -53,7 +54,7 @@ def _fetch_json(path):
     })
     try:
         deadline = time.monotonic() + TIMEOUT_SECONDS
-        opener = urllib.request.build_opener(_NoRedirect())
+        opener = network.build_opener(_NoRedirect())
         with opener.open(request, timeout=TIMEOUT_SECONDS) as response:
             if response.geturl() != url:
                 raise CollectorError("公开数据源地址与请求不一致。", "source_changed")
@@ -81,6 +82,8 @@ def _fetch_json(path):
     except urllib.error.HTTPError as exc:
         state = "not_found" if exc.code == 404 else "network_error"
         raise CollectorError(f"公开榜单返回 HTTP {exc.code}，已有结果仍保留。", state) from exc
+    except network.NetworkError as exc:
+        raise CollectorError(str(exc), "network_error") from exc
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         raise CollectorError("公开榜单暂时无法连接，已有结果仍保留。", "network_error") from exc
     except (UnicodeError, ValueError, RecursionError) as exc:
