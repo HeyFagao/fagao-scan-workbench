@@ -25,6 +25,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from .fanqie_codec import decode_text, has_unmapped_pua
+
 
 ROOT = Path(__file__).resolve().parents[1]
 FANQIE = "https://fanqienovel.com"
@@ -84,6 +86,11 @@ def _plain(value):
 def _clean_text(value):
     value = _plain(value)
     return "" if re.search(r"[\ue000-\uf8ff]", value) else value
+
+
+def _fanqie_text(value):
+    text = _plain(decode_text(value))
+    return "" if has_unmapped_pua(text) else text
 
 
 def _int(value):
@@ -218,7 +225,10 @@ def _fanqie(options, progress, data_dir=None):
     rows = rank_data.get("book_list")
     if not isinstance(rows, list) or not rows:
         raise CollectorError("此榜单暂时没有取得书目，可能需要平台验证。")
-    max_pages, limit = _page_options(options, 10)
+    # The public endpoint accepts batches of 100. The initial SSR page remains
+    # a separate, smaller anchor for this exact category and rank version.
+    max_pages, limit = _page_options(options, 100)
+    initial_page_size = len(rows)
     warnings = []
     rank_version = str(rank_data.get("rankVersion") or "")
     pages_fetched, stop_reason = 1, "max_pages"
@@ -228,20 +238,25 @@ def _fanqie(options, progress, data_dir=None):
     while len(rows) < limit and pages_fetched < max_pages:
         _page_pause(progress, f"正在读取番茄第 {pages_fetched + 1} 页，已取得 {len(rows)} 个榜单条目…")
         parameters = urllib.parse.urlencode({"app_id":2503, "rank_list_type":3,
-            "offset":offset, "limit":10, "category_id":path.rsplit("_",1)[1],
+            "offset":offset, "limit":min(100, limit - len(rows)), "category_id":path.rsplit("_",1)[1],
             "rank_version":rank_version, "gender":c, "rankMold":t})
         try:
             payload = json.loads(_fetch(FANQIE + "/api/rank/category/list?" + parameters))
             pages_fetched += 1
             response_version = str(payload.get("data", {}).get("rankVersion") or "")
-            if rank_version and response_version != rank_version:
-                warnings.append("榜单版本在分页时发生变化，已停止合并，避免混用两个时点。")
-                stop_reason = "version_changed"
-                break
             more = payload.get("data", {}).get("book_list")
             if payload.get("code") != 0 or not isinstance(more, list):
                 warnings.append("后续榜单页面未返回有效数据，仅保留已取得的原榜名次。")
                 stop_reason = "invalid_response"
+                break
+            # The official empty response omits rankVersion entirely. No books
+            # are merged in this case, so its omission is not a version change.
+            if not more and not response_version:
+                stop_reason = "empty_page"
+                break
+            if rank_version and response_version != rank_version:
+                warnings.append("榜单版本在分页时发生变化，已停止合并，避免混用两个时点。")
+                stop_reason = "version_changed"
                 break
             if not more:
                 stop_reason = "empty_page"
@@ -272,22 +287,39 @@ def _fanqie(options, progress, data_dir=None):
         rank = _int(row.get("currentPos"))
         if not re.fullmatch(r"\d{5,30}", book_id) or not rank:
             return None
-        # Page fields are tied to this exact id, never to recommendation objects.
         source_update = row.get("lastChapterUpdateTime") or row.get("last_chapter_update_time") or ""
         cached = _cache_read(data_dir, "fanqie", book_id, source_update)
-        page = cached.get("page", {}) if cached else _state(_fetch(f"{FANQIE}/page/{book_id}")).get("page", {})
+        fields = {key: decode_text(row.get(key)) for key in ("bookName", "author", "abstract")}
+        # Decode the public list's actual fields directly. A new/unmapped glyph
+        # or missing field falls back to the existing ID-checked detail path.
+        from_rank = (all(key in row for key in fields) and bool(_plain(fields["bookName"]))
+                     and not any(has_unmapped_pua(value) for value in fields.values()))
+        if from_rank:
+            page = {**row, **fields}
+            if cached and not page.get("categoryV2"):
+                page["categoryV2"] = cached.get("page", {}).get("categoryV2")
+            metadata_source = "rank"
+        else:
+            # Page fields are tied to this exact id, never recommendation objects.
+            page = cached.get("page", {}) if cached else _state(_fetch(f"{FANQIE}/page/{book_id}")).get("page", {})
+            metadata_source = "cache" if cached else "detail"
         if str(page.get("bookId")) != book_id:
             raise CollectorError("详情页作品身份不匹配。")
-        title = _clean_text(page.get("bookName"))
+        if any(has_unmapped_pua(decode_text(page.get(key))) for key in ("bookName", "author", "abstract")):
+            raise CollectorError("作品资料包含当前字表尚未覆盖的字符。")
+        title = _fanqie_text(page.get("bookName"))
         if not title:
             raise CollectorError("详情页书名不可读。")
         try:
             tags_data = page.get("categoryV2") or "[]"
             if isinstance(tags_data, str):
                 tags_data = json.loads(tags_data)
-            tags = [_plain(item.get("Name")) for item in tags_data if isinstance(item, dict) and item.get("Name")]
+            tags = [_fanqie_text(item.get("Name")) for item in tags_data if isinstance(item, dict) and item.get("Name")]
+            tags = [tag for tag in tags if tag]
         except (ValueError, TypeError):
             tags = []
+        if not tags:
+            tags = [category]
         metrics = []
         reads = _int(row.get("read_count"))
         words = _int(row.get("wordNumber") if row.get("wordNumber") is not None else page.get("wordNumber"))
@@ -295,11 +327,12 @@ def _fanqie(options, progress, data_dir=None):
             metrics.append({"name": "在读", "value": reads, "unit": "人"})
         if words is not None:
             metrics.append({"name": "字数", "value": words, "unit": "字"})
-        result = {"id": book_id, "title": title, "author": _clean_text(page.get("author")),
-                "summary": _clean_text(page.get("abstract")), "rank": rank,
+        result = {"id": book_id, "title": title, "author": _fanqie_text(page.get("author")),
+                "summary": _fanqie_text(page.get("abstract")), "rank": rank,
                 "url": f"{FANQIE}/page/{book_id}", "tags": tags, "metrics": metrics,
                 "cover_url": _cover_url(row.get("thumbUri") or page.get("thumbUri")),
-                "status": {"1": "连载中", "0": "已完结"}.get(str(page.get("creationStatus")), "")}
+                "status": {"1": "连载中", "0": "已完结"}.get(str(page.get("creationStatus")), ""),
+                "_metadata_source": metadata_source}
         if not cached:
             # Cache metadata only, excluding chapter catalogues, cookies and text.
             keep = {key: page.get(key) for key in ("bookId", "bookName", "author", "abstract", "categoryV2", "wordNumber", "thumbUri", "creationStatus")}
@@ -311,7 +344,7 @@ def _fanqie(options, progress, data_dir=None):
     done = 0
     with ThreadPoolExecutor(max_workers=4) as pool:
         for start in range(0, len(rows), 4):
-            _notify(progress, f"正在读取简介，已处理 {done}/{len(rows)} 本…")
+            _notify(progress, f"正在整理书名和简介，已处理 {done}/{len(rows)} 本…")
             futures = {pool.submit(detail, row): row for row in rows[start:start + 4]}
             for future in as_completed(futures):
                 row = futures[future]
@@ -324,7 +357,7 @@ def _fanqie(options, progress, data_dir=None):
                 except Exception:
                     failed_rows.append(row)
                 done += 1
-                _notify(progress, f"正在读取简介，已处理 {done}/{len(rows)} 本…")
+                _notify(progress, f"正在整理书名和简介，已处理 {done}/{len(rows)} 本…")
     # One bounded, sequential retry only for the failed identities. Keep this exact
     # rank snapshot; do not re-scan or substitute a fresh book at the same rank.
     for retry_index, row in enumerate(failed_rows, 1):
@@ -347,24 +380,28 @@ def _fanqie(options, progress, data_dir=None):
                 continue
             # Preserve the real source identity and cover when detail requests
             # fail. The title is explicitly unavailable, never a fabricated book.
-            title = _clean_text(row.get("bookName")) or f"书名暂未取得（原榜第 {rank} 名）"
+            title = _fanqie_text(row.get("bookName")) or f"书名暂未取得（原榜第 {rank} 名）"
             metrics = []
             for name, value, unit in (("在读", row.get("read_count"), "人"), ("字数", row.get("wordNumber"), "字")):
                 number = _int(value)
                 if number is not None:
                     metrics.append({"name": name, "value": number, "unit": unit})
-            books.append({"id": book_id, "title": title, "author": _clean_text(row.get("author")),
-                          "summary": _clean_text(row.get("abstract")), "rank": rank,
+            books.append({"id": book_id, "title": title, "author": _fanqie_text(row.get("author")),
+                          "summary": _fanqie_text(row.get("abstract")), "rank": rank,
                           "url": f"{FANQIE}/page/{book_id}", "cover_url": _cover_url(row.get("thumbUri")),
                           "tags": [], "metrics": metrics, "status": "详情暂未取得", "metadata_status": "missing"})
         books.sort(key=lambda book: book["rank"])
     if stop_reason not in ("empty_page", "requested_limit"):
         warnings.append(f"本次读取 {pages_fetched} 页、{available} 个源条目，停止原因：{stop_reason}。")
+    metadata_statistics = {"rank": 0, "cache": 0, "detail": 0, "missing": 0}
+    for book in books:
+        metadata_statistics[book.pop("_metadata_source", "missing")] += 1
     result = _result("fanqie", "long", channel, category, board, source, books,
                    warnings=warnings, requested_count=limit, available_count=available,
                    complete=not failures and stop_reason in ("empty_page", "requested_limit"), categories=list(categories), rank_version=rank_version,
+                   metadata_statistics=metadata_statistics,
                    pagination={"pages_fetched": pages_fetched, "max_pages": max_pages, "stop_reason": stop_reason,
-                               "source_total": rank_data.get("total_num"), "page_size": 10})
+                               "source_total": rank_data.get("total_num"), "page_size": 100, "initial_page_size": initial_page_size})
     if rank_version.isdigit() and len(rank_version) == 10:
         result["data_date"] = datetime.fromtimestamp(int(rank_version), timezone.utc).isoformat()
     return result
@@ -797,56 +834,10 @@ def collect(platform, options, data_dir, progress=None):
     raise CollectorError("暂不支持这个平台。")
 
 
-def fetch_text(platform, book_id, data_dir, max_chapters=3):
-    """Only normal publicly readable chapters; never report encoded data as text.
-
-    No font substitution, private decryption service or paywall workarounds.
-    Always reports the actual partial scope, including failure after earlier chapters.
-    """
+def fetch_text(platform, book_id, data_dir, max_chapters=3, start_chapter=1, progress=None):
+    """Read a fixed range of public chapters through the shared content adapter."""
     if platform != "fanqie":
         raise CollectorError("此平台正文自动获取尚未接入，请导入可用原文。")
-    book_id = str(book_id)
-    if not re.fullmatch(r"\d{5,30}", book_id):
-        raise CollectorError("无效的番茄作品 ID。")
-    max_chapters = max(1, min(20, int(max_chapters)))
-    source = f"{FANQIE}/page/{book_id}"
-    page = _state(_fetch(source)).get("page", {})
-    if str(page.get("bookId")) != book_id:
-        raise CollectorError("作品详情身份不匹配，未取得正文。")
-    catalog = [chapter for volume in page.get("chapterListWithVolume", []) if isinstance(volume, list)
-               for chapter in volume if isinstance(chapter, dict)]
-    chapters, texts, missing = [], [], []
-    for item in catalog[:max_chapters]:
-        item_id = str(item.get("itemId") or "")
-        title = _plain(item.get("title"))
-        if item.get("needPay") or item.get("isChapterLock") or item.get("isPaidPublication") or item.get("isPaidStory"):
-            missing.append({"chapter": title, "reason": "需要相应正文权限"})
-            break
-        if not re.fullmatch(r"\d{5,30}", item_id):
-            missing.append({"chapter": title, "reason": "章节 ID 缺失"})
-            break
-        url = f"{FANQIE}/reader/{item_id}"
-        try:
-            chapter = _state(_fetch(url)).get("reader", {}).get("chapterData", {})
-            if str(chapter.get("bookId")) != book_id or str(chapter.get("itemId")) != item_id:
-                raise CollectorError("章节身份不匹配")
-            if chapter.get("needPay") or chapter.get("isChapterLock"):
-                raise CollectorError("章节需要相应正文权限")
-            raw = str(chapter.get("content") or "")
-            if re.search(r"[\ue000-\uf8ff]", raw):
-                raise CollectorError("章节正文采用字体编码，当前未取得可靠可读文本；请导入原文")
-            text = _plain(re.sub(r"<[^>]+>", "", re.sub(r"</p\s*>", "\n\n", raw)))
-            if len(text) < 100 or re.search(r"验证码|访问过于频繁|登录后阅读|购买本章", text[:500]):
-                raise CollectorError("章节正文为空、不完整或返回验证页面")
-            title = _clean_text(chapter.get("title")) or title
-            chapters.append({"id": item_id, "title": title, "url": url, "characters": len(text)})
-            texts.append(title + "\n\n" + text)
-        except CollectorError as e:
-            missing.append({"chapter": title, "reason": str(e)})
-            break
-    if not texts:
-        reason = missing[0]["reason"] if missing else "公开目录未返回可读取章节，请导入原文"
-        raise CollectorError(reason)
-    return {"platform": platform, "book_id": book_id, "text": "\n\n".join(texts),
-            "scope": f"公开阅读页前 {len(chapters)} 章", "complete": False, "source": source,
-            "chapters": chapters, "missing": missing, "catalog_chapters": len(catalog)}
+    from .fanqie_content import fetch_book_text
+    return fetch_book_text(book_id, data_dir, max_chapters=max_chapters,
+                           start_chapter=start_chapter, progress=progress)
