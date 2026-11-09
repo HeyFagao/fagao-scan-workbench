@@ -1,6 +1,7 @@
 """Transactional local records. Snapshots and analysis targets are immutable."""
 from __future__ import annotations
 import hashlib
+import ipaddress
 import json
 import os
 import re
@@ -14,7 +15,7 @@ from urllib.parse import urlparse
 PLATFORMS = [
     {'id':'fanqie','name':'番茄小说','mode':'long','status':'available','message':'公开榜单；以实际采集结果为准'},
     {'id':'qidian','name':'起点中文网','mode':'long','status':'available','message':'公开移动榜单；以实际采集结果为准'},
-    {'id':'ciweimao','name':'刺猬猫','mode':'long','status':'available','message':'月票月榜前 10 名；其他榜型待验证'},
+    {'id':'ciweimao','name':'刺猬猫','mode':'long','status':'available','message':'公开榜单分页采集；实际覆盖以采集结果为准'},
     {'id':'heiyan','name':'黑岩故事会','mode':'short','status':'login_required','message':'登录管理后台并验证书库权限'},
     {'id':'fanqie_short','name':'番茄短故事','mode':'short','status':'unavailable','message':'热门故事入口待实机验证；可导入来源明确的书目'},
 ]
@@ -40,6 +41,46 @@ def dumps(value):
 def safe_url(value):
     value = str(value or '').strip()
     return value if urlparse(value).scheme in ('http','https') and urlparse(value).hostname else ''
+
+def safe_cover_url(value):
+    """Accept public HTTP(S) image locations without fetching or proxying them."""
+    if not isinstance(value,str) or len(value)>4096: return ''
+    value=value.strip()
+    if not value or re.search(r'[\s\\\x00-\x1f\x7f]',value): return ''
+    try:
+        parsed=urlparse(value)
+        host=(parsed.hostname or '').rstrip('.').lower()
+        if parsed.scheme not in ('http','https') or not host or parsed.username is not None or parsed.password is not None: return ''
+        if parsed.port is not None and not 1<=parsed.port<=65535: return ''
+        if '%' in host or host=='localhost' or host.endswith(('.localhost','.local','.localdomain','.internal','.lan','.home')): return ''
+        try:
+            address=ipaddress.ip_address(host)
+        except ValueError:
+            # Single-label, numeric, hexadecimal and octal-style local host aliases
+            # are not public CDN names. Do not resolve DNS from this process.
+            if '.' not in host or re.fullmatch(r'[0-9.]+',host) or re.fullmatch(r'(?:[0-9]+|0x[0-9a-f]+)',host.rsplit('.',1)[-1]): return ''
+            ascii_host=host.encode('idna').decode('ascii')
+            if any(not part or len(part)>63 or not re.fullmatch(r'[a-z0-9](?:[a-z0-9-]*[a-z0-9])?',part) for part in ascii_host.split('.')): return ''
+        else:
+            if not address.is_global: return ''
+    except (ValueError,UnicodeError): return ''
+    return value
+
+
+def clean_pagination(value):
+    if value is None: return None
+    if not isinstance(value,dict): raise AppError('invalid_pagination','分页采集信息必须是对象。')
+    result={}
+    for key in ('pages_fetched','max_pages','source_total'):
+        item=value.get(key)
+        if item is None:
+            if key=='source_total': result[key]=None
+            continue
+        if isinstance(item,bool) or not isinstance(item,int) or item<0:
+            raise AppError('invalid_pagination','分页数量必须是非负整数。')
+        result[key]=item
+    if 'stop_reason' in value: result['stop_reason']=str(value.get('stop_reason') or '')[:300]
+    return result
 
 def text(value, maximum=20000):
     return str(value or '')[:maximum]
@@ -129,7 +170,7 @@ class Store:
             if not isinstance(tags,list): tags=[]
             metrics=b.get('metrics',[])
             if not isinstance(metrics,list): metrics=[]
-            valid.append({'id':bid,'title':text(b['title'],500),'author':text(b.get('author'),500),'summary':text(b.get('summary')),'rank':rank,'url':safe_url(b.get('url')),'tags':[text(t,100) for t in tags[:30]],'metrics':[{'name':text(m.get('name'),100),'value':text(m.get('value'),100),'unit':text(m.get('unit'),30)} for m in metrics[:10] if isinstance(m,dict)]})
+            valid.append({'id':bid,'title':text(b['title'],500),'author':text(b.get('author'),500),'status':text(b.get('status'),60) if isinstance(b.get('status'),str) else '','summary':text(b.get('summary')),'rank':rank,'url':safe_url(b.get('url')),'cover_url':safe_cover_url(b.get('cover_url')),'tags':[text(t,100) for t in tags[:30]],'metrics':[{'name':text(m.get('name'),100),'value':text(m.get('value'),100),'unit':text(m.get('unit'),30)} for m in metrics[:10] if isinstance(m,dict)]})
         warnings=data.get('warnings') or []
         if not isinstance(warnings,list): raise AppError('invalid_warnings','warnings 必须是字符串数组。')
         collected=data.get('collected_at')
@@ -140,10 +181,18 @@ class Store:
         snap={'id':uuid.uuid4().hex,'platform':platform,'mode':p['mode'],'channel':text(data.get('channel'),100),'category':text(data.get('category'),100),'board':text(data.get('board') or ('书库' if platform=='heiyan' else '未注明榜型'),100),'source_url':safe_url(data.get('source_url')),'data_date':text(data.get('data_date'),100) or None,'collected_at':data.get('collected_at') or timestamp,'created_at':timestamp,'imported':imported,'books':valid,'books_count':len(valid),'warnings':[text(x,1000) for x in warnings[:20]]}
         for key in ('requested_count','available_count','source_total'):
             if key in data and isinstance(data[key],int) and not isinstance(data[key],bool) and data[key]>=0: snap[key]=data[key]
+        pagination=clean_pagination(data.get('pagination'))
+        if pagination is not None: snap['pagination']=pagination
         snap['complete']=data.get('complete') if isinstance(data.get('complete'),bool) else None
         snap['rank_version']=text(data.get('rank_version'),100) or None
         snap['period']=text(data.get('period'),100) or None
-        snap['categories']=[text(v,100) for v in (data.get('categories') or [])[:100]] if isinstance(data.get('categories',[]),list) else []
+        snap['categories']=[]
+        raw_categories=data.get('categories')
+        for value in raw_categories if isinstance(raw_categories,list) else []:
+            if not isinstance(value,str): continue
+            value=value.strip()[:80]
+            if value and value not in snap['categories']: snap['categories'].append(value)
+            if len(snap['categories'])>=100: break
         with self.connect() as c:
             c.execute('INSERT INTO snapshots VALUES (?,?,?)',(snap['id'],timestamp,dumps(snap)))
         return snap
@@ -219,7 +268,7 @@ class Store:
         for row in c.execute('SELECT * FROM history ORDER BY id DESC LIMIT 2000'):
             s=lookup.get(row['snapshot_id']); b=next((b for b in s['books'] if b['id']==row['book_id']),{}) if s else {}
             history.append({**dict(row),'title':b.get('title',''),'platform':s['platform'] if s else '', 'mode':s['mode'] if s else '', 'book':b})
-        return {'config':self._kv(c,'config',{}),'platforms':PLATFORMS,'snapshots':snapshots if full else [{k:v for k,v in s.items() if k!='books'} for s in snapshots],'views':views,'active_mode':self._kv(c,'active_mode','long'),'favorites':fav,'history':history,'reports':[json.loads(r[0]) for r in c.execute('SELECT body FROM reports ORDER BY created_at DESC')],'jobs':[json.loads(r[0]) for r in c.execute('SELECT body FROM jobs ORDER BY created_at DESC LIMIT 30')],'auth':self._kv(c,'auth',{}),'analysis_target':self._kv(c,'analysis_target')}
+        return {'config':self._kv(c,'config',{}),'platforms':PLATFORMS,'snapshots':snapshots if full else [{k:v for k,v in s.items() if k not in ('books','categories')} for s in snapshots],'views':views,'active_mode':self._kv(c,'active_mode','long'),'favorites':fav,'history':history,'reports':[json.loads(r[0]) for r in c.execute('SELECT body FROM reports ORDER BY created_at DESC')],'jobs':[json.loads(r[0]) for r in c.execute('SELECT body FROM jobs ORDER BY created_at DESC LIMIT 30')],'auth':self._kv(c,'auth',{}),'analysis_target':self._kv(c,'analysis_target')}
 
     def state(self,full=False):
         with self.connect() as c: return self._state(c,full)
@@ -312,10 +361,16 @@ class Store:
             if not r: raise AppError('job_missing','找不到采集任务。',404)
             return json.loads(r[0])
 
+    def scope_jobs(self,scope_key):
+        """Read persisted attempts for one exact collection scope, newest first."""
+        with self.connect() as c:
+            jobs=[json.loads(r[0]) for r in c.execute('SELECT body FROM jobs ORDER BY created_at DESC')]
+        return [j for j in jobs if j.get('scope_key')==scope_key]
+
     def recover_jobs(self):
         with self.connect() as c:
             for r in c.execute('SELECT id,body FROM jobs').fetchall():
                 j=json.loads(r['body'])
                 if j.get('status') in ('running','pending'):
-                    j.update(status='interrupted',message='上次采集因程序退出而中断，可重试；已有榜单仍保留。')
+                    j.update(status='interrupted',message='上次采集因程序退出而中断，可重试；已有榜单仍保留。',finished_at=now())
                     c.execute('UPDATE jobs SET body=? WHERE id=?',(dumps(j),r['id']))

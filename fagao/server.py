@@ -1,10 +1,13 @@
 """Loopback-only workbench API, no model API or account credentials required."""
 from __future__ import annotations
 import argparse
+import hashlib
+import math
 import json
 import mimetypes
 import threading
 import uuid
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -14,19 +17,89 @@ from .store import AppError, Store, now
 WEB = Path(__file__).resolve().parent.parent / 'web'
 MAX_BODY = 30 * 1024 * 1024
 
+AUTO_FRESH_SECONDS = 15 * 60
+AUTO_FAILURE_COOLDOWN_SECONDS = 5 * 60
+
+
+def collection_scope(platform, options):
+    """Use effective collector defaults so equivalent requests share one job."""
+    if not isinstance(options,dict): raise AppError('invalid_options','采集条件不正确。')
+    options=dict(options)
+    modes={'fanqie':'long','qidian':'long','ciweimao':'long','heiyan':'short','fanqie_short':'short'}
+    if not isinstance(platform,str) or platform not in modes: raise AppError('invalid_platform','平台不正确。')
+    mode=modes[platform]
+    if options.get('mode') not in (None,mode): raise AppError('invalid_mode','作品类型与采集平台不一致。')
+    options['mode']=mode
+    for key in ('channel','category','board','period'):
+        if options.get(key) is not None and (not isinstance(options[key],str) or len(options[key])>200): raise AppError('invalid_options','频道、分类、榜型和周期必须是简短文字。')
+    channel=options.get('channel') or {'fanqie':'女频','qidian':'男频','ciweimao':'综合','heiyan':'全部','fanqie_short':'全部'}[platform]
+    options['channel']={'female':'女频','male':'男频','all':'全部'}.get(channel,channel)
+    if platform=='fanqie': options['channel']={'0':'女频','1':'男频'}.get(options['channel'],options['channel'])
+    if platform=='ciweimao' and options['channel']=='全部': options['channel']='综合'
+    default_category=('古言脑洞' if options['channel']=='女频' else '玄幻脑洞') if platform=='fanqie' else ('书库' if platform=='heiyan' else '全部')
+    options['category']=options.get('category') or default_category
+    board=options.get('board') or {'fanqie':'新书榜','qidian':'月票榜','ciweimao':'月票榜','heiyan':'书库','fanqie_short':'热门故事'}[platform]
+    options['board']={'new':'新书榜','read':'阅读榜','reading':'阅读榜','monthly':'月票榜','yuepiao':'月票榜','library':'书库','sales':'畅销榜'}.get(board,board)
+    for key in ('channel','category','board'):
+        if not isinstance(options[key],str) or len(options[key])>200: raise AppError('invalid_options','频道、分类和榜型必须是简短文字。')
+    # An omitted/null limit means let the source/end-of-pages determine coverage.
+    if options.get('limit') is None: options.pop('limit',None)
+    options['max_pages']=options.get('max_pages') if options.get('max_pages') is not None else 100
+    if options.get('detail_budget') is None: options.pop('detail_budget',None)
+    if platform=='ciweimao' and options['board']=='月票榜': options['period']=options.get('period') or '月榜'
+    for key in ('limit','max_pages','detail_budget'):
+        if key in options:
+            value=options[key]
+            if isinstance(value,bool) or not isinstance(value,int) or value<1 or value>10000: raise AppError('invalid_options','采集数量和页数应为 1 到 10000 的整数。')
+    try: serialized=json.dumps({'platform':platform,'options':options},ensure_ascii=False,sort_keys=True,separators=(',',':'),allow_nan=False)
+    except (TypeError,ValueError): raise AppError('invalid_options','采集条件无法保存。')
+    if len(serialized)>16000: raise AppError('invalid_options','采集条件过长。')
+    return hashlib.sha256(serialized.encode()).hexdigest(),options
+
+
+def _age_seconds(timestamp):
+    try:
+        then=datetime.fromisoformat(str(timestamp).replace('Z','+00:00'))
+        if then.tzinfo is None: then=then.replace(tzinfo=timezone.utc)
+        return max(0,(datetime.fromisoformat(now())-then).total_seconds())
+    except (ValueError,TypeError): return None
+
+
 class JobManager:
     def __init__(self,store):
         self.store=store; self.lock=threading.RLock(); self.active={}
 
-    def start(self,platform,options):
-        if platform not in {p['id'] for p in self.store.state()['platforms']}: raise AppError('invalid_platform','平台不正确。')
-        if not isinstance(options,dict): raise AppError('invalid_options','采集条件不正确。')
+    def start(self,platform,options,automatic=False):
+        if not isinstance(automatic,bool): raise AppError('invalid_automatic','automatic 应为布尔值。')
+        key,options=collection_scope(platform,options)
         with self.lock:
-            if platform in self.active: return self.active[platform]
-            job={'id':uuid.uuid4().hex,'platform':platform,'status':'pending','message':'正在准备采集','created_at':now(),'options':options}
-            self.store.save_job(job); self.active[platform]=job['id']
+            active_id=self.active.get(key)
+            if active_id:
+                job=self.store.job(active_id)
+                return {'status':'busy','job_id':active_id,'job':job}
+            if automatic:
+                auth=self.store.state().get('auth',{}).get('heiyan',{}) if platform=='heiyan' else {}
+                if auth.get('state') in ('logged_out','expired','forbidden'):
+                    return {'status':'cooldown','retry_after_seconds':AUTO_FAILURE_COOLDOWN_SECONDS,'requires_login':True,'auth':auth}
+                attempts=self.store.scope_jobs(key)
+                last=attempts[0] if attempts else None
+                if last and (last.get('status') in ('failed','interrupted') or last.get('auth_state') in ('network_error','unavailable')):
+                    age=_age_seconds(last.get('finished_at') or last.get('updated_at') or last.get('created_at'))
+                    if age is not None and age<AUTO_FAILURE_COOLDOWN_SECONDS:
+                        return {'status':'cooldown','retry_after_seconds':max(1,math.ceil(AUTO_FAILURE_COOLDOWN_SECONDS-age)),'job':last}
+                # A saved partial batch is usable, but an expired session must not
+                # make it look freshly complete after the user reconnects.
+                completed=None if last and last.get('auth_state') in ('logged_out','expired','forbidden','network_error','unavailable') else next((j for j in attempts if j.get('status')=='completed' and j.get('snapshot_id')),None)
+                if completed:
+                    age=_age_seconds(completed.get('finished_at') or completed.get('created_at'))
+                    if age is not None and age<AUTO_FRESH_SECONDS:
+                        try: self.store.snapshot(completed['snapshot_id'])
+                        except AppError: pass
+                        else: return {'status':'fresh','snapshot_id':completed['snapshot_id'],'retry_after_seconds':max(1,math.ceil(AUTO_FRESH_SECONDS-age))}
+            job={'id':uuid.uuid4().hex,'platform':platform,'status':'pending','message':'正在准备采集','created_at':now(),'options':options,'scope_key':key,'automatic':automatic}
+            self.store.save_job(job); self.active[key]=job['id']
             threading.Thread(target=self._run,args=(job,),daemon=True).start()
-            return job['id']
+            return {'status':'started','job_id':job['id'],'job':dict(job)}
 
     def _run(self,job):
         def progress(message,*args,**kwargs):
@@ -42,6 +115,13 @@ class JobManager:
                 if self.store.job(job['id'])['status']=='cancelled': return
                 snapshot=self.store.save_snapshot(result)
                 job.update(status='completed',message=f"已保存 {snapshot['books_count']} 本作品",snapshot_id=snapshot['id'],finished_at=now())
+                result_auth=result.get('auth_state')
+                if job['platform']=='heiyan' and result_auth in ('connected','logged_out','expired','forbidden','network_error','unavailable'):
+                    auth_message=str(result.get('auth_message') or ('书库访问已确认。' if result_auth=='connected' else '本次只保存部分结果，请重新检查黑岩连接。'))[:1200]
+                    self.store.auth_state('heiyan',{'state':result_auth,'message':auth_message})
+                    job.update(auth_state=result_auth,auth_message=auth_message)
+                    if result_auth!='connected':
+                        job.update(partial=True,message=f"已保存 {snapshot['books_count']} 本有效作品；{auth_message}")
                 self.store.save_job(job)
         except Exception as exc:
             with self.lock:
@@ -53,13 +133,14 @@ class JobManager:
                     job.update(status='failed',message=message[:1200] or '采集失败，请重试。',error_code=getattr(exc,'code','collection_failed'),finished_at=now())
                     self.store.save_job(job)
         finally:
-            with self.lock: self.active.pop(job['platform'],None)
+            with self.lock:
+                if self.active.get(job['scope_key'])==job['id']: self.active.pop(job['scope_key'],None)
 
     def cancel(self,jid):
         with self.lock:
             j=self.store.job(jid)
             if j['status'] in ('pending','running'):
-                j.update(status='cancelled',message='已取消本次采集，已有结果保留。'); self.store.save_job(j)
+                j.update(status='cancelled',message='已取消本次采集，已有结果保留。',finished_at=now()); self.store.save_job(j)
             return j
 
 class WorkbenchServer(ThreadingHTTPServer):
@@ -82,7 +163,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Content-Type',kind); self.send_header('Content-Length',str(len(payload)))
         self.send_header('Cache-Control','no-store'); self.send_header('X-Content-Type-Options','nosniff')
         self.send_header('Referrer-Policy','no-referrer'); self.send_header('X-Frame-Options','DENY')
-        self.send_header('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+        self.send_header('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' https: http:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
         self.end_headers()
         try: self.wfile.write(payload)
         except (BrokenPipeError,ConnectionResetError): pass
@@ -144,7 +225,7 @@ class Handler(BaseHTTPRequestHandler):
         store=self.server.store
         if path=='/api/view': return store.set_view(data)
         if path=='/api/favorite': return store.toggle_favorite(data.get('snapshot_id'),data.get('book_id'),bool(data.get('enabled')))
-        if path=='/api/collect': return {'job_id':self.server.jobs.start(data.get('platform'),data.get('options',{}))}
+        if path=='/api/collect': return self.server.jobs.start(data.get('platform'),data.get('options',{}),data.get('automatic',False))
         if path=='/api/jobs/cancel': return self.server.jobs.cancel(data.get('job_id'))
         if path=='/api/auth':
             from .collectors import auth
