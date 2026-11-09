@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+.venv/
+node_modules/
+.data/
+*.sqlite3*
+*.log
+.env
+.env.*
+browser-profiles/
+runtime.json
+current.json
+.fagao-install.json
+.fagao-release.json
