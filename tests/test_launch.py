@@ -41,7 +41,7 @@ class PreflightTests(unittest.TestCase):
             with patch.object(launch, "ROOT", root):
                 with self.assertRaisesRegex(RuntimeError, "安装文件缺失"):
                     launch.preflight()
-                for name in ("fagao/server.py", "fagao/store.py", "fagao/overview.py", "fagao/dashboard.py", "fagao/public_rankings.py", "web/index.html", "web/app.js", "web/styles.css"):
+                for name in ("fagao/server.py", "fagao/store.py", "fagao/overview.py", "fagao/dashboard.py", "fagao/public_rankings.py", "fagao/overseas.py", "fagao/overseas_readers.py", "web/index.html", "web/app.js", "web/styles.css"):
                     path = root / name
                     path.parent.mkdir(parents=True, exist_ok=True)
                     path.write_text("fixture", encoding="utf-8")

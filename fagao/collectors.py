@@ -913,6 +913,9 @@ def collect(platform, options, data_dir, progress=None):
     messages still call ``progress(message)``. One-argument callbacks remain
     compatible. The final return is the fully enriched result, not the preview.
     """
+    from .overseas import OVERSEAS_PLATFORMS, collect_overseas
+    if platform in {item['id'] for item in OVERSEAS_PLATFORMS}:
+        return collect_overseas(platform, options, data_dir, progress)
     if platform == "fanqie":
         return _fanqie(options, progress, data_dir)
     if platform == "qidian":

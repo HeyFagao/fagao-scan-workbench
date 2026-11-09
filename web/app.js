@@ -3,7 +3,9 @@
   const $ = (selector) => document.querySelector(selector);
   const escape = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const safeURL = (value) => { try { const url = new URL(value); return ['https:', 'http:'].includes(url.protocol) ? url.href : ''; } catch { return ''; } };
-  const modes = {long:'长篇',short:'短篇'};
+  const modes = {long:'长篇',short:'短篇',overseas:'海外网文'};
+  const firstPlatform = {long:'fanqie',short:'heiyan',overseas:'goodnovel'};
+  let domesticMode='long';
   const fallbackPlatforms = [
     {id:'fanqie',name:'番茄小说',mode:'long'}, {id:'qidian',name:'起点中文网',mode:'long'},
     {id:'ciweimao',name:'刺猬猫',mode:'long'}, {id:'heiyan',name:'黑岩故事会',mode:'short'},
@@ -36,23 +38,26 @@
       localStorage.setItem('fagao-collection-options',JSON.stringify(savedOptions));
     }
   } catch { savedOptions = {}; }
-  const mode = () => state?.active_mode === 'short' ? 'short' : 'long';
+  const mode = () => Object.hasOwn(modes,state?.active_mode) ? state.active_mode : 'long';
   const view = () => state?.views?.[mode()] || {};
-  const platformID = () => view().platform || (mode() === 'long' ? 'fanqie' : 'heiyan');
+  const platformID = () => view().platform || firstPlatform[mode()];
   const platforms = () => state?.platforms?.length ? state.platforms : fallbackPlatforms;
   const platform = () => platforms().find((p) => p.id === platformID()) || fallbackPlatforms.find((p) => p.id === platformID()) || fallbackPlatforms[0];
+  const platformMode = (id) => platforms().find(p=>p.id===id)?.mode || 'long';
+  const defaultsFor = (id) => ({limit:10000,max_pages:100,...defaults[id],...platforms().find(p=>p.id===id)?.default_options});
+  const channelsFor = (id) => platforms().find(p=>p.id===id)?.channels || (id==='fanqie'?['女频','男频']:[defaultsFor(id).channel || '全部']);
   const nameOf = (id) => platforms().find((p) => p.id === id)?.name || fallbackPlatforms.find((p) => p.id === id)?.name || id;
   const favorite = (book, snap = snapshot) => (state?.favorites || []).some((f) => f.book_id === book.id && f.platform === snap?.platform);
   const date = (value) => { if (!value) return '未提供'; const d = new Date(value); return Number.isNaN(d.getTime()) ? String(value) : d.toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}); };
   const snapshotDate = (snap) => snap?.collected_at || snap?.created_at;
   const currentJob = () => (state?.jobs || []).find((j) => !['text','overview'].includes(j.kind) && j.platform === platformID() && (!j.options || scopeKey(j.platform,j.options)===scopeKey()) && ['queued','running','pending'].includes(j.status));
   function optionsFor(id=platformID()) {
-    const stored=state?.snapshots?.find(item=>item.id===(state.views?.[mode()]?.snapshot_id) && item.platform===id);
-    const previous=stored ? {channel:stored.channel,category:stored.category,board:stored.board} : {};
-    const preferences=stored && historyViews[mode()]===stored.id ? {} : savedOptions[id];
-    return {...defaults[id],...previous,...preferences,mode:id==='heiyan'||id==='fanqie_short'?'short':'long'};
+    const targetMode=platformMode(id), stored=state?.snapshots?.find(item=>item.id===state.views?.[targetMode]?.snapshot_id && item.platform===id);
+    const previous=stored ? {channel:stored.channel,category:stored.category,board:stored.board,...(stored.period?{period:stored.period}:{})} : {};
+    const preferences=stored && historyViews[targetMode]===stored.id ? {} : savedOptions[id];
+    return {...defaultsFor(id),...previous,...preferences,mode:targetMode};
   }
-  function scopeKey(id=platformID(),options=optionsFor(id)) { return [id,options.mode || (id==='heiyan'||id==='fanqie_short'?'short':'long'),options.channel,options.category,options.board,options.period || (id==='ciweimao'?'月榜':''),options.limit ?? '',options.max_pages ?? 100,options.detail_budget ?? ''].join('|'); }
+  function scopeKey(id=platformID(),options=optionsFor(id)) { return [id,options.mode || platformMode(id),options.channel,options.category,options.board,options.period || (id==='ciweimao'?'月榜':''),options.limit ?? '',options.max_pages ?? 100,options.detail_budget ?? ''].join('|'); }
   function sameScope(item,id=platformID(),options=optionsFor(id)) { return item?.platform===id && ['channel','category','board'].every(key=>String(item[key] || '')===String(options[key] || '')); }
   function bestSnapshotForScope(id=platformID(),options=optionsFor(id)){
     // Match overview._latest_current: choose a precise version per source,
@@ -83,8 +88,8 @@
     if(snapshotId)historyViews[targetMode]=snapshotId;else delete historyViews[targetMode];
     try{localStorage.setItem('fagao-history-views',JSON.stringify(historyViews));}catch{}
   }
-  function boardNames(id=platformID()) { return id==='fanqie'?['新书榜','阅读榜']:id==='qidian'?['月票榜','签约新书榜','公众新书榜','新人新书榜','畅销榜']:id==='ciweimao'?['月票榜']:id==='heiyan'?['书库']:['热门故事']; }
-  const stopReasons={loading:'当前作品已载入，后续页面会继续补充',waiting_for_more:'向下浏览时继续读取后续作品',paused_for_demand:'已暂停读取，继续向下浏览时恢复',last_page:'已读取平台最后一页',empty_page:'平台已无更多书目',requested_limit:'已达到本次采集数量',max_pages:'已达到本次页数上限',repeated_page:'平台返回重复页面，已停止避免重复',version_changed:'榜单版本发生变化，已保留本次结果',invalid_response:'平台返回的数据暂不可读',wrong_page:'平台返回的页码不一致',request_failed:'后续页面暂时无法连接',session_required:'后续页面需要平台登录',pagination_unverified:'后续翻页方式仍待核实',rank_conflict:'不同页面出现名次冲突',book_conflict:'不同页面出现作品信息冲突',invalid_next_page:'平台未提供可用的下一页'};
+  function boardNames(id=platformID()) { return platforms().find(p=>p.id===id)?.boards || (id==='fanqie'?['新书榜','阅读榜']:id==='qidian'?['月票榜','签约新书榜','公众新书榜','新人新书榜','畅销榜']:id==='ciweimao'?['月票榜']:id==='heiyan'?['书库']:['热门故事']); }
+  const stopReasons={loading:'当前作品已载入，后续页面会继续补充',waiting_for_more:'向下浏览时继续读取后续作品',paused_for_demand:'已暂停读取，继续向下浏览时恢复',last_page:'已读取平台最后一页',source_end:'已到来源末页',awaiting_demand:'向下浏览时继续读取后续作品',empty_page:'平台已无更多书目',requested_limit:'已达到本次采集数量',max_pages:'已达到本次页数上限',repeated_page:'平台返回重复页面，已停止避免重复',version_changed:'榜单版本发生变化，已保留本次结果',invalid_response:'平台返回的数据暂不可读',wrong_page:'平台返回的页码不一致',request_failed:'后续页面暂时无法连接',session_required:'后续页面需要平台登录',pagination_unverified:'后续翻页方式仍待核实',rank_conflict:'不同页面出现名次冲突',book_conflict:'不同页面出现作品信息冲突',invalid_next_page:'平台未提供可用的下一页'};
   function readableWarning(value){return String(value).replace(/[a-z]+(?:_[a-z]+)+/g,key=>stopReasons[key] || key);}
   function paginationSummary(item){
     const page=item?.pagination;
@@ -166,8 +171,16 @@
     return result;
   }
   function renderNavigation() {
+    if(mode()!=='overseas')domesticMode=mode();
     document.querySelectorAll('[data-action="mode"]').forEach((el) => el.setAttribute('aria-pressed',String(el.dataset.mode === mode())));
-    $('#platforms').innerHTML = platforms().filter((p) => p.mode === mode()).map((p) => `<button class="platform-button" data-action="platform" data-platform="${escape(p.id)}" aria-current="${section === 'browse' && platformID() === p.id}"><span class="platform-mark">${escape((p.name || '')[0])}</span><span class="platform-name">${escape(p.name)}${['planned','unavailable','pending'].includes(p.status) ? '<small>待接入 · 支持导入</small>' : ''}</span></button>`).join('');
+    const platformButton=p=>`<button class="platform-button" data-action="platform" data-platform="${escape(p.id)}" aria-current="${section === 'browse' && platformID() === p.id}"><span class="platform-mark">${escape((p.name || '')[0])}</span><span class="platform-name">${escape(p.name)}${['planned','unavailable','pending'].includes(p.status) ? '<small>待接入 · 支持导入</small>' : ''}</span></button>`;
+    $('#platforms').innerHTML = platforms().filter(p=>p.mode===domesticMode).map(platformButton).join('');
+    const overseasActive=mode()==='overseas';
+    $('#overseas-platforms').hidden=!overseasActive;
+    $('#overseas-platforms').innerHTML=overseasActive ? platforms().filter(p=>p.mode==='overseas').map(platformButton).join('') : '';
+    $('#overseas-navigation').setAttribute('aria-expanded',String(overseasActive));
+    $('#overseas-navigation').setAttribute('aria-current',String(overseasActive && section==='browse'));
+    $('#content').classList.toggle('overseas-content',overseasActive && section==='browse');
     document.querySelectorAll('[data-action="section"]').forEach((el) => el.setAttribute('aria-current',String(el.dataset.section === section)));
     $('#favorite-count').textContent = state.favorites.length; $('#report-count').textContent = state.reports.length;
     const mainURL = safeURL(state.config?.main_site) || 'https://www.fagaochuangzuo.com/'; $('#main-site').href = mainURL;
@@ -191,14 +204,14 @@
       try{input.setSelectionRange(focusedQuery.start,focusedQuery.end);}catch{}
     }
   }
-  function pageHead(title, sub, actions='') { return `<div class="page-head"><div><div class="eyebrow">${section==='browse' ? modes[mode()]+'作品' : '我的工作台'}<span class="dot">/</span> ${section==='browse' ? escape(nameOf(platformID())) : '保存在本机'}</div><h1>${escape(title)}</h1><p>${escape(sub)}</p></div>${actions ? `<div class="head-actions">${actions}</div>` : ''}</div>`; }
+  function pageHead(title, sub, actions='') { return `<div class="page-head"><div><div class="eyebrow">${section==='browse' ? (mode()==='overseas'?'海外网文':modes[mode()]+'作品') : '我的工作台'}<span class="dot">/</span> ${section==='browse' ? escape(nameOf(platformID())) : '保存在本机'}</div><h1>${escape(title)}</h1><p>${escape(sub)}</p></div>${actions ? `<div class="head-actions">${actions}</div>` : ''}</div>`; }
   function renderBrowse() {
-    const p = platform(), job = currentJob();
+    const p = platform(), job = viewingHistory() ? null : currentJob();
     const isLibrary = p.id === 'heiyan', unsupported = ['planned','unavailable'].includes(p.status) && p.id === 'fanqie_short';
     const options=optionsFor(), key=scopeKey();
     const title = isLibrary ? '黑岩故事会 · 选题书单' : `${nameOf(p.id)} · ${options.board || '作品发现'}`;
-    const sub = isLibrary ? '直接打开腾讯文档书单，在原页面登录后查看。' : '持续更新平台榜单，发现值得阅读与研究的作品。';
-    const action = isLibrary ? '' : `${snapshot?'<button class="button secondary" data-action="insights">榜单观察</button>':''}<button class="button secondary" data-action="collection-options" aria-label="调整采集设置">采集设置</button><button class="button secondary" data-action="collect" ${job || activeRequest || unsupported ? 'disabled' : ''}>${job ? (job.waiting_for_more?'已加载 · 向下继续':'<span class="spinner"></span>正在读取') : '↻ '+(isLibrary?'更新书库':'更新榜单')}</button>`;
+    const sub = isLibrary ? '直接打开腾讯文档书单，在原页面登录后查看。' : mode()==='overseas' ? '英文书名与简介 · 中文分类浏览 · 选中后可回 WorkBuddy 翻译或分析' : '持续更新平台榜单，发现值得阅读与研究的作品。';
+    const action = isLibrary ? '' : `${snapshot && mode()!=='overseas'?'<button class="button secondary" data-action="insights">榜单观察</button>':''}<button class="button secondary" data-action="collection-options" aria-label="调整采集设置">采集设置</button><button class="button secondary" data-action="collect" ${job || activeRequest || unsupported ? 'disabled' : ''}>${job ? (job.waiting_for_more?'已加载 · 向下继续':'<span class="spinner"></span>正在读取') : '↻ '+(isLibrary?'更新书库':'更新榜单')}</button>`;
     let body = pageHead(title,sub,action)+(isLibrary ? heiyanBooklistCard(!!snapshot) : renderBoardControls());
     const freshResult=latestResults.get(key);
     if(freshResult && freshResult!==snapshot?.id)body+=`<div class="new-results"><span>新的榜单已更新。当前选中的作品仍保留在原记录中。</span><button data-action="show-latest" data-id="${escape(freshResult)}">查看最新榜单 →</button></div>`;
@@ -211,7 +224,7 @@
     body += '</div>';
     if (job) body += `<div class="job-strip" role="status">${job.waiting_for_more?'<span class="status-dot online"></span>':'<span class="spinner"></span>'}<span>${escape(job.message || '正在读取平台…')}</span><button data-action="cancel-job" data-id="${escape(job.id)}">取消</button></div>`;
     const recentJob=state.jobs.find(j=>!['text','overview'].includes(j.kind) && j.platform===p.id && (!j.options || scopeKey(j.platform,j.options)===scopeKey()));
-    if(!job && recentJob && ['failed','interrupted'].includes(recentJob.status))body+=`<div class="job-strip job-warning"><span>${escape(recentJob.message || '上次采集未完成，已有结果保留。')}</span></div>`;
+    if(!viewingHistory() && !job && recentJob && ['failed','interrupted'].includes(recentJob.status))body+=`<div class="job-strip job-warning"><span>${escape(recentJob.message || '上次采集未完成，已有结果保留。')}</span></div>`;
 
     if (!snapshot) {
       if (unsupported) body += empty('这个来源还在接入中',p.message || '可以先导入已有的书目文件，继续选书和分析。','<button class="button secondary" data-action="import-snapshot">导入书目 JSON</button>','▤');
@@ -231,7 +244,7 @@
       body += '</div>'+renderDetail(books)+'</div>';
       if(snapshot.warnings?.length)body+=`<div class="source-warnings">${snapshot.warnings.map(w=>`<p>${escape(readableWarning(w))}</p>`).join('')}</div>`;
       const source = safeURL(snapshot.source_url);
-      body += `<div class="source-note"><span>来源数据日期：${escape(snapshot.data_date || '原站未提供')} · ${isLibrary?'书库顺序不代表热度排名':snapshot.source_id && snapshot.source_id!=='direct'?'来源列表位置不代表原榜名次':'名次以本次原始榜单为准'}</span>${source?`<a href="${escape(source)}" target="_blank" rel="noopener noreferrer">查看来源 ↗</a>`:''}</div>`;
+      body += `<div class="source-note"><span>来源数据日期：${escape(snapshot.data_date || '原站未提供')} · ${isLibrary?'书库顺序不代表热度排名':mode()==='overseas'?((snapshot.books || []).some(book=>Number.isFinite(book.rank))?'名次沿用来源榜单；列表序号用于选书':'原站未提供连续名次；列表序号用于选书'):snapshot.source_id && snapshot.source_id!=='direct'?'来源列表位置不代表原榜名次':'名次以本次原始榜单为准'}</span>${source?`<a href="${escape(source)}" target="_blank" rel="noopener noreferrer">查看来源 ↗</a>`:''}</div>`;
     }
     body += '</section>';
     if (p.message && !isLibrary) body += `<p class="collection-hint">${escape(p.message)}</p>`;
@@ -387,6 +400,7 @@
     },{rootMargin:'240px 0px'});listObserver.observe(sentinel);
   }
   function categoryNames(options){
+    if(mode()==='overseas')return [...new Set([options.category,...(platform().categories || ['全部'])].filter(Boolean))];
     if(platformID()!=='fanqie')return [options.category || '全部'];
     const verifiedFemale=['古风世情','科幻末世','游戏体育','女频衍生','玄幻言情','种田','年代','现言脑洞','宫斗宅斗','悬疑脑洞','古言脑洞','快穿','青春甜宠','星光璀璨','女频悬疑','职场婚恋','豪门总裁','民国言情'];
     const source=snapshot?.platform==='fanqie' && snapshot.channel===options.channel && snapshot.categories?.length ? snapshot.categories : options.channel==='女频'?verifiedFemale:['玄幻脑洞'];
@@ -395,9 +409,9 @@
   function renderBoardControls(){
     const id=platformID(), options=optionsFor(), key=scopeKey(), supported=id!=='fanqie_short';
     const status=viewingHistory()?'查看历史记录 · 自动更新已暂停':currentJob()?(currentJob().waiting_for_more?'已载入首批 · 向下浏览继续读取':'后台自动更新中'):autoMessages.get(key) || (supported?'自动更新 · 每 15 分钟检查':'此来源待接入');
-    const channels=id==='fanqie'?['女频','男频']:[defaults[id]?.channel || '全部'];
+    const channels=channelsFor(id);
     const categories=categoryNames(options), frequent=(options.channel==='女频'?['古言脑洞','现言脑洞','豪门总裁','年代','种田','快穿']:[options.category]).filter(value=>categories.includes(value));
-    return `<div class="board-controls"><label>频道<select id="board-channel" ${channels.length===1?'disabled':''}>${channels.map(value=>`<option ${value===options.channel?'selected':''}>${escape(value)}</option>`).join('')}</select></label><label>榜单<select id="board-kind">${boardNames(id).map(value=>`<option ${value===options.board?'selected':''}>${escape(value)}</option>`).join('')}</select></label><label>分类<select id="board-category" aria-label="榜单分类" ${categories.length===1?'disabled':''}>${categories.map(value=>`<option ${value===options.category?'selected':''}>${escape(value)}</option>`).join('')}</select></label><div class="auto-status">${currentJob() && !currentJob().waiting_for_more?'<span class="spinner"></span>':'<span class="status-dot online"></span>'}<span>${escape(status)}</span>${viewingHistory()?'<button data-action="resume-auto">恢复自动更新</button>':''}</div></div>${id==='fanqie' && frequent.length>1?`<div class="category-shortcuts" aria-label="常用分类"><span>常用</span>${frequent.map(value=>`<button data-action="category" data-category="${escape(value)}" aria-pressed="${value===options.category}">${escape(value)}</button>`).join('')}</div>`:''}`;
+    return `<div class="board-controls"><label>频道<select id="board-channel" ${channels.length===1?'disabled':''}>${channels.map(value=>`<option ${value===options.channel?'selected':''}>${escape(value)}</option>`).join('')}</select></label><label>榜单<select id="board-kind">${boardNames(id).map(value=>`<option ${value===options.board?'selected':''}>${escape(value)}</option>`).join('')}</select></label><label>分类<select id="board-category" aria-label="榜单分类" ${categories.length===1?'disabled':''}>${categories.map(value=>`<option ${value===options.category?'selected':''}>${escape(value)}</option>`).join('')}</select></label><div class="auto-status">${currentJob() && !currentJob().waiting_for_more?'<span class="spinner"></span>':'<span class="status-dot online"></span>'}<span>${escape(status)}</span>${viewingHistory()?'<button data-action="resume-auto">恢复自动更新</button>':''}</div></div>${(id==='fanqie' || mode()==='overseas') && (mode()==='overseas'?categories:frequent).length>1?`<div class="category-shortcuts" aria-label="常用分类"><span>${mode()==='overseas'?'分类':'常用'}</span>${(mode()==='overseas'?categories:frequent).map(value=>`<button data-action="category" data-category="${escape(value)}" aria-pressed="${value===options.category}">${escape(value)}</button>`).join('')}</div>`:''}`;
   }
   function renderToolbar() {
     const f = view().filters || {};
@@ -408,7 +422,7 @@
     if (!b) return '<aside class="detail" aria-label="作品详情">'+empty('选一本，进一步了解','点击左侧作品，查看简介和准确的榜单位置。','','▤','compact')+'</aside>';
     const position = visible.findIndex((x) => x.id === b.id)+1, url = safeURL(b.url), metrics = Array.isArray(b.metrics) ? b.metrics : [];
     const reports = state.reports.filter((r) => r.book_id === b.id && (!r.platform || r.platform === snapshot.platform));
-    return `<aside class="detail" aria-label="作品详情" data-book="${escape(b.id)}" data-snapshot="${escape(snapshot.id)}"><div class="detail-top"><span>已选中的作品</span><button class="favorite-button" data-action="favorite" data-book="${escape(b.id)}" aria-pressed="${favorite(b)}">${favorite(b)?'♥ 已收藏':'♡ 收藏'}</button></div>${cover(b,true)}<h2>${escape(b.title)}</h2><p class="author">${escape(b.author || '作者未提供')}${b.status?' · '+escape(b.status):''}</p><div class="positions"><span>${position?'列表第 '+position+' 本':'已被当前筛选隐藏'}</span>${snapshot.platform!=='heiyan' && Number.isFinite(b.rank)?`<span class="original">原榜第 ${b.rank} 名</span>`:''}</div><p class="summary">${escape(b.summary || '本次来源未提供简介，可在作品原页查看。')}</p>${metrics.length?`<div class="metrics">${metrics.map((m)=>`<span>${escape(m.name)} <strong>${escape(m.value)}</strong>${escape(m.unit || '')}</span>`).join('')}</div>`:''}<div class="detail-actions">${url?`<a class="source-link" href="${escape(url)}" target="_blank" rel="noopener noreferrer">打开作品原页 ↗</a>`:''}${snapshot.platform==='fanqie'?'<button class="button primary small" data-action="catalog">目录与正文</button>':''}<button class="button secondary small" data-action="import-text">导入正文</button></div><p class="text-status">已选对象已保存，可回到 WorkBuddy 继续分析。</p>${renderTextAssets(b)}${reports.map((r)=>`<button class="report-item" data-action="report" data-id="${escape(r.id)}">▤ ${escape(r.title || '拆书报告')}<br><small>${escape(r.scope || '')}</small></button>`).join('')}</aside>`;
+    return `<aside class="detail" aria-label="作品详情" data-book="${escape(b.id)}" data-snapshot="${escape(snapshot.id)}"><div class="detail-top"><span>已选中的作品</span><button class="favorite-button" data-action="favorite" data-book="${escape(b.id)}" aria-pressed="${favorite(b)}">${favorite(b)?'♥ 已收藏':'♡ 收藏'}</button></div>${cover(b,true)}<h2>${escape(b.title)}</h2><p class="author">${escape(b.author || '作者未提供')}${b.status?' · '+escape(b.status):''}</p><div class="positions"><span>${position?'列表第 '+position+' 本':'已被当前筛选隐藏'}</span>${snapshot.platform!=='heiyan' && Number.isFinite(b.rank)?`<span class="original">原榜第 ${b.rank} 名</span>`:''}</div>${mode()==='overseas'?`<div class="translation-card"><span class="translation-mark" aria-hidden="true">译</span><div><strong>回 WorkBuddy 说“翻译这本”</strong><p>翻译所选作品的英文书名与简介。</p><button class="button secondary small" data-action="translation-context">复制翻译请求</button></div></div>`:''}<p class="summary">${escape(b.summary || '本次来源未提供简介，可在作品原页查看。')}</p>${metrics.length?`<div class="metrics">${metrics.map((m)=>`<span>${escape(m.name)} <strong>${escape(m.value)}</strong>${escape(m.unit || '')}</span>`).join('')}</div>`:''}<div class="detail-actions">${url?`<a class="source-link" href="${escape(url)}" target="_blank" rel="noopener noreferrer">打开作品原页 ↗</a>`:''}${snapshot.platform==='fanqie'?'<button class="button primary small" data-action="catalog">目录与正文</button>':''}<button class="button secondary small" data-action="import-text">导入正文</button></div><p class="text-status">已选对象已保存，可回到 WorkBuddy 继续分析。</p>${renderTextAssets(b)}${reports.map((r)=>`<button class="report-item" data-action="report" data-id="${escape(r.id)}">▤ ${escape(r.title || '拆书报告')}<br><small>${escape(r.scope || '')}</small></button>`).join('')}</aside>`;
   }
   function empty(title,text,actions='',symbol='▤',extra='') { return `<div class="empty ${extra}"><div class="empty-symbol" aria-hidden="true">${symbol}</div><h2>${escape(title)}</h2><p>${escape(text)}</p>${actions?`<div class="actions">${actions}</div>`:''}</div>`; }
   function heiyanBooklistCard(compact=false){
@@ -417,7 +431,7 @@
   function renderBridge() {
     const b = snapshot?.books?.find((x)=>x.id===view().selected_id);
     if (section !== 'browse' || !b) { $('#bridge').innerHTML = ''; return; }
-    $('#bridge').innerHTML = `<section class="bridge" aria-label="WorkBuddy 对话提示"><div class="bridge-main"><div><div class="bridge-label">回到 WorkBuddy，可以说</div><p>“分析我刚选的这本，重点看开头怎么吸引读者。”</p></div><button data-action="context">查看引用 ⌄</button></div><small>已保存：${escape(b.title)} · ${escape(scopeOf())} · ${escape(date(snapshotDate(snapshot)))}</small></section>`;
+    $('#bridge').innerHTML = `<section class="bridge" aria-label="WorkBuddy 对话提示"><div class="bridge-main"><div><div class="bridge-label">回到 WorkBuddy，可以说</div><p>${mode()==='overseas'?'“翻译我刚选的这本书名和简介，再分析它的故事卖点。”':'“分析我刚选的这本，重点看开头怎么吸引读者。”'}</p></div><button data-action="context">查看引用 ⌄</button></div><small>已保存：${escape(b.title)} · ${escape(scopeOf())} · ${escape(date(snapshotDate(snapshot)))}</small></section>`;
   }
   function renderSaved() {
     const labels={favorites:['我的收藏','有价值的参考，留待下一次创作。'],history:['最近记录','回到上次选中的作品，或者继续浏览之前的榜单。'],reports:['拆书报告','从 WorkBuddy 生成的分析结果，会在这里与作品关联。']};
@@ -442,8 +456,24 @@
     if(!$('#dialog').open) $('#dialog').showModal();
   }
   function collectionOptions() {
-    const id=platformID(), current=optionsFor(id);
-    showDialog('采集设置',`<form id="options-form"><p>设置保存后自动更新。日常使用无需再次填写。</p><div class="form-grid"><div class="field"><label for="channel">频道</label><select id="channel" name="channel">${(id==='fanqie'?['女频','男频']:[defaults[id]?.channel || '全部']).map(x=>`<option ${current.channel===x?'selected':''}>${escape(x)}</option>`).join('')}</select></div><div class="field"><label for="category">分类</label><input id="category" name="category" value="${escape(current.category || '全部')}" required maxlength="40"></div><div class="field"><label for="board">榜单</label><select id="board" name="board">${(id==='fanqie'?['新书榜','阅读榜']:id==='qidian'?['月票榜','签约新书榜','公众新书榜','新人新书榜','畅销榜']:id==='ciweimao'?['月票榜']:id==='heiyan'?['书库']:['热门故事']).map(x=>`<option ${current.board===x?'selected':''}>${escape(x)}</option>`).join('')}</select></div><div class="field"><label for="limit">最大采集数量</label><input id="limit" name="limit" type="number" min="1" max="10000" value="${current.limit || 10000}" required></div></div><p class="help-inline">分类以平台真实名称为准。将持续翻页，最多读取 100 页；平台实际提供多少条，就保存多少条。</p><div class="form-actions"><button class="button secondary" type="button" data-action="close-dialog">取消</button><button class="button primary" type="submit">保存条件</button></div></form>`);
+    const id=platformID(), current=optionsFor(id), categories=categoryNames(current);
+    const select=(name,values)=>`<select id="${name}" name="${name}">${values.map(x=>`<option ${current[name]===x?'selected':''}>${escape(x)}</option>`).join('')}</select>`;
+    const category=mode()==='overseas'?select('category',categories):`<input id="category" name="category" value="${escape(current.category || '全部')}" required maxlength="40">`;
+    showDialog('采集设置',`<form id="options-form"><p>设置保存后自动更新。日常使用无需再次填写。</p><div class="form-grid"><div class="field"><label for="channel">频道</label>${select('channel',channelsFor(id))}</div><div class="field"><label for="category">分类</label>${category}</div><div class="field"><label for="board">榜单</label>${select('board',boardNames(id))}</div><div class="field"><label for="limit">最大采集数量</label><input id="limit" name="limit" type="number" min="1" max="10000" value="${current.limit || 10000}" required></div></div><p class="help-inline">先显示首批作品，向下浏览时继续读取；最多读取 100 页，以来源实际提供数量为准。</p><div class="form-actions"><button class="button secondary" type="button" data-action="close-dialog">取消</button><button class="button primary" type="submit">保存条件</button></div></form>`);
+  }
+  async function copyTranslationContext(){
+    const book=snapshot?.books?.find(item=>item.id===view().selected_id);
+    if(!book)return;
+    const pinned={snapshot_id:snapshot.id,book_id:book.id};
+    const result=await api('/api/translation-context',pinned);
+    if(typeof result.prompt!=='string' || !result.prompt.trim())throw new Error('未取得这本作品的翻译引用，请重试。');
+    try{
+      if(!navigator.clipboard?.writeText)throw new Error('clipboard unavailable');
+      await navigator.clipboard.writeText(result.prompt);toast('已复制。粘贴到 WorkBuddy，即可翻译这本作品。');
+    }catch{
+      showDialog('复制到 WorkBuddy',`<p>这段请求已固定到所选作品，粘贴后即可翻译。</p><textarea class="translation-request" readonly aria-label="WorkBuddy 翻译请求">${escape(result.prompt)}</textarea>`);
+      const field=$('.translation-request');field.focus();field.select();
+    }
   }
   async function showLatest(id){
     setHistory(null);latestResults.delete(scopeKey());
@@ -558,8 +588,8 @@
     const meta=state.snapshots.find(s=>s.id===el.dataset.snapshot);
     const snap=meta || await api(`/api/snapshots/${encodeURIComponent(el.dataset.snapshot)}`);
     if(navigation!==navigationGeneration)return;
-    section='browse';setHistory(el.dataset.snapshot,snap.mode || (snap.platform==='heiyan'?'short':'long'));
-    await updateView({mode:snap.mode || (snap.platform==='heiyan'?'short':'long'),platform:snap.platform,snapshot_id:el.dataset.snapshot,selected_id:el.dataset.book || null,page:1,filters:{query:'',sort:'source',favorites:false}});
+    section='browse';setHistory(el.dataset.snapshot,snap.mode || platformMode(snap.platform));
+    await updateView({mode:snap.mode || platformMode(snap.platform),platform:snap.platform,snapshot_id:el.dataset.snapshot,selected_id:el.dataset.book || null,page:1,filters:{query:'',sort:'source',favorites:false}});
   }
   async function report(id) { const r=await api(`/api/reports/${encodeURIComponent(id)}`); showDialog(r.title || '拆书报告',`<pre class="report-text">${escape(r.content || r.report?.content || '')}</pre>`,[r.scope,date(r.created_at)].filter(Boolean).join(' · ')); }
   const textJobActive=job=>job && ['pending','running','queued','cancelling'].includes(job.status);
@@ -727,15 +757,15 @@
     if(a==='dismiss-notice'){$('#notice').hidden=true;return;}
     if(a==='close-dialog'){$('#dialog').close();return;}
     if(a==='mode') {
-      if(!await syncNavigationState())return;section='browse';const target=el.dataset.mode, previous=state.views[target] || {}, id=previous.platform || (target==='short'?'heiyan':'fanqie');
-      const matching=bestSnapshotForScope(id,{...defaults[id],...savedOptions[id]});
+      if(!await syncNavigationState())return;section='browse';const target=el.dataset.mode, previous=state.views[target] || {}, id=previous.platform || firstPlatform[target];
+      const matching=bestSnapshotForScope(id,{...defaultsFor(id),...savedOptions[id]});
       await updateView(previous.snapshot_id?{mode:target}:{mode:target,platform:id,snapshot_id:matching?.id || null,selected_id:null});await maybeAutoCollect();return;
     }
     if(a==='platform') {
       if(!await syncNavigationState())return;
-      section='browse';const id=el.dataset.platform, existing=bestSnapshotForScope(id,optionsFor(id));setHistory(null);
+      section='browse';const id=el.dataset.platform,targetMode=platformMode(id),existing=bestSnapshotForScope(id,optionsFor(id));setHistory(null,targetMode);
       if(id===platformID() && view().snapshot_id){await loadSnapshot();await maybeAutoCollect();return;}
-      await updateView({platform:id,snapshot_id:existing?.id || null,selected_id:null,page:1,filters:{query:'',sort:'source',favorites:false}});await maybeAutoCollect();return;
+      await updateView({mode:targetMode,platform:id,snapshot_id:existing?.id || null,selected_id:null,page:1,filters:{query:'',sort:'source',favorites:false}});await maybeAutoCollect();return;
     }
     if(a==='section'){navigationGeneration++;section=el.dataset.section;render();if(section==='overview'){await loadOverview();await maybeAutoOverview();}return;}
     if(a==='overview-platform'){navigationGeneration++;overviewPlatform=el.dataset.platform;render();return;}
@@ -749,6 +779,7 @@
     if(a==='page'){await updateView({page:Number(el.dataset.page)});return;}
     if(a==='clear-filters'){await updateView({filters:{query:'',sort:'source',favorites:false},page:1});return;}
     if(a==='favorite') { const b=snapshot.books.find(x=>x.id===el.dataset.book);await api('/api/favorite',{snapshot_id:snapshot.id,book_id:b.id,enabled:!favorite(b)}); await refresh();return; }
+    if(a==='translation-context'){await copyTranslationContext();return;}
     if(a==='collection-options'){collectionOptions();return;}
     if(a==='category'){if(el.dataset.category!==optionsFor().category)await changeOptions({category:el.dataset.category});return;}
     if(a==='collect'){await collect(false);return;}
@@ -805,7 +836,7 @@
     const el=event.target;
     if(el.id==='chapter-range-mode'){captureTextRange();renderContentDialog();return;}
     if(el.id==='snapshot-select'){setHistory(el.value);updateView({snapshot_id:el.value,selected_id:null,page:1}).catch(e=>notice(e.message));}
-    if(el.id==='board-channel'){changeOptions({channel:el.value,category:el.value==='男频'?'玄幻脑洞':'古言脑洞'}).catch(e=>notice(e.message));}
+    if(el.id==='board-channel'){changeOptions({channel:el.value,...(platformID()==='fanqie'?{category:el.value==='男频'?'玄幻脑洞':'古言脑洞'}:{})}).catch(e=>notice(e.message));}
     if(el.id==='board-kind')changeOptions({board:el.value}).catch(e=>notice(e.message));
     if(el.id==='board-category' && el.value.trim())changeOptions({category:el.value.trim()}).catch(e=>notice(e.message));
     if(el.id==='sort' || el.id==='favorites-filter'){
