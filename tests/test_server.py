@@ -10,6 +10,20 @@ from unittest.mock import patch
 from fagao.server import WorkbenchServer, JobManager, collection_scope
 from fagao.store import Store, AppError
 
+
+def fragmented_single_chapter(book_id='book-a',title='隔离测试书目'):
+    """Regression shape: one published chapter, but only its opening returned."""
+    chapter_integrity={'version':1,'status':'partial','declared_word_count':13325,'actual_characters':4439,
+                       'reason':'平台标注 13325 字，实际返回 4439 个非空白字符。'}
+    return {'platform':'fanqie','book_id':book_id,'title':title,'text':'文'*4439,
+            'scope':'公开目录第 1 项，共 1 章','source':'https://fanqienovel.com/page/'+book_id,'status':'已完结',
+            'complete':False,'coverage_complete':False,'cancelled':False,'catalog_chapters':1,'catalog_complete':True,
+            'requested_start':1,'requested_chapters':1,
+            'chapters':[{'index':1,'id':'fragment-1','item_id':'fragment-1','title':'第一章','characters':4439,'integrity':chapter_integrity}],
+            'integrity':{'version':1,'status':'partial','declared_book_word_count':13325,'actual_characters':4439,
+                         'reason':'单章正文少于平台标注字数，已保存公开片段。'},'missing':[]}
+
+
 class ServerTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -154,6 +168,37 @@ class ServerTest(unittest.TestCase):
         with patch.object(self.server.jobs,'start_text',return_value=expected) as start:
             self.post('/api/fetch-text',{'snapshot_id':'sid','book_id':'bid','all':True})
         start.assert_called_once_with('sid','bid',3,1,True)
+
+    def test_single_chapter_fragment_export_carries_real_scope_and_counts(self):
+        snap=self.store.save_snapshot({'platform':'fanqie','books':[{'id':'fragment-export','title':'单章片段导出'}]})
+        meta=self.store.save_fetched_text(snap['id'],'fragment-export',fragmented_single_chapter('fragment-export','单章片段导出'))
+        status,record,_=self.request('/api/texts/'+meta['id'])
+        self.assertEqual(status,200)
+        self.assertFalse(record['complete']); self.assertFalse(record['coverage_complete'])
+        self.assertEqual(record['integrity']['actual_characters'],4439)
+        status,body,_=self.request('/api/texts/'+meta['id']+'/download')
+        self.assertEqual(status,200)
+        exported=body.decode('utf-8'); header,content=exported.split('\n\n',1)
+        self.assertIn('公开片段',header)
+        self.assertIn('实际正文 4,439 字符（不含空白）',header)
+        self.assertIn('作品标注 13,325 字',header)
+        self.assertNotIn('已核实为作品完整正文',header)
+        self.assertEqual(content,'文'*4439)
+
+    def test_legacy_export_distinguishes_saved_text_from_body_character_count(self):
+        record={'id':'legacy-export','title':'历史正文','scope':'旧下载文本，完整性待重新核验','source':'公开章节页面',
+                'platform':'fanqie','book_id':'legacy-book','content':'第一章\n'+'文'*100,
+                'acquisition':'public_download','complete':False,'coverage_complete':False,
+                'integrity':{'version':1,'status':'unverified','actual_characters':103,
+                             'actual_characters_basis':'saved_text_including_headings','declared_book_word_count':None,
+                             'reason':'旧记录未保存章节字数核验信息。'}}
+        with patch.object(self.store,'text_record',return_value=record):
+            status,body,_=self.request('/api/texts/legacy-export/download')
+        self.assertEqual(status,200)
+        header=body.decode('utf-8').split('\n\n',1)[0]
+        self.assertIn('完整性未确认',header)
+        self.assertIn('已保存文本 103 字符（不含空白，含章节标题）',header)
+        self.assertNotIn('实际正文',header)
 
     def test_insights_use_local_snapshots_and_preserve_current_view(self):
         snap=self.store.save_snapshot({'platform':'fanqie','books':[{'id':'insight-book','title':'重生测试'}]})
@@ -355,10 +400,14 @@ class TextDownloadJobsTest(unittest.TestCase):
     snapshot=CollectionSchedulingTest.snapshot
 
     def raw(self,**changes):
-        result={'platform':'fanqie','book_id':'book-a','title':'隔离测试书目','text':'公开第一章的实际测试正文。'*10,
+        text='公开第一章的实际测试正文。'*10
+        actual=len(text)
+        result={'platform':'fanqie','book_id':'book-a','title':'隔离测试书目','text':text,
                 'scope':'公开目录第 1 项，共 1 章','source':'https://fanqienovel.com/page/book-a','status':'连载中',
                 'complete':False,'coverage_complete':True,'cancelled':False,'catalog_chapters':3,'catalog_complete':True,
-                'requested_start':1,'requested_chapters':1,'chapters':[{'index':1,'id':'ch-a1','item_id':'ch-a1','title':'第一章','characters':100}],
+                'requested_start':1,'requested_chapters':1,'chapters':[{'index':1,'id':'ch-a1','item_id':'ch-a1','title':'第一章','characters':actual,
+                    'integrity':{'version':1,'status':'verified','declared_word_count':actual,'actual_characters':actual,'reason':'已核对章节字数。'}}],
+                'integrity':{'version':1,'status':'verified','declared_book_word_count':None,'actual_characters':actual,'reason':'已核对请求章节字数。'},
                 'missing':[],'collected_at':'2026-11-09T12:00:00+08:00'}
         result.update(changes); return result
 
@@ -403,6 +452,18 @@ class TextDownloadJobsTest(unittest.TestCase):
         self.assertEqual(done['status'],'completed'); self.assertTrue(done['partial'])
         self.assertFalse(done['text']['coverage_complete']); self.assertFalse(done['text']['complete'])
         self.assertEqual(done['text']['missing'][0]['reason'],'需订阅')
+
+    def test_single_chapter_fragment_job_uses_saved_integrity_not_directory_count(self):
+        snap=self.store.save_snapshot(self.snapshot())
+        with patch('fagao.fanqie_content.fetch_book_text',return_value=fragmented_single_chapter()):
+            started=self.manager.start_text(snap['id'],'book-a',all_chapters=True)
+            done=self.wait(started['job_id'])
+        self.assertEqual(done['status'],'completed'); self.assertTrue(done['partial'])
+        self.assertFalse(done['text']['complete']); self.assertFalse(done['text']['coverage_complete'])
+        self.assertIn('公开片段',done['message'])
+        self.assertIn('4,439',done['message']); self.assertIn('13,325',done['message'])
+        self.assertNotIn('已核实为作品完整正文',done['message'])
+        self.assertEqual(self.store.text_record(done['text_id'])['content'],'文'*4439)
 
     def test_cancel_keeps_already_obtained_text(self):
         snap=self.store.save_snapshot(self.snapshot()); entered=threading.Event()

@@ -85,6 +85,48 @@ def clean_pagination(value):
 def text(value, maximum=20000):
     return str(value or '')[:maximum]
 
+
+def clean_integrity(value, book=False):
+    """Keep explicit content evidence; chapter count alone is not evidence."""
+    count_key='declared_book_word_count' if book else 'declared_word_count'
+    if not isinstance(value,dict) or type(value.get('version')) is not int or value['version']!=1:
+        raise AppError('invalid_text_integrity','下载结果缺少有效的正文完整性核验信息。')
+    status=value.get('status'); actual=value.get('actual_characters'); declared=value.get(count_key)
+    if status not in ('verified','partial','unverified') or type(actual) is not int or actual<1:
+        raise AppError('invalid_text_integrity','正文核验状态或实际字数不正确。')
+    if declared is not None and (type(declared) is not int or declared<1):
+        raise AppError('invalid_text_integrity','来源字数必须是正整数或空值。')
+    if not book and ((status=='verified' and (declared is None or actual<declared)) or
+                     (status=='partial' and (declared is None or actual>=declared)) or
+                     (status=='unverified' and declared is not None)):
+        raise AppError('invalid_text_integrity','章节核验结论与来源字数、实际正文长度不一致。')
+    return {'version':1,'status':status,count_key:declared,'actual_characters':actual,
+            'reason':text(value.get('reason'),1000)}
+
+
+def checked_download_integrity(metadata, chapters):
+    integrity=clean_integrity(metadata.get('integrity'),book=True)
+    checks=[clean_integrity(chapter.get('integrity')) for chapter in chapters]
+    if not checks or any(check['actual_characters']>chapter.get('characters',0) for chapter,check in zip(chapters,checks)):
+        raise AppError('invalid_text_integrity','章节核验字数超过实际取得的章节长度。')
+    if integrity['actual_characters']!=sum(check['actual_characters'] for check in checks):
+        raise AppError('invalid_text_integrity','正文核验总字数与各章节不一致。')
+    whole=(metadata.get('catalog_complete') is True and metadata.get('requested_start',1)==1 and
+           len(chapters)==metadata.get('catalog_chapters') and
+           {chapter.get('index') for chapter in chapters}==set(range(1,len(chapters)+1)))
+    short_book=whole and integrity['declared_book_word_count'] is not None and integrity['actual_characters']<integrity['declared_book_word_count']
+    expected=('partial' if short_book or any(check['status']=='partial' for check in checks) else
+              'unverified' if any(check['status']=='unverified' for check in checks) else 'verified')
+    if integrity['status']!=expected:
+        raise AppError('invalid_text_integrity','正文核验结论与逐章或全书字数证据不一致。')
+    return integrity,checks
+
+
+def limited_download_scope(chapters,status):
+    indices=[chapter.get('index') for chapter in chapters if type(chapter.get('index')) is int]
+    scope=(f'公开目录第 {min(indices)}—{max(indices)} 项，涉及 {len(chapters)} 章' if indices else '已保存的公开正文')
+    return scope+('；公开片段，全文未取得' if status=='partial' else '；全文完整性未确认')
+
 class Store:
     def __init__(self, directory=None):
         self.directory = Path(directory or default_data_dir()).expanduser().resolve()
@@ -107,6 +149,7 @@ class Store:
             ''')
             c.execute('INSERT OR IGNORE INTO kv VALUES (?,?)',('config',dumps({'main_site':'https://www.fagaochuangzuo.com/','points_site':''})))
             c.execute('INSERT OR IGNORE INTO kv VALUES (?,?)',('active_mode',dumps('long')))
+            self._repair_download_integrity(c)
         try: self.db.chmod(0o600)
         except OSError: pass
 
@@ -130,6 +173,51 @@ class Store:
 
     def _set(self,c,key,value):
         c.execute('INSERT INTO kv VALUES (?,?) ON CONFLICT(key) DO UPDATE SET body=excluded.body',(key,dumps(value)))
+
+    def _repair_download_integrity(self,c):
+        """Downgrade old directory-only claims without replacing saved text IDs."""
+        if self._kv(c,'download_integrity_v1',False): return
+        corrected={}
+        for row in c.execute('SELECT id,body,content FROM texts').fetchall():
+            meta=json.loads(row['body'])
+            if meta.get('acquisition')!='public_download': continue
+            chapters=meta.get('chapters',[])
+            try:
+                integrity,_=checked_download_integrity(meta,chapters)
+                if integrity['status']=='verified': continue
+                if not meta.get('complete') and not meta.get('coverage_complete'): continue
+            except (AppError,TypeError,AttributeError):
+                integrity={'version':1,'status':'unverified','declared_book_word_count':None,
+                           'actual_characters':sum(not char.isspace() for char in row['content']),
+                           'actual_characters_basis':'saved_text_including_headings',
+                           'reason':'历史下载缺少有效的逐章字数核验，全文完整性未确认'}
+            meta['previous_scope']=meta.get('scope','')
+            meta.update(complete=False,coverage_complete=False,integrity=integrity,
+                        scope=limited_download_scope(chapters,integrity['status']),
+                        completeness_basis=integrity['reason'])
+            c.execute('UPDATE texts SET body=? WHERE id=?',(dumps(meta),row['id']))
+            corrected[row['id']]=meta
+        for row in c.execute('SELECT id,body FROM tasks').fetchall():
+            task=json.loads(row['body']); tx=corrected.get(task.get('text_id'))
+            if tx:
+                task.update(text=tx,scope=tx['scope'])
+                c.execute('UPDATE tasks SET body=? WHERE id=?',(dumps(task),row['id']))
+        for row in c.execute('SELECT id,body FROM jobs').fetchall():
+            job=json.loads(row['body'])
+            if job.get('kind')!='text': continue
+            cached=job.get('text') if isinstance(job.get('text'),dict) else {}
+            tx=corrected.get(job.get('text_id') or cached.get('id'))
+            if tx:
+                job.update(text_id=tx['id'],text=tx,partial=not tx.get('coverage_complete',False),
+                           message=f"历史下载范围已更正：{tx['scope']}；{tx['integrity']['reason']}")
+                c.execute('UPDATE jobs SET body=? WHERE id=?',(dumps(job),row['id']))
+        for row in c.execute('SELECT id,body,content FROM reports').fetchall():
+            report=json.loads(row['body']); tx=corrected.get(report.get('text_id'))
+            if tx:
+                report.update(scope=tx['scope'],integrity=tx['integrity'],scope_corrected=True)
+                notice=f"## 阅读范围更正\n\n实际可用范围：{tx['scope']}。{tx['integrity']['reason']}。原报告正文保留，原文中的全文完整性表述不作为核验结论。\n\n---\n\n"
+                c.execute('UPDATE reports SET body=?,content=? WHERE id=?',(dumps(report),notice+row['content'],row['id']))
+        self._set(c,'download_integrity_v1',True)
 
     def _snapshot(self,c,sid):
         row=c.execute('SELECT body FROM snapshots WHERE id=?',(str(sid),)).fetchone()
@@ -396,7 +484,8 @@ class Store:
             characters=item.get('characters')
             if isinstance(characters,bool) or not isinstance(characters,int) or characters<1: raise AppError('invalid_text_range','存在空章节，不能标记正文下载成功。')
             indices.add(index); chapter_ids.add(item_id)
-            chapters.append({'id':item_id,'item_id':item_id,'index':index,'title':text(item.get('title'),500),'url':safe_url(item.get('url')),'characters':characters})
+            chapters.append({'id':item_id,'item_id':item_id,'index':index,'title':text(item.get('title'),500),'url':safe_url(item.get('url')),'characters':characters,
+                             'integrity':clean_integrity(item.get('integrity'))})
         if [c['index'] for c in chapters]!=sorted(indices): raise AppError('invalid_text_range','正文中的章节顺序不正确。')
         missing=[]
         missing_rows=raw.get('missing',[])
@@ -424,12 +513,21 @@ class Store:
         complete=raw.get('complete',False)
         if complete and (not catalog_complete or not coverage or (isinstance(raw.get('status'),bool) or raw.get('status') not in ('已完结','完结','finished','completed','0',0)) or len(chapters)!=counts['catalog_chapters'] or indices!=set(range(1,counts['catalog_chapters']+1))):
             raise AppError('invalid_text_range','只有已完结作品的全部目录正文取齐后才能标记全书完整。')
+        integrity,_=checked_download_integrity({**raw,'requested_start':requested_start},chapters)
+        if not isinstance(raw.get('text'),str) or integrity['actual_characters']>sum(not char.isspace() for char in raw['text']):
+            raise AppError('invalid_text_integrity','核验字数超过实际保存的正文长度。')
+        if (coverage or complete) and integrity['status']!='verified':
+            raise AppError('invalid_text_integrity','部分正文或未经核验的章节不能标记请求范围或全书完整。')
         scope=text(raw.get('scope'),500).strip()
         if not scope: raise AppError('scope_required','下载结果没有说明实际阅读范围。')
+        if integrity['status']!='verified':
+            scope=limited_download_scope(chapters,integrity['status'])
+            if cancelled: scope+='；下载已取消'
+            elif missing: scope+='；后续章节未取得'
         details={'acquisition':'public_download','chapters':chapters,'missing':missing,**counts,
                  'coverage_complete':coverage,'catalog_complete':catalog_complete,'requested_start':requested_start,'cancelled':cancelled,'status':text(raw.get('status'),60),
-                 'collected_at':text(raw.get('collected_at'),100),
-                 'completeness_basis':'已完结作品的当前公开目录全部取得' if complete else '仅所列已取得章节，不代表全书完整'}
+                 'collected_at':text(raw.get('collected_at'),100),'integrity':integrity,
+                 'completeness_basis':'已完结作品的当前公开目录全部取得，且逐章字数核验通过' if complete else integrity['reason']}
         return self.import_text(sid,book['id'],raw.get('text'),scope,complete,text(raw.get('source'),1000) or '公开章节页面',details)
 
     def text_record(self,tid):
@@ -452,13 +550,23 @@ class Store:
         with self.connect() as c:
             r=c.execute('SELECT body FROM tasks WHERE id=?',(tid,)).fetchone()
             if not r: raise AppError('task_missing','找不到分析任务。',404)
-            return json.loads(r[0])
+            task=json.loads(r[0])
+            # Read the same pinned text ID, never a newer asset or current UI
+            # selection. An old task copy must not undo a scope correction.
+            tx=c.execute('SELECT body FROM texts WHERE id=?',(task.get('text_id'),)).fetchone()
+            if tx:
+                meta=json.loads(tx[0])
+                if meta.get('acquisition')=='public_download' and (task.get('text')!=meta or task.get('scope')!=meta['scope']):
+                    task.update(text=meta,scope=meta['scope'])
+                    c.execute('UPDATE tasks SET body=? WHERE id=?',(dumps(task),tid))
+            return task
 
     def save_report(self,tid,content):
         t=self.task(tid)
         if not isinstance(content,str) or len(content.strip())<30: raise AppError('empty_report','报告为空或过短。')
         if len(content)>2_000_000: raise AppError('large_report','报告内容过大。')
         report={'id':uuid.uuid4().hex,'task_id':tid,'snapshot_id':t['snapshot_id'],'book_id':t['book_id'],'platform':t['platform'],'mode':t['mode'],'title':t['book']['title'],'scope':t['scope'],'text_id':t['text_id'],'created_at':now()}
+        if (t.get('text') or {}).get('acquisition')=='public_download': report['integrity']=t['text']['integrity']
         heading=f"# 《{t['book']['title']}》分析\n\n阅读范围：{t['scope']}\n作品 ID：{t['platform']} / {t['book_id']}\n榜单快照：{t['snapshot_id']}\n\n---\n\n"
         with self.connect() as c:
             c.execute('INSERT INTO reports VALUES(?,?,?,?)',(report['id'],report['created_at'],dumps(report),heading+content))

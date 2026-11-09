@@ -19,14 +19,16 @@ def state(value):
 
 
 def sources(status=1, count=3, locked=None):
-    page = state({"page": {"bookId": BID, "bookName": "测试小说", "creationStatus": status}})
+    page = state({"page": {"bookId": BID, "bookName": "测试小说", "creationStatus": status,
+                            "wordNumber": len(CONTENT) * count}})
     entries = [{"itemId": iid, "title": f"第 {i} 章", "needPay": 0, "isChapterLock": False,
                 "volume_name": "第一卷", "realChapterOrder": str(i - 1)} for i, iid in enumerate(IDS[:count], 1)]
     if locked is not None:
         entries[locked]["needPay"] = "1"
     directory = json.dumps({"code": 0, "data": {"allItemIds": IDS[:count], "chapterListWithVolume": [entries]}})
     chapters = {iid: state({"reader": {"chapterData": {"bookId": BID, "itemId": iid,
-                "title": f"第 {i} 章", "content": "<p>" + CONTENT + "</p>", "needPay": 0}}})
+                "title": f"第 {i} 章", "content": "<p>" + CONTENT + "</p>", "needPay": 0,
+                "chapterWordNumber": str(len(CONTENT))}}})
                 for i, iid in enumerate(IDS[:count], 1)}
 
     def fetch(url):
@@ -195,6 +197,111 @@ class FanqieContentTests(unittest.TestCase):
         for book_id, count, start in (("../book", 3, 1), (BID, 0, 1), (BID, True, 1), (BID, 3, 0), (BID, 5001, 1)):
             with self.subTest(book_id=book_id, count=count, start=start), self.assertRaises(CollectorError):
                 fetch_book_text(book_id, max_chapters=count, start_chapter=start)
+
+    def test_single_chapter_truncated_short_story_is_saved_as_fragment(self):
+        fetch, chapters = sources(status=0, count=1)
+        # Reproduce public reader structure: all ordinary lock flags are false,
+        # a one-item finished directory, but only part of its declared text.
+        chapters[IDS[0]] = state({"reader": {"chapterData": {
+            "bookId": BID, "itemId": IDS[0], "title": "测试短篇", "chapterWordNumber": "13325",
+            "needPay": 0, "isChapterLock": False, "isPaidPublication": False, "isPaidStory": False,
+            "nextItemId": "", "serialCount": "1", "bookPayInfo": '{"0":{"default":{"short_pay_status":1}}}',
+            "content": "<p>" + "故" * 4439 + "</p>"}}})
+        with patch("fagao.fanqie_content._fetch", side_effect=fetch):
+            result = fetch_book_text(BID, max_chapters=None)
+        self.assertFalse(result["complete"])
+        self.assertFalse(result["coverage_complete"])
+        self.assertEqual(result["integrity"]["status"], "partial")
+        self.assertEqual(result["chapters"][0]["integrity"]["declared_word_count"], 13325)
+        self.assertEqual(result["chapters"][0]["integrity"]["actual_characters"], 4439)
+        self.assertIn("公开片段", result["scope"])
+        self.assertIn("故" * 4439, result["text"])
+
+    def test_unknown_source_count_never_confirms_entire_body(self):
+        fetch, chapters = sources(status=0, count=1)
+        chapters[IDS[0]] = state({"reader": {"chapterData": {
+            "bookId": BID, "itemId": IDS[0], "content": CONTENT}}})
+        def no_counts(url):
+            if "/page/" in url:
+                return state({"page": {"bookId": BID, "creationStatus": 0}})
+            return fetch(url)
+        with patch("fagao.fanqie_content._fetch", side_effect=no_counts):
+            result = fetch_book_text(BID, max_chapters=None)
+        self.assertFalse(result["complete"])
+        self.assertFalse(result["coverage_complete"])
+        self.assertEqual(result["integrity"]["status"], "unverified")
+
+    def test_single_item_can_use_exact_book_word_count_as_fallback(self):
+        fetch, chapters = sources(status=0, count=1)
+        chapters[IDS[0]] = state({"reader": {"chapterData": {
+            "bookId": BID, "itemId": IDS[0], "content": CONTENT}}})
+        with patch("fagao.fanqie_content._fetch", side_effect=fetch):
+            result = fetch_book_text(BID, max_chapters=None)
+        self.assertTrue(result["complete"])
+        self.assertEqual(result["chapters"][0]["integrity"]["declared_word_count"], len(CONTENT))
+
+    def test_html_title_whitespace_and_small_shortfall_cannot_inflate_count(self):
+        from fagao.fanqie_content import _content_integrity, _word_count
+        text = _plain_content("<div>" + "字" * 100 + "<br/>" + " " * 200 + "</div>")
+        integrity = _content_integrity(text, 101)
+        self.assertEqual(integrity["status"], "partial")
+        self.assertEqual(integrity["actual_characters"], 100)
+        for invalid in (True, False, 0, -1, 12.5, "1.3万", "-1", "NaN", None):
+            self.assertIsNone(_word_count(invalid))
+
+    def test_partial_chapter_stops_range_without_losing_obtained_body(self):
+        fetch, chapters = sources()
+        chapters[IDS[1]] = state({"reader": {"chapterData": {
+            "bookId": BID, "itemId": IDS[1], "chapterWordNumber": 10000, "content": CONTENT}}})
+        with patch("fagao.fanqie_content._fetch", side_effect=fetch) as network:
+            result = fetch_book_text(BID)
+        self.assertEqual(len(result["chapters"]), 2)
+        self.assertEqual(result["missing"], [])
+        self.assertFalse(result["coverage_complete"])
+        self.assertFalse(any(c.args[0].endswith(IDS[2]) for c in network.call_args_list))
+
+    def test_book_total_shortfall_overrides_individually_verified_chapters(self):
+        fetch, _ = sources(status=0)
+        def changed_total(url):
+            if "/page/" in url:
+                return state({"page": {"bookId": BID, "creationStatus": 0, "wordNumber": 99999}})
+            return fetch(url)
+        with patch("fagao.fanqie_content._fetch", side_effect=changed_total):
+            result = fetch_book_text(BID, max_chapters=None)
+        self.assertTrue(all(c["integrity"]["status"] == "verified" for c in result["chapters"]))
+        self.assertEqual(result["integrity"]["status"], "partial")
+        self.assertFalse(result["complete"])
+
+    def test_legacy_cache_without_source_counts_is_fetched_again(self):
+        fetch, chapters = sources(status=0, count=1)
+        with tempfile.TemporaryDirectory() as directory:
+            with patch("fagao.fanqie_content._fetch", side_effect=fetch):
+                fetch_book_text(BID, directory, max_chapters=None)
+            file = next((Path(directory) / "cache/fanqie-content/chapters").glob("*.json"))
+            cached = json.loads(file.read_text())
+            del cached["value"]["integrity"]
+            file.write_text(json.dumps(cached))
+            chapters[IDS[0]] = state({"reader": {"chapterData": {
+                "bookId": BID, "itemId": IDS[0], "chapterWordNumber": 13325, "content": CONTENT}}})
+            with patch("fagao.fanqie_content._fetch", side_effect=fetch) as network:
+                result = fetch_book_text(BID, directory, max_chapters=None)
+            self.assertEqual(network.call_count, 1)
+            self.assertFalse(result["complete"])
+
+    def test_cached_integrity_claim_is_recomputed_from_body(self):
+        fetch, _ = sources(status=0, count=1)
+        with tempfile.TemporaryDirectory() as directory:
+            with patch("fagao.fanqie_content._fetch", side_effect=fetch):
+                fetch_book_text(BID, directory, max_chapters=None)
+            file = next((Path(directory) / "cache/fanqie-content/chapters").glob("*.json"))
+            cached = json.loads(file.read_text())
+            cached["value"]["integrity"]["declared_word_count"] = 13325
+            file.write_text(json.dumps(cached))
+            with patch("fagao.fanqie_content._fetch") as network:
+                result = fetch_book_text(BID, directory, max_chapters=None)
+            network.assert_not_called()
+            self.assertEqual(result["integrity"]["status"], "partial")
+            self.assertFalse(result["complete"])
 
 
 if __name__ == "__main__":

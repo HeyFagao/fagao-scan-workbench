@@ -27,6 +27,31 @@ PUBLIC_SYNC_FINAL_WAIT_SECONDS = .25
 OVERVIEW_SCOPE = 'overview:fanqie-new-qidian-ciweimao:v1'
 
 
+def text_integrity_summary(record):
+    """Describe saved evidence consistently in task messages and TXT headers."""
+    if record.get('acquisition')!='public_download':
+        return ('用户标记为完整正文' if record.get('complete') else '按用户导入范围保存','')
+    integrity=record.get('integrity') or {}
+    status=integrity.get('status')
+    if status=='partial': label='公开片段'
+    elif status!='verified': label='完整性未确认'
+    elif record.get('complete'): label='已核实为作品完整正文'
+    elif record.get('coverage_complete'): label='本次请求范围已完整取得'
+    else: label='已保存实际可读部分'
+    details=[]
+    actual=integrity.get('actual_characters')
+    declared=integrity.get('declared_book_word_count')
+    if isinstance(actual,int) and not isinstance(actual,bool) and actual>=0:
+        if integrity.get('actual_characters_basis')=='saved_text_including_headings':
+            details.append(f'已保存文本 {actual:,} 字符（不含空白，含章节标题）')
+        else:
+            details.append(f'实际正文 {actual:,} 字符（不含空白）')
+    if isinstance(declared,int) and not isinstance(declared,bool) and declared>0:
+        details.append(f'作品标注 {declared:,} 字')
+    if integrity.get('reason'): details.append(str(integrity['reason']))
+    return label,'；'.join(details)
+
+
 def collection_scope(platform, options):
     """Use effective collector defaults so equivalent requests share one job."""
     if not isinstance(options,dict): raise AppError('invalid_options','采集条件不正确。')
@@ -396,8 +421,11 @@ class JobManager:
                     job.update(status='cancelled',message='正文下载已暂停，尚未取得可保存的章节。',finished_at=now())
                 else:
                     text_meta=self.store.save_fetched_text(job['snapshot_id'],job['book_id'],raw)
-                    job.update(status='cancelled' if cancelled else 'completed',partial=not raw.get('coverage_complete',False),
-                               message=('已暂停，已取得内容已保存：' if cancelled else '正文已保存：')+text_meta['scope'],
+                    label,detail=text_integrity_summary(text_meta)
+                    message=('已暂停，已取得内容已保存：' if cancelled else f'{label}，正文已保存：')+text_meta['scope']
+                    if detail: message+='；'+detail
+                    job.update(status='cancelled' if cancelled else 'completed',partial=not text_meta.get('coverage_complete',False),
+                               message=message,
                                text_id=text_meta['id'],text=text_meta,download_url=f"/api/texts/{text_meta['id']}/download",finished_at=now())
                 self.store.save_job(job)
         except Exception as exc:
@@ -574,7 +602,9 @@ class Handler(BaseHTTPRequestHandler):
             record=store.text_record(parts[2])
             title=re.sub(r'[\x00-\x1f\x7f/\\:*?"<>|]','_',record.get('title') or '正文').strip(' .')[:100] or '正文'
             filename=f"{title}_{record['id'][:8]}.txt"
-            content=f"《{record['title']}》\n阅读范围：{record['scope']}\n来源：{record['source']}\n作品：{record['platform']} / {record['book_id']}\n\n"+record['content']
+            label,detail=text_integrity_summary(record)
+            integrity_header=f'正文状态：{label}\n'+(f'完整性核验：{detail}\n' if detail else '')
+            content=f"《{record['title']}》\n阅读范围：{record['scope']}\n{integrity_header}来源：{record['source']}\n作品：{record['platform']} / {record['book_id']}\n\n"+record['content']
             self._send(200,content,'text/plain; charset=utf-8',{'Content-Disposition':f"attachment; filename=fagao-{record['id']}.txt; filename*=UTF-8''{quote(filename,safe='')}"})
             return None
         if path.startswith('/api/texts/'): return store.text_record(path.rsplit('/',1)[-1])

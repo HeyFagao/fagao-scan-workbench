@@ -563,10 +563,20 @@
     return (state?.texts || []).filter(item=>item.book_id===bookId && item.platform===platformId);
   }
   function textDownloadURL(id){return `/api/texts/${encodeURIComponent(id)}/download`;}
+  function textIntegrity(asset){
+    if(asset.acquisition!=='public_download')return {label:asset.complete?'用户标记为完整正文':'按用户导入范围保存',detail:''};
+    const integrity=asset.integrity || {}, status=integrity.status;
+    const label=status==='partial'?'公开片段':status!=='verified'?'完整性未确认':asset.complete?'已核实为作品完整正文':asset.coverage_complete?'本次请求范围已完整取得':'已保存实际可读部分';
+    const details=[];
+    if(Number.isInteger(integrity.actual_characters) && integrity.actual_characters>=0)details.push(integrity.actual_characters_basis==='saved_text_including_headings'?`已保存文本 ${integrity.actual_characters.toLocaleString('zh-CN')} 字符（不含空白，含章节标题）`:`实际正文 ${integrity.actual_characters.toLocaleString('zh-CN')} 字符（不含空白）`);
+    if(Number.isInteger(integrity.declared_book_word_count) && integrity.declared_book_word_count>0)details.push(`作品标注 ${integrity.declared_book_word_count.toLocaleString('zh-CN')} 字`);
+    if(integrity.reason)details.push(String(integrity.reason));
+    return {label,detail:details.join('；')};
+  }
   function renderTextAssets(book){
     const assets=textAssetsFor(book.id);
     if(!assets.length)return '';
-    return `<section class="saved-text-assets" aria-label="已保存的正文"><h3>正文资料 <span>${assets.length} 份</span></h3>${assets.slice(0,3).map(asset=>`<div class="saved-text-item"><div><strong>${escape(asset.scope || '已保存正文')}</strong><small>${Number(asset.characters || 0).toLocaleString()} 字符 · ${escape(date(asset.created_at || asset.collected_at))}</small></div><div class="text-item-actions"><button data-action="preview-text" data-id="${escape(asset.id)}">查看</button><a href="${textDownloadURL(asset.id)}" download>TXT ↓</a></div></div>`).join('')}</section>`;
+    return `<section class="saved-text-assets" aria-label="已保存的正文"><h3>正文资料 <span>${assets.length} 份</span></h3>${assets.slice(0,3).map(asset=>{const integrity=textIntegrity(asset);return `<div class="saved-text-item"><div><strong>${escape(asset.scope || '已保存正文')}</strong><small>${escape(integrity.label)} · ${Number(asset.characters || 0).toLocaleString()} 字符 · ${escape(date(asset.created_at || asset.collected_at))}</small>${integrity.detail?`<small>${escape(integrity.detail)}</small>`:''}</div><div class="text-item-actions"><button data-action="preview-text" data-id="${escape(asset.id)}">查看</button><a href="${textDownloadURL(asset.id)}" download>TXT ↓</a></div></div>`;}).join('')}</section>`;
   }
   function captureTextRange(){
     if(!contentPanel || $('#dialog').dataset.kind!=='text')return;
@@ -617,8 +627,8 @@
     }
     if(asset){
       const missing=Array.isArray(asset.missing)?asset.missing:[], acquired=Array.isArray(asset.chapters)?asset.chapters.length:null;
-      const coverage=asset.complete?(asset.acquisition==='public_download'?'已核实为作品完整正文':'用户标记为完整正文'):asset.coverage_complete?'本次请求范围已完整取得':'已保存实际可读部分';
-      body+=`<section class="chapter-saved-result"><h3>正文已保存</h3><p class="chapter-saved-scope">${escape(asset.scope || '阅读范围见正文资料')}</p><div class="chapter-saved-meta"><span>${coverage}</span>${acquired!==null?`<span>实际取得 ${acquired} 章</span>`:''}<span>${Number(asset.characters || 0).toLocaleString()} 字符</span>${missing.length?`<span>缺失 ${missing.length} 章</span>`:''}</div>${missing.length?`<details class="chapter-missing"><summary>查看未取得的章节</summary><ul>${missing.slice(0,100).map(item=>`<li>${Number.isFinite(item.index)?'第 '+item.index+' 章 · ':''}${escape(item.title || item.chapter || '')} ${escape(item.reason || '未取得正文')}</li>`).join('')}</ul>${missing.length>100?'<p>其余缺章记录已保存在正文资料中。</p>':''}</details>`:''}<div class="chapter-result-actions"><a class="button secondary" href="${textDownloadURL(asset.id)}" download>导出 TXT ↓</a><button class="button secondary" data-action="preview-text" data-id="${escape(asset.id)}">查看已保存正文</button></div><p class="chapter-workbuddy-note">回到 WorkBuddy 可以说：“分析刚才保存的《${escape(panel.title)}》正文。”</p></section>`;
+      const integrity=textIntegrity(asset), chapterLabel=asset.integrity?.status==='partial'?'片段涉及':'实际取得';
+      body+=`<section class="chapter-saved-result"><h3>正文已保存</h3><p class="chapter-saved-scope">${escape(asset.scope || '阅读范围见正文资料')}</p><div class="chapter-saved-meta"><span>${escape(integrity.label)}</span>${acquired!==null?`<span>${chapterLabel} ${acquired} 章</span>`:''}<span>${Number(asset.characters || 0).toLocaleString()} 字符</span>${missing.length?`<span>缺失 ${missing.length} 章</span>`:''}</div>${integrity.detail?`<p class="chapter-integrity" role="note">${escape(integrity.detail)}</p>`:''}${missing.length?`<details class="chapter-missing"><summary>查看未取得的章节</summary><ul>${missing.slice(0,100).map(item=>`<li>${Number.isFinite(item.index)?'第 '+item.index+' 章 · ':''}${escape(item.title || item.chapter || '')} ${escape(item.reason || '未取得正文')}</li>`).join('')}</ul>${missing.length>100?'<p>其余缺章记录已保存在正文资料中。</p>':''}</details>`:''}<div class="chapter-result-actions"><a class="button secondary" href="${textDownloadURL(asset.id)}" download>导出 TXT ↓</a><button class="button secondary" data-action="preview-text" data-id="${escape(asset.id)}">查看已保存正文</button></div><p class="chapter-workbuddy-note">回到 WorkBuddy 可以说：“分析刚才保存的《${escape(panel.title)}》正文。”</p></section>`;
     }
     const focused=document.activeElement?.id;
     $('#dialog-body').innerHTML=`<div class="dialog-head"><div><h2>${escape(panel.title)}</h2><p>目录与正文</p></div><button class="close-dialog" data-action="close-dialog" aria-label="关闭窗口">×</button></div><div class="dialog-content">${body}</div>`;
@@ -670,7 +680,8 @@
   }
   async function previewText(id){
     const text=await api(`/api/texts/${encodeURIComponent(id)}`);
-    showDialog(text.title || '已保存正文',`<div class="text-preview-actions"><span>${escape(text.scope || '阅读范围见正文资料')}</span><a class="button secondary small" href="${textDownloadURL(id)}" download>导出 TXT ↓</a></div><pre class="report-text saved-text-preview">${escape(text.content || '')}</pre>`,'已保存正文 · 不会重新下载');
+    const integrity=textIntegrity(text);
+    showDialog(text.title || '已保存正文',`<div class="text-preview-actions"><span>${escape(text.scope || '阅读范围见正文资料')}</span><a class="button secondary small" href="${textDownloadURL(id)}" download>导出 TXT ↓</a></div><p class="chapter-integrity">${escape(integrity.label)}${integrity.detail?' · '+escape(integrity.detail):''}</p><pre class="report-text saved-text-preview">${escape(text.content || '')}</pre>`,'已保存正文 · 不会重新下载');
   }
   const statNumber=value=>Number.isFinite(value)?value.toLocaleString('zh-CN',{maximumFractionDigits:2}):'未提供';
   const signedNumber=value=>Number.isFinite(value)?(value>0?'+':'')+statNumber(value):'—';

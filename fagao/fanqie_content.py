@@ -25,6 +25,7 @@ CHAPTER_TTL = 6 * 60 * 60
 REQUEST_INTERVAL = 0.35
 MAX_CHAPTERS = 5000
 MAX_TEXT_CHARACTERS = 8_000_000
+INTEGRITY_VERSION = 1
 _ID = re.compile(r"\d{5,30}\Z")
 _RESTRICTED = ("needPay", "isChapterLock", "isPaidPublication", "isPaidStory")
 
@@ -109,11 +110,38 @@ def _readable(value):
     return "" if has_unmapped_pua(value) else value
 
 
+def _word_count(value):
+    """Only exact positive source counts are evidence; display units are not."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value > 0 else None
+    if isinstance(value, str) and re.fullmatch(r"[0-9]+", value.strip()):
+        return int(value) if int(value) > 0 else None
+    return None
+
+
+def _content_integrity(text, declared):
+    # Count only body characters. Formatting, title and inserted newlines must
+    # never fill a shortfall. Source counts are retained rather than rounded.
+    actual = sum(not char.isspace() for char in text)
+    declared = _word_count(declared)
+    if declared is None:
+        status, reason = "unverified", "来源未提供可核对的章节字数，全文完整性未确认"
+    elif actual < declared:
+        status, reason = "partial", f"来源标注 {declared} 字，实际取得 {actual} 个非空白字符；保存为公开片段"
+    else:
+        status, reason = "verified", "已核对章节身份、访问状态及来源字数"
+    return {"version": INTEGRITY_VERSION, "status": status,
+            "declared_word_count": declared, "actual_characters": actual, "reason": reason}
+
+
 def catalog(book_id, data_dir=None):
     """Return the source directory in source order, using one-based positions."""
     book_id = _identity(book_id)
     cached = _cache_read(data_dir, "catalogs", book_id, CATALOG_TTL)
-    if cached and cached.get("book_id") == book_id and isinstance(cached.get("chapters"), list):
+    if (cached and cached.get("book_id") == book_id and isinstance(cached.get("chapters"), list)
+            and cached.get("integrity_version") == INTEGRITY_VERSION):
         return cached
     source = f"{BASE}/page/{book_id}"
     initial = _state(_fetch(source))
@@ -159,17 +187,21 @@ def catalog(book_id, data_dir=None):
     if len(ordered_ids) > MAX_CHAPTERS:
         raise _error(f"公开目录超过 {MAX_CHAPTERS} 章，请按卷导入或缩小来源范围。")
     chapters = []
+    declared_book_words = _word_count(page.get("wordNumber"))
     for index, item_id in enumerate(ordered_ids, 1):
         item = lookup.get(item_id, {})
         chapters.append({"item_id": item_id, "index": index,
                          "title": _readable(item.get("title")) or f"目录第 {index} 项",
                          "volume": _readable(item.get("volume_name")),
+                         "declared_word_count": _word_count(item.get("chapterWordNumber")) or
+                             (declared_book_words if len(ordered_ids) == 1 else None),
                          "need_pay": _flag(item.get("needPay")), "is_locked": _flag(item.get("isChapterLock")),
                          "restricted": _restricted(item), "url": f"{BASE}/reader/{item_id}"})
     result = {"platform": "fanqie", "book_id": book_id, "title": _readable(page.get("bookName")) or f"作品 {book_id}",
               "source": source, "source_url": source, "status": {"0": "已完结", "1": "连载中"}.get(str(page.get("creationStatus")), ""),
               "catalog_chapters": len(chapters), "catalog_complete": isinstance(all_ids, list) and bool(all_ids) and not warnings,
-              "chapters": chapters, "warnings": warnings, "collected_at": _now()}
+              "chapters": chapters, "warnings": warnings, "collected_at": _now(),
+              "declared_book_word_count": declared_book_words, "integrity_version": INTEGRITY_VERSION}
     _cache_write(data_dir, "catalogs", book_id, result)
     return result
 
@@ -219,7 +251,13 @@ def _chapter(book_id, item, data_dir):
     cached = _cache_read(data_dir, "chapters", book_id + "-" + item_id, CHAPTER_TTL)
     if cached and cached.get("book_id") == book_id and cached.get("item_id") == item_id:
         text = cached.get("text")
-        if isinstance(text, str) and len(text) >= 30 and not has_unmapped_pua(text) and hashlib.sha256(text.encode()).hexdigest() == cached.get("sha256"):
+        integrity = cached.get("integrity", {})
+        if (isinstance(text, str) and len(text) >= 30 and not has_unmapped_pua(text)
+                and hashlib.sha256(text.encode()).hexdigest() == cached.get("sha256")
+                and isinstance(integrity, dict) and integrity.get("version") == INTEGRITY_VERSION):
+            # Recompute even current cache claims; old entries without source
+            # counts are fetched again rather than inheriting a false full flag.
+            cached["integrity"] = _content_integrity(text, integrity.get("declared_word_count"))
             return cached
     initial = _state(_fetch(item["url"]))
     reader = initial.get("reader") if isinstance(initial, dict) else None
@@ -229,8 +267,10 @@ def _chapter(book_id, item, data_dir):
     if _restricted(chapter):
         raise _error("此章需要相应正文权限，已停止读取。", "forbidden")
     text = _plain_content(chapter.get("content"))
+    declared = _word_count(chapter.get("chapterWordNumber")) or item.get("declared_word_count")
     result = {"book_id": book_id, "item_id": item_id, "title": _readable(chapter.get("title")) or item["title"],
-              "text": text, "sha256": hashlib.sha256(text.encode()).hexdigest()}
+              "text": text, "sha256": hashlib.sha256(text.encode()).hexdigest(),
+              "integrity": _content_integrity(text, declared)}
     _cache_write(data_dir, "chapters", book_id + "-" + item_id, result)
     return result
 
@@ -266,7 +306,9 @@ def fetch_book_text(book_id, data_dir=None, max_chapters=3, start_chapter=1, pro
     if not initial:
         return {"platform": "fanqie", "book_id": book_id, "title": "", "text": "", "scope": "尚未取得正文", "complete": False,
                 "coverage_complete": False, "cancelled": True, "chapters": [], "missing": [], "catalog_chapters": 0,
-                "requested_chapters": max_chapters, "source": f"{BASE}/page/{book_id}", "collected_at": _now(), "status": ""}
+                "requested_chapters": max_chapters, "source": f"{BASE}/page/{book_id}", "collected_at": _now(), "status": "",
+                "integrity": {"version": INTEGRITY_VERSION, "status": "unverified", "declared_book_word_count": None,
+                              "actual_characters": 0, "reason": "尚未取得正文"}}
     info = catalog(book_id, data_dir)
     if start_chapter > info["catalog_chapters"]:
         raise _error("起始目录序号超过当前作品目录。")
@@ -286,23 +328,39 @@ def fetch_book_text(book_id, data_dir=None, max_chapters=3, start_chapter=1, pro
             total_characters += len(piece) + 2
             texts.append(piece)
             chapters.append({"id": item["item_id"], "item_id": item["item_id"], "index": item["index"],
-                             "title": result["title"], "url": item["url"], "characters": len(result["text"])})
+                             "title": result["title"], "url": item["url"], "characters": len(result["text"]),
+                             "integrity": result["integrity"]})
+            if result["integrity"]["status"] == "partial":
+                break
         except Exception as exc:
             from .collectors import CollectorError
             if not isinstance(exc, CollectorError):
                 raise
             missing.append({"index": item["index"], "id": item["item_id"], "chapter": item["title"], "reason": str(exc)})
             break
-    if not cancelled:
-        notify(f"本次已取得 {len(chapters)}/{len(wanted)} 章正文。")
     if not texts and not cancelled:
         raise _error(missing[0]["reason"] if missing else "当前没有取得可读正文。")
-    coverage_complete = len(chapters) == len(wanted) and not missing and not cancelled
     whole_directory = start_chapter == 1 and len(chapters) == info["catalog_chapters"] and info["catalog_complete"]
+    actual = sum(chapter["integrity"]["actual_characters"] for chapter in chapters)
+    problem = next((c["integrity"] for c in chapters if c["integrity"]["status"] == "partial"), None)
+    if problem is None:
+        problem = next((c["integrity"] for c in chapters if c["integrity"]["status"] != "verified"), None)
+    declared_book = info.get("declared_book_word_count")
+    if whole_directory and declared_book and actual < declared_book:
+        problem = {"status": "partial", "reason": f"全书标注 {declared_book} 字，实际取得 {actual} 个非空白字符；保存为公开片段"}
+    integrity = {"version": INTEGRITY_VERSION, "status": problem["status"] if problem else ("verified" if chapters else "unverified"),
+                 "declared_book_word_count": declared_book, "actual_characters": actual,
+                 "reason": problem["reason"] if problem else ("所列章节已逐章核对来源字数" if chapters else "尚未取得正文")}
+    coverage_complete = len(chapters) == len(wanted) and not missing and not cancelled and integrity["status"] == "verified"
     complete = coverage_complete and whole_directory and info["status"] == "已完结"
     if chapters:
         scope = f"公开目录第 {chapters[0]['index']}—{chapters[-1]['index']} 项，共 {len(chapters)} 章（当前目录 {info['catalog_chapters']} 章）"
-        if whole_directory and info["status"] == "连载中":
+        if integrity["status"] == "partial":
+            scope = scope.replace(f"共 {len(chapters)} 章", f"片段涉及 {len(chapters)} 章")
+            scope += "；公开片段，全文未取得"
+        elif integrity["status"] == "unverified":
+            scope += "；全文完整性未确认"
+        elif whole_directory and info["status"] == "连载中":
             scope += "；已取得截至本次目录的已发布章节，作品仍连载"
     else:
         scope = "尚未取得正文"
@@ -310,9 +368,15 @@ def fetch_book_text(book_id, data_dir=None, max_chapters=3, start_chapter=1, pro
         scope += "；下载已取消"
     elif missing:
         scope += "；后续章节未取得"
+    if not cancelled:
+        notify(integrity["reason"] if integrity["status"] != "verified" else f"本次已取得 {len(chapters)}/{len(wanted)} 章正文。")
+        if cancelled:
+            coverage_complete = complete = False
+            scope += "；下载已取消"
     return {"platform": "fanqie", "book_id": book_id, "title": info["title"], "text": "\n\n".join(texts),
             "scope": scope, "complete": complete,
-            "completeness_basis": "官方标为已完结，且本次完整目录逐章取得" if complete else "仅确认所列实际章节；未声明全书完整",
+            "completeness_basis": "来源标为已完结，完整目录逐章核对字数，且无内容缺口" if complete else integrity["reason"],
+            "integrity": integrity,
             "source": info["source"], "chapters": chapters, "missing": missing,
             "catalog_chapters": info["catalog_chapters"], "catalog_complete": info["catalog_complete"],
             "requested_chapters": len(wanted), "requested_start": start_chapter, "coverage_complete": coverage_complete,
