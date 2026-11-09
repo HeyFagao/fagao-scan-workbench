@@ -115,6 +115,11 @@ def _scope(snapshot):
     return {name: str(snapshot.get(name) or '') for name in SCOPE_FIELDS}
 
 
+def _source_id(snapshot):
+    """Older locally collected records predate explicit source provenance."""
+    return str(snapshot.get('source_id') or 'direct')
+
+
 def _title(book):
     title = book.get('title')
     if not isinstance(title, str) or _PUA.search(title) or title.startswith(('书名暂未取得', '书名待加载')):
@@ -141,7 +146,8 @@ def _changes(snapshot, history_snapshots, current):
         return {**empty, 'reason': '当前榜单没有有效的来源数据日期，暂不计算涨跌。'}
     eligible = []
     for previous in history_snapshots or []:
-        if not isinstance(previous, dict) or previous.get('id') == snapshot.get('id') or _scope(previous) != _scope(snapshot):
+        if (not isinstance(previous, dict) or previous.get('id') == snapshot.get('id')
+                or _scope(previous) != _scope(snapshot) or _source_id(previous) != _source_id(snapshot)):
             continue
         previous_date = _source_date(previous)
         if previous_date is not None and previous_date < current_date and _books(previous):

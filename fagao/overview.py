@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 import re
 
 from .insights import (_books, _collected_order, _metric, _number, _rank,
-                       _scope, _source_date, _title, TITLE_KEYWORDS)
+                       _scope, _source_date, _source_id, _title, TITLE_KEYWORDS)
 
 PLATFORMS = (
     ('fanqie', '番茄小说', '新书榜', '在读', ('男频', '女频')),
@@ -75,6 +75,35 @@ def _latest_key(snapshot):
             _collected_order(snapshot), str(snapshot.get('id') or ''))
 
 
+def _latest_current(records):
+    """First choose each source's latest version, then compare source coverage.
+
+    Public daily Top20 records cannot displace a fuller direct snapshot on the
+    same source day. Within one source, precise version times still take priority.
+    """
+    by_source = defaultdict(list)
+    for record in records:
+        by_source[_source_id(record)].append(record)
+    current = [max(group, key=_latest_key) for group in by_source.values()]
+    def priority(record):
+        day = _source_date(record)
+        return (day.toordinal() if day else 0, record.get('complete') is True,
+                _book_count(record), _source_id(record) == 'direct', _latest_key(record))
+    return max(current, key=priority)
+
+
+def _historical_baseline(current, records):
+    """Use a same-source exact seven-day record when present, else actual prior."""
+    current_date = _source_date(current)
+    if current_date is None:
+        return None
+    candidates = [old for old in records if _source_id(old) == _source_id(current)
+                  and _source_date(old) is not None and _source_date(old) < current_date
+                  and _book_count(old) > 0]
+    week = [old for old in candidates if (current_date - _source_date(old)).days == 7]
+    return max(week or candidates, key=_latest_key) if candidates else None
+
+
 def _primary(book, platform):
     if platform == 'fanqie':
         return _metric(book, '在读')
@@ -106,6 +135,7 @@ def _reference(snapshot, book_id, book, platform, metric_label):
         'channel': snapshot['channel'], 'category': snapshot['category'],
         'board': snapshot['board'], 'period': snapshot.get('period'),
         'rank': _rank(book), 'data_date': snapshot.get('data_date'),
+        'source_id': _source_id(snapshot),
         'read_count': reads, 'word_count': words,
         'primary_count': _primary(book, platform), 'primary_label': metric_label,
         'reads_per_10k_words': round(reads * 10000 / words, 2)
@@ -125,12 +155,9 @@ def _growth(latest, grouped, platform, metric_label):
         current_date = _source_date(current)
         if current_date is None:
             continue
-        baselines = [old for old in grouped[scope]
-                     if _source_date(old) is not None and _source_date(old) < current_date
-                     and _books(old)]
-        if not baselines:
+        baseline = _historical_baseline(current, grouped[scope])
+        if baseline is None:
             continue
-        baseline = max(baselines, key=_latest_key)
         comparable_scopes += 1
         previous_books = _books(baseline)
         for book_id, book in _books(current).items():
@@ -174,7 +201,7 @@ def _panel(snapshots, platform, label, board, metric_label, expected_channels):
     for snapshot in snapshots:
         if _eligible(snapshot, platform, board, expected_channels):
             grouped[_scope_key(snapshot)].append(snapshot)
-    latest = {scope: max(group, key=_latest_key) for scope, group in grouped.items()}
+    latest = {scope: _latest_current(group) for scope, group in grouped.items()}
     ordered = sorted(latest.values(), key=_latest_key, reverse=True)
     all_books, channel_books, categories = {}, defaultdict(set), []
     for snapshot in ordered:
@@ -258,6 +285,7 @@ def _panel(snapshots, platform, label, board, metric_label, expected_channels):
                   for s in ordered if s.get('complete') is not True]
     metric_values = [item['primary_count'] for item in refs if item['primary_count'] is not None]
     latest_collected = max(ordered, key=_collected_order).get('collected_at') if ordered else None
+    from .dashboard import build_dashboard
     return {
         'platform': platform, 'label': label, 'board': board, 'metric_label': metric_label,
         'scope_label': '男频 · 女频 · 新书榜' if platform == 'fanqie' else f'{label} · 月票榜',
@@ -273,15 +301,16 @@ def _panel(snapshots, platform, label, board, metric_label, expected_channels):
         'channels': channels, 'categories': categories, 'keywords': keywords[:18],
         'formulas': formulas, 'candidates': candidates[:12], 'candidate_basis': candidate_basis,
         'growth': _growth(latest, grouped, platform, metric_label),
+        'dashboard': build_dashboard(platform, ordered, grouped),
         'methods': [
             '番茄仅汇总男频、女频新书榜，阅读榜不参与任何首页统计。' if platform == 'fanqie'
             else '仅汇总本平台已接入的月票榜；与其他平台分别统计，原榜名次不混排。',
             '每个频道、分类、榜型和周期只使用最新保存快照；平台内同一本书按作品ID去重，分类统计仍保留各自样本。',
-            '爆款公式是榜单书名中实际出现的表达结构，附命中数量和例书；不代表成功概率，也不代替阅读正文。',
-            '关键词与公式按可读书名计数，一本书可以命中多项；均为本机已取得样本，不代表平台全部作品。',
+            '书名结构来自实际标题的规则命中统计，附样本量；不代表成功概率，也不代替阅读正文。',
+            '关键词与书名结构按可读书名计数，一本书可以命中多项；均为本机已取得样本，不代表平台全部作品。',
             '热度指标合计不是独立读者人数。每万字在读仅作筛选参考，不等同收入或转化率。' if platform == 'fanqie'
             else '月票数量只在来源明确提供时展示；来源没有票数时仅保留原榜位置。',
-            '增长仅比较同榜范围、同一作品、不同来源日期的真实记录，保留实际天数；不把采集时间当来源日期。',
+            '增长仅比较同一来源、同榜范围、同一作品、不同数据日期的真实记录，保留实际天数；不把采集时间当来源日期。',
         ],
     }
 
@@ -292,8 +321,8 @@ def relevant_snapshot_ids(metadata):
     Metadata is the Store's snapshot metadata: all scope/version fields plus
     ``books_count``, without books or category navigation. Store snapshots hold
     unique valid IDs, so their positive count is equivalent to a nonempty book
-    map. At most two records are selected per eligible scope: the current source
-    version and its closest prior source day. Sources without a data date need
+    map. At most three records are selected per eligible scope and source: the
+    current source version, closest prior source day, and exact seven-day baseline. Sources without a data date need
     only the latest collected record; they cannot contribute historical growth.
     """
     if not isinstance(metadata, (list, tuple)):
@@ -302,7 +331,7 @@ def relevant_snapshot_ids(metadata):
     for item in metadata:
         for platform, _label, board, _metric_label, channels in PLATFORMS:
             if _eligible_scope(item, platform, board, channels):
-                grouped[_scope_key(item)].append(item)
+                grouped[(*_scope_key(item), _source_id(item))].append(item)
                 break
     selected = []
     for scope in sorted(grouped):
@@ -317,6 +346,8 @@ def relevant_snapshot_ids(metadata):
                  and _book_count(item) > 0]
         if older:
             selected.append(max(older, key=_latest_key)['id'])
+            week = [item for item in older if (current_date - _source_date(item)).days == 7]
+            if week: selected.append(max(week, key=_latest_key)['id'])
     return list(dict.fromkeys(selected))
 
 

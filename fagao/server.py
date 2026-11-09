@@ -22,6 +22,8 @@ MAX_BODY = 30 * 1024 * 1024
 AUTO_FRESH_SECONDS = 15 * 60
 AUTO_FAILURE_COOLDOWN_SECONDS = 5 * 60
 INTERACTIVE_IDLE_SECONDS = 120
+PUBLIC_SYNC_DEADLINE_SECONDS = 40
+PUBLIC_SYNC_FINAL_WAIT_SECONDS = .25
 OVERVIEW_SCOPE = 'overview:fanqie-new-qidian-ciweimao:v1'
 
 
@@ -74,6 +76,7 @@ class JobManager:
         self.store=store; self.lock=threading.RLock(); self.active={}
         self.condition=threading.Condition(self.lock)
         self.overview_lock=threading.Lock(); self.overview_cache=None
+        self.public_import_lock=threading.Lock()
 
     def start(self,platform,options,automatic=False,interactive=False,demand_count=10):
         if not isinstance(automatic,bool): raise AppError('invalid_automatic','automatic 应为布尔值。')
@@ -169,11 +172,72 @@ class JobManager:
             threading.Thread(target=self._run_overview,args=(job,),daemon=True).start()
             return {'status':'started','job_id':job['id'],'job':dict(job)}
 
+    def _start_public_sync(self,job):
+        """Run the optional archive beside direct previews; never hold up a source."""
+        done=threading.Event()
+        deadline=time.monotonic()+PUBLIC_SYNC_DEADLINE_SECONDS
+        with self.lock:
+            current=self.store.job(job['id'])
+            if current['status']=='cancelled':
+                done.set(); return done
+            job.update(current)
+            job['public_source']={'status':'running','snapshot_count':0,'started_at':now()}
+            self.store.save_job(job)
+
+        def finish(status, **fields):
+            with self.lock:
+                current=self.store.job(job['id'])
+                if current['status']=='cancelled':
+                    done.set(); return
+                job['public_source']={'status':status,'snapshot_count':0,**fields,'finished_at':now()}
+                current['public_source']=job['public_source']; current['updated_at']=now()
+                self.store.save_job(current)
+            done.set()
+
+        def ensure_active(*args,**kwargs):
+            with self.lock:
+                if self.store.job(job['id'])['status']=='cancelled':
+                    raise AppError('cancelled','已暂停公开快照同步。')
+            if time.monotonic()>deadline:
+                raise AppError('public_timeout','公开来源响应超时，已保留直采结果。')
+
+        def worker():
+            try:
+                from .public_rankings import sync_public_rankings
+                from .overview import _scope_key
+                raw=sync_public_rankings(progress=ensure_active)
+                ensure_active()
+                imported=0
+                with self.public_import_lock:
+                    existing={(item.get('source_id'),_scope_key(item),item.get('data_date'),item.get('source_revision'))
+                              for item in self.store.state()['snapshots']}
+                    for snapshot in sorted(raw.get('snapshots',[]),key=lambda item:str(item.get('data_date') or '')):
+                        key=(snapshot.get('source_id'),_scope_key({**snapshot,'mode':snapshot.get('mode') or 'long'}),snapshot.get('data_date'),snapshot.get('source_revision'))
+                        with self.lock:
+                            ensure_active()
+                            if key in existing: continue
+                            self.store.save_snapshot(snapshot); existing.add(key); imported+=1
+                finish('completed' if raw.get('snapshots') else 'unavailable',snapshot_count=imported,
+                       coverage=raw.get('coverage',[]),warnings=raw.get('warnings',[]),failures=raw.get('failures',[]))
+            except Exception as exc:
+                if getattr(exc,'code',None)!='cancelled':
+                    finish('unavailable',message=str(exc)[:800])
+                done.set()
+
+        def watchdog():
+            if not done.wait(PUBLIC_SYNC_DEADLINE_SECONDS):
+                finish('unavailable',message='公开来源响应超时，已保留直采结果。')
+
+        threading.Thread(target=worker,daemon=True).start()
+        threading.Thread(target=watchdog,daemon=True).start()
+        return done
+
     def _run_overview(self,job):
         from .batch import collect_all_categories
         counters=job['progress']
         result={'channels':[],'snapshots_count':0,'preview_count':0,'failed_categories':[],
                 'incomplete_categories':[],'warnings':[],'complete':False}
+        public_done=self._start_public_sync(job)
 
         def update(message):
             with self.lock:
@@ -266,6 +330,7 @@ class JobManager:
                     if getattr(exc,'code',None)=='cancelled': raise
                     result['failed_categories'].append({'platform':platform,'channel':channel,'category':'全部',
                                                        'code':getattr(exc,'code','source_failed'),'message':str(exc)[:1200]})
+            public_done.wait(PUBLIC_SYNC_FINAL_WAIT_SECONDS)
             result['complete']=not result['failed_categories'] and not result['incomplete_categories'] and all(b['discovery_complete'] for b in result['channels'])
             with self.lock:
                 if self.store.job(job['id'])['status']=='cancelled': return
@@ -419,11 +484,13 @@ class JobManager:
     def cancel(self,jid):
         with self.lock:
             j=self.store.job(jid)
-            if j['status'] in ('pending','running'):
+            if j['status'] in ('pending','running') or (j.get('kind')=='overview' and j.get('public_source',{}).get('status')=='running'):
                 if j.get('kind')=='text':
                     j.update(status='cancelling',message='正在暂停正文下载，已取得内容将保留。',cancel_requested_at=now())
                 else:
                     j.update(status='cancelled',message='已取消本次采集，已有结果保留。',finished_at=now())
+                if j.get('public_source',{}).get('status')=='running':
+                    j['public_source']={**j['public_source'],'status':'cancelled','finished_at':now()}
                 self.store.save_job(j)
                 if j.get('kind')=='overview' and j.get('owns_child') and j.get('active_child_id'):
                     if not self.store.job(j['active_child_id']).get('shared'): self.cancel(j['active_child_id'])
