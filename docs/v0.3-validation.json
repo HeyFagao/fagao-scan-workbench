@@ -1,0 +1,66 @@
+{
+  "date": "2026-11-09",
+  "version": "0.3.0",
+  "tests": {
+    "python": 191,
+    "ui_api": 46,
+    "cli_integration": 5,
+    "ui_external_platform_requests": 0,
+    "visual_layout_verified": false
+  },
+  "fanqie_catalog": {
+    "channel": "女频",
+    "category": "古言脑洞",
+    "board": "新书榜",
+    "books": 297,
+    "rank_range": [
+      1,
+      297
+    ],
+    "covers": 297,
+    "independent_detail_matches": {
+      "title": 297,
+      "author": 297,
+      "summary": 297
+    },
+    "source_page_requests": 5,
+    "detail_page_requests": 0,
+    "cold_seconds": [
+      36.29,
+      47.63
+    ],
+    "timing_note": "计时发生于空响应缺失版本字段修正前，保留原保守完整性状态；最终空页解析已用保存的官方响应做回归验证。"
+  },
+  "other_platform_samples": {
+    "qidian": {
+      "pages": 3,
+      "books": 60,
+      "covers": 60
+    },
+    "ciweimao": {
+      "pages": 3,
+      "books": 30,
+      "covers": 30
+    }
+  },
+  "fanqie_text": {
+    "book_id": "7681650827315907608",
+    "source": "https://fanqienovel.com/page/7681650827315907608",
+    "catalog_chapters": 70,
+    "downloaded_chapters": 3,
+    "characters": 9600,
+    "missing_chapters": 0,
+    "unmapped_pua": false,
+    "coverage_complete": true,
+    "complete": false,
+    "elapsed_seconds": 39.41,
+    "store_and_resume_verified": true,
+    "store_compatibility_network_requests": 0
+  },
+  "limits": [
+    "未在目标桌面完成像素验收",
+    "未用黑岩授权账号实测",
+    "未将全分类批量调度测试冒充全部分类联网实抓",
+    "未发布任何正文、缓存或会话"
+  ]
+}
