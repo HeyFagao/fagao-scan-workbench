@@ -94,6 +94,57 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(state['auth']['heiyan']['message'],'过期')
         self.assertEqual(self.store.snapshot(old['id'])['books'][0]['id'],'h1')
         self.assertTrue(any(s['id']==old['id'] for s in state['snapshots']))
+    def test_catalog_is_bound_to_explicit_snapshot_and_book(self):
+        snap=self.store.save_snapshot({'platform':'fanqie','books':[{'id':'cat-book','title':'目录测试'}]})
+        result={'platform':'fanqie','book_id':'cat-book','title':'目录测试','source':'https://fanqienovel.com/page/cat-book','catalog_chapters':1,'chapters':[{'index':1,'item_id':'chapter-1','title':'第一章'}]}
+        with patch('fagao.fanqie_content.catalog',return_value=result) as catalog:
+            status,body,_=self.post('/api/catalog',{'snapshot_id':snap['id'],'book_id':'cat-book'})
+        self.assertEqual(status,200); self.assertEqual(body['snapshot_id'],snap['id']); self.assertEqual(body['total'],1)
+        self.assertEqual(body['source_url'],result['source']); catalog.assert_called_once_with('cat-book',self.store.directory)
+        with patch('fagao.fanqie_content.catalog',return_value={**result,'book_id':'another'}):
+            self.assertEqual(self.post('/api/catalog',{'snapshot_id':snap['id'],'book_id':'cat-book'})[0],400)
+
+    def test_catalog_unavailable_returns_a_specific_retryable_error(self):
+        from fagao.collectors import CollectorError
+        snap=self.store.save_snapshot({'platform':'fanqie','books':[{'id':'cat-failed','title':'目录失败测试'}]})
+        with patch('fagao.fanqie_content.catalog',side_effect=CollectorError('目录暂时无法读取，请稍后重试。')):
+            status,body,_=self.post('/api/catalog',{'snapshot_id':snap['id'],'book_id':'cat-failed'})
+        self.assertEqual(status,502); self.assertEqual(body['error']['code'],'catalog_unavailable')
+        self.assertIn('目录暂时无法读取',body['error']['message'])
+
+    def test_text_download_is_utf8_attachment_from_asset_not_arbitrary_path(self):
+        snap=self.store.save_snapshot({'platform':'fanqie','books':[{'id':'txt-book','title':'书名/\\..\r\n危险'}]})
+        meta=self.store.import_text(snap['id'],'txt-book','可下载的已存正文。'*10,'前三章')
+        status,body,headers=self.request('/api/texts/'+meta['id']+'/download')
+        self.assertEqual(status,200); self.assertIn('可下载的已存正文',body.decode('utf-8'))
+        self.assertIn('阅读范围：前三章',body.decode('utf-8'))
+        disposition=headers['Content-Disposition']
+        self.assertTrue(disposition.startswith('attachment;'))
+        self.assertIn("filename*=UTF-8''",disposition)
+        self.assertNotIn('\r',disposition); self.assertNotIn('\n',disposition)
+        self.assertEqual(headers['Content-Type'],'text/plain; charset=utf-8')
+        self.assertEqual(self.request('/api/texts/../../etc/passwd/download')[0],404)
+
+    def test_text_job_request_forwards_fixed_range(self):
+        expected={'status':'started','job_id':'text-job','job':{'id':'text-job','kind':'text'}}
+        with patch.object(self.server.jobs,'start_text',return_value=expected) as start:
+            status,body,_=self.post('/api/fetch-text',{'snapshot_id':'sid','book_id':'bid','chapters':10,'start_chapter':4})
+        self.assertEqual(status,200); self.assertEqual(body,expected)
+        start.assert_called_once_with('sid','bid',10,4,False)
+        with patch.object(self.server.jobs,'start_text',return_value=expected) as start:
+            self.post('/api/fetch-text',{'snapshot_id':'sid','book_id':'bid','all':True})
+        start.assert_called_once_with('sid','bid',3,1,True)
+
+    def test_insights_use_local_snapshots_and_preserve_current_view(self):
+        snap=self.store.save_snapshot({'platform':'fanqie','books':[{'id':'insight-book','title':'重生测试'}]})
+        before=self.store.state()['views']
+        with patch('fagao.insights.build_insights',return_value={'snapshot_id':snap['id'],'sample':{'count':1}}) as analyze:
+            status,body,_=self.post('/api/insights',{'snapshot_id':snap['id']})
+        self.assertEqual(status,200); self.assertEqual(body['sample']['count'],1)
+        self.assertEqual(analyze.call_args.args[0]['id'],snap['id'])
+        self.assertTrue(any(s['id']==snap['id'] for s in analyze.call_args.args[1]))
+        self.assertEqual(self.store.state()['views'],before)
+
     def test_real_import_select_resolve_report_flow(self):
         payload={'platform':'fanqie','channel':'女频','category':'古言脑洞','board':'新书榜','books':[{'id':'b1','title':'测试一','rank':7},{'id':'b2','title':'测试二','rank':14}]}
         status,s,_=self.post('/api/import/snapshot',{'snapshot':payload}); self.assertEqual(status,200)
@@ -275,6 +326,107 @@ class CollectionSchedulingTest(unittest.TestCase):
             with self.subTest(platform=platform,options=options):
                 with self.assertRaises(AppError): self.manager.start(platform,options,True)
         with self.assertRaises(AppError): self.manager.start('fanqie',{},'true')
+        self.assertEqual(self.store.state()['jobs'],[])
+
+class TextDownloadJobsTest(unittest.TestCase):
+    setUp=CollectionSchedulingTest.setUp
+    tearDown=CollectionSchedulingTest.tearDown
+    wait=CollectionSchedulingTest.wait
+    snapshot=CollectionSchedulingTest.snapshot
+
+    def raw(self,**changes):
+        result={'platform':'fanqie','book_id':'book-a','title':'隔离测试书目','text':'公开第一章的实际测试正文。'*10,
+                'scope':'公开目录第 1 项，共 1 章','source':'https://fanqienovel.com/page/book-a','status':'连载中',
+                'complete':False,'coverage_complete':True,'cancelled':False,'catalog_chapters':3,'catalog_complete':True,
+                'requested_start':1,'requested_chapters':1,'chapters':[{'index':1,'id':'ch-a1','item_id':'ch-a1','title':'第一章','characters':100}],
+                'missing':[],'collected_at':'2026-11-09T12:00:00+08:00'}
+        result.update(changes); return result
+
+    def test_text_job_is_pinned_and_deduplicated_without_blocking_collection(self):
+        snap=self.store.save_snapshot(self.snapshot())
+        other=self.store.save_snapshot({'platform':'fanqie','books':[{'id':'other','title':'其他书目'}]})
+        entered=threading.Event()
+        def fetch(book_id,data_dir,**kwargs):
+            entered.set(); self.release.wait(5)
+            return self.raw()
+        with patch('fagao.fanqie_content.fetch_book_text',side_effect=fetch) as fetcher:
+            first=self.manager.start_text(snap['id'],'book-a',1)
+            self.assertTrue(entered.wait(1))
+            second=self.manager.start_text(snap['id'],'book-a',1)
+            self.assertEqual(second['status'],'busy'); self.assertEqual(first['job_id'],second['job_id'])
+            self.store.set_view({'mode':'long','platform':'fanqie','snapshot_id':other['id'],'selected_id':'other'})
+            self.release.set(); done=self.wait(first['job_id'])
+            fetcher.assert_called_once()
+        self.assertEqual(done['status'],'completed'); self.assertEqual(done['kind'],'text')
+        self.assertEqual(done['snapshot_id'],snap['id']); self.assertEqual(done['book_id'],'book-a')
+        self.assertEqual(done['text']['snapshot_id'],snap['id'])
+        self.assertIn(done['text_id'],done['download_url'])
+        self.assertEqual(self.store.state()['views']['long']['selected_id'],'other')
+        self.assertNotIn('content',self.store.state()['texts'][0])
+
+    def test_all_chapters_is_explicit_and_maps_to_none(self):
+        snap=self.store.save_snapshot(self.snapshot())
+        raw=self.raw(catalog_chapters=1)
+        with patch('fagao.fanqie_content.fetch_book_text',return_value=raw) as fetcher:
+            started=self.manager.start_text(snap['id'],'book-a',all_chapters=True)
+            self.assertEqual(self.wait(started['job_id'])['status'],'completed')
+            self.assertIsNone(fetcher.call_args.kwargs['max_chapters'])
+            self.assertEqual(fetcher.call_args.kwargs['start_chapter'],1)
+        self.assertFalse(self.store.state()['texts'][0]['complete'])
+
+    def test_partial_download_is_saved_with_missing_range(self):
+        snap=self.store.save_snapshot(self.snapshot())
+        raw=self.raw(requested_chapters=3,coverage_complete=False,missing=[{'index':2,'id':'ch-a2','chapter':'第二章','reason':'需订阅'}])
+        with patch('fagao.fanqie_content.fetch_book_text',return_value=raw):
+            started=self.manager.start_text(snap['id'],'book-a',3)
+            done=self.wait(started['job_id'])
+        self.assertEqual(done['status'],'completed'); self.assertTrue(done['partial'])
+        self.assertFalse(done['text']['coverage_complete']); self.assertFalse(done['text']['complete'])
+        self.assertEqual(done['text']['missing'][0]['reason'],'需订阅')
+
+    def test_cancel_keeps_already_obtained_text(self):
+        snap=self.store.save_snapshot(self.snapshot()); entered=threading.Event()
+        def fetch(book_id,data_dir,progress=None,**kwargs):
+            entered.set(); self.release.wait(5)
+            try: progress('开始下一章')
+            except AppError as error: self.assertEqual(error.code,'cancelled')
+            return self.raw(requested_chapters=3,coverage_complete=False,cancelled=True)
+        with patch('fagao.fanqie_content.fetch_book_text',side_effect=fetch):
+            started=self.manager.start_text(snap['id'],'book-a',3)
+            self.assertTrue(entered.wait(1)); cancelling=self.manager.cancel(started['job_id'])
+            self.assertEqual(cancelling['status'],'cancelling'); self.assertNotIn('finished_at',cancelling)
+            self.release.set(); done=self.wait(started['job_id'])
+        self.assertEqual(done['status'],'cancelled'); self.assertTrue(done['text']['cancelled'])
+        self.assertEqual(len(self.store.state()['texts']),1)
+
+    def test_cancel_before_first_chapter_finishes_without_empty_asset(self):
+        snap=self.store.save_snapshot(self.snapshot()); entered=threading.Event()
+        def fetch(book_id,data_dir,**kwargs):
+            entered.set(); self.release.wait(5)
+            return self.raw(text='',chapters=[],requested_chapters=3,coverage_complete=False,cancelled=True)
+        with patch('fagao.fanqie_content.fetch_book_text',side_effect=fetch):
+            started=self.manager.start_text(snap['id'],'book-a',3)
+            self.assertTrue(entered.wait(1)); self.manager.cancel(started['job_id'])
+            self.release.set(); done=self.wait(started['job_id'])
+        self.assertEqual(done['status'],'cancelled'); self.assertIn('finished_at',done)
+        self.assertNotIn('text_id',done); self.assertEqual(self.store.state()['texts'],[])
+
+    def test_empty_or_wrong_book_text_never_succeeds(self):
+        snap=self.store.save_snapshot(self.snapshot())
+        for changes in ({'text':''},{'book_id':'wrong'},{'requested_start':2}):
+            with self.subTest(changes=changes):
+                with patch('fagao.fanqie_content.fetch_book_text',return_value=self.raw(**changes)):
+                    started=self.manager.start_text(snap['id'],'book-a',1)
+                    done=self.wait(started['job_id'])
+                self.assertEqual(done['status'],'failed'); self.assertNotIn('text_id',done)
+        self.assertEqual(self.store.state()['texts'],[])
+
+    def test_download_rejects_invalid_ranges_and_unsupported_platform(self):
+        snap=self.store.save_snapshot(self.snapshot())
+        for count,start,all_flag in [(0,1,False),(5001,1,False),(True,1,False),(3,0,False),(3,1,'yes')]:
+            with self.assertRaises(AppError): self.manager.start_text(snap['id'],'book-a',count,start,all_flag)
+        other=self.store.save_snapshot(self.snapshot('qidian'))
+        with self.assertRaises(AppError): self.manager.start_text(other['id'],'book-a')
         self.assertEqual(self.store.state()['jobs'],[])
 
 if __name__=='__main__': unittest.main()

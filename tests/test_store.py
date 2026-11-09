@@ -104,6 +104,58 @@ class StoreTest(unittest.TestCase):
         n=self.store.save_snapshot(snapshot())
         t=self.store.prepare_task({'snapshot_id':n['id'],'book_id':'b'},'分析这本')
         self.assertEqual(t['text_id'],tx['id'])
+    def fetched(self,**overrides):
+        return dict(platform='fanqie',book_id='b',title='乙书',text='这是从公开页面取得的第一章实际测试正文。'*5,
+                    scope='第 1 章（共取得 1 章）',complete=False,coverage_complete=True,cancelled=False,
+                    source='https://fanqienovel.com/page/b',status='连载中',catalog_chapters=3,catalog_complete=True,requested_start=1,requested_chapters=1,
+                    chapters=[{'id':'chapter-b1','item_id':'chapter-b1','index':1,'title':'第一章','url':'https://fanqienovel.com/reader/chapter-b1','characters':100}],
+                    missing=[],collected_at='2026-11-09T12:00:00+08:00',**overrides)
+
+    def test_fetched_text_uses_existing_assets_and_does_not_change_selection(self):
+        raw=self.fetched(); meta=self.store.save_fetched_text(self.s['id'],'b',raw)
+        self.assertEqual(meta['acquisition'],'public_download')
+        self.assertEqual(meta['scope'],raw['scope']); self.assertTrue(meta['coverage_complete']); self.assertFalse(meta['complete'])
+        self.assertEqual(meta['chapters'][0]['item_id'],'chapter-b1')
+        self.assertEqual(self.store.text_record(meta['id'])['content'],raw['text'])
+        self.assertEqual(self.store.state()['texts'][0]['id'],meta['id'])
+        self.assertNotIn('content',self.store.state()['texts'][0])
+        self.assertNotIn('text',self.store.state()['texts'][0])
+        task=self.store.prepare_task({'snapshot_id':self.s['id'],'book_id':'b'},'分析第一章')
+        self.assertEqual(task['text_id'],meta['id'])
+        self.assertEqual(self.store.state()['views']['long']['selected_id'],'b')
+        duplicate=self.store.save_fetched_text(self.s['id'],'b',raw)
+        self.assertEqual(duplicate['id'],meta['id'])
+
+    def test_partial_or_cancelled_text_retains_actual_missing_range(self):
+        raw=self.fetched(); raw.update(coverage_complete=False,cancelled=True,requested_chapters=3,
+            missing=[{'index':2,'id':'chapter-b2','chapter':'第二章','reason':'下载暂停'}])
+        meta=self.store.save_fetched_text(self.s['id'],'b',raw)
+        self.assertTrue(meta['cancelled']); self.assertFalse(meta['complete']); self.assertFalse(meta['coverage_complete'])
+        self.assertEqual(meta['missing'][0]['reason'],'下载暂停')
+        self.assertEqual(len(meta['chapters']),1)
+
+    def test_downloaded_complete_book_requires_finished_status_and_whole_catalog(self):
+        raw=self.fetched(); raw.update(complete=True,catalog_chapters=1,status='已完结')
+        meta=self.store.save_fetched_text(self.s['id'],'b',raw)
+        self.assertTrue(meta['complete'])
+        self.assertIn('已完结',meta['completeness_basis'])
+        for changed in ({'status':'连载中'},{'catalog_chapters':2},{'coverage_complete':False},{'status':False}):
+            wrong={**raw,**changed}
+            with self.subTest(changed=changed):
+                with self.assertRaises(AppError): self.store.save_fetched_text(self.s['id'],'b',wrong)
+
+    def test_download_identity_empty_error_and_range_mismatches_are_rejected(self):
+        bad=[{'book_id':'a'},{'platform':'qidian'},{'text':''},{'text':'403 Forbidden'+'wrong'*20},
+             {'chapters':[]},{'catalog_chapters':0},{'requested_chapters':False},
+             {'missing':[{'index':1,'id':'chapter-b1','reason':'not actually missing'}]},
+             {'missing':[{'index':2,'id':'chapter-b2','reason':'locked'}]},
+             {'chapters':[{'id':'x','item_id':'y','index':1,'characters':100}]},
+             {'chapters':[{'id':'x','item_id':'x','index':1,'characters':0}]}]
+        for changed in bad:
+            with self.subTest(changed=changed):
+                with self.assertRaises(AppError): self.store.save_fetched_text(self.s['id'],'b',{**self.fetched(),**changed})
+        self.assertEqual(self.store.state()['texts'],[])
+
     def test_text_error_pages_and_empty_rejected(self):
         for body in ('','tiny','<html><body>'+'error'*20,'403 Forbidden'+'error'*20,'<!doctype html>'+'error'*20):
             with self.assertRaises(AppError): self.store.import_text(self.s['id'],'b',body,'全文',True)

@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import patch
 
 from fagao.collectors import CollectorError, _state, _clean_text, _fanqie, _ciweimao, _qidian, _merge_page, _page_options, _cover_url, parse_qidian, parse_ciweimao, auth, collect, fetch_text
+from fagao.fanqie_codec import decode_text, has_unmapped_pua
 
 
 class CollectorTests(unittest.TestCase):
@@ -15,6 +16,73 @@ class CollectorTests(unittest.TestCase):
     def test_font_encoded_text_is_never_used_as_real_title(self):
         self.assertEqual(_clean_text('标题\ue123'), '')
         self.assertEqual(_clean_text('  正常标题 '), '正常标题')
+
+    def test_user_font_table_decodes_known_glyphs_and_preserves_unknown(self):
+        self.assertEqual(decode_text('\ue521\ue40e化龙\ue436，\ue487\ue44a功\ue481\ue41e假\ue4f3？'), '我都化龙了，你说功法是假的？')
+        self.assertEqual(decode_text('普通中文 English 123'), '普通中文 English 123')
+        self.assertEqual(decode_text('未知\ue111'), '未知\ue111')
+        self.assertTrue(has_unmapped_pua(decode_text('未知\ue111')))
+        self.assertFalse(has_unmapped_pua(decode_text('\ue521\ue40e')))
+
+    def test_fanqie_decodes_297_rows_with_zero_detail_requests(self):
+        rows=[{'bookId':str(100000+i),'currentPos':i+1,'bookName':'\ue521的书'+str(i),
+               'author':'甲','abstract':'\ue521的简介','creationStatus':'1',
+               'thumbUri':'https://p3-novel-sign.byteimg.com/cover.jpg'} for i in range(297)]
+        def fetch(url, **kwargs):
+            if '/rank/0_' in url:
+                return '<a href="/rank/0_1_253">古言脑洞</a><script>__INITIAL_STATE__='+json.dumps({'rank':{'book_list':rows[:10],'rankVersion':'1234567890','total_num':100}})+'</script>'
+            if '/api/rank/' in url:
+                from urllib.parse import parse_qs,urlsplit
+                query=parse_qs(urlsplit(url).query)
+                self.assertEqual(query['rankMold'],['1'])
+                self.assertEqual(query['rank_version'],['1234567890'])
+                offset=int(query['offset'][0]); limit=int(query['limit'][0])
+                self.assertEqual(limit,100)
+                return json.dumps({'code':0,'data':{'book_list':rows[offset:offset+limit],'rankVersion':'1234567890'}})
+            self.fail('Decoded rank metadata must not request a per-book detail page')
+        with patch('fagao.collectors._fetch',side_effect=fetch) as mocked,patch('fagao.collectors.time.sleep'):
+            result=_fanqie({},None)
+        self.assertEqual(mocked.call_count,5)
+        self.assertEqual(len(result['books']),297)
+        self.assertEqual(result['books'][13]['rank'],14)
+        self.assertEqual(result['books'][13]['title'],'我的书13')
+        self.assertEqual(result['pagination']['page_size'],100)
+        self.assertEqual(result['pagination']['initial_page_size'],10)
+        self.assertEqual(result['pagination']['stop_reason'],'empty_page')
+        self.assertEqual(result['metadata_statistics'],{'rank':297,'cache':0,'detail':0,'missing':0})
+        self.assertTrue(result['complete'])
+
+    def test_fanqie_unmapped_rank_glyph_falls_back_to_same_book_detail(self):
+        row={'bookId':'123456','currentPos':14,'bookName':'\ue111','author':'甲','abstract':'简介'}
+        rank='<a href="/rank/0_1_253">古言脑洞</a><script>__INITIAL_STATE__='+json.dumps({'rank':{'book_list':[row]}})+'</script>'
+        detail='<script>__INITIAL_STATE__='+json.dumps({'page':{'bookId':'123456','bookName':'公开详情书名','author':'甲','abstract':'简介'}})+'</script>'
+        with patch('fagao.collectors._fetch',side_effect=[rank,detail]) as mocked:
+            result=_fanqie({'limit':1},None)
+        self.assertEqual(mocked.call_count,2)
+        self.assertEqual(result['books'][0]['title'],'公开详情书名')
+        self.assertEqual(result['books'][0]['rank'],14)
+        self.assertEqual(result['metadata_statistics']['detail'],1)
+
+    def test_fanqie_unmapped_author_is_not_silently_reported_complete(self):
+        row={'bookId':'123456','currentPos':1,'bookName':'真实书名','author':'\ue111','abstract':'简介'}
+        rank='<a href="/rank/0_1_253">古言脑洞</a><script>__INITIAL_STATE__='+json.dumps({'rank':{'book_list':[row]}})+'</script>'
+        detail='<script>__INITIAL_STATE__='+json.dumps({'page':row})+'</script>'
+        with patch('fagao.collectors._fetch',side_effect=[rank,detail,detail]):
+            result=_fanqie({'limit':1},None)
+        self.assertFalse(result['complete'])
+        self.assertEqual(result['books'][0]['metadata_status'],'missing')
+        self.assertEqual(result['metadata_statistics']['missing'],1)
+
+    def test_fanqie_official_empty_page_without_version_is_source_end(self):
+        row={'bookId':'123456','currentPos':1,'bookName':'真实书名','author':'甲','abstract':'简介'}
+        rank='<a href="/rank/0_1_253">古言脑洞</a><script>__INITIAL_STATE__='+json.dumps({'rank':{'book_list':[row],'rankVersion':'1234567890'}})+'</script>'
+        # Real official empty-page shape: code=0 and [] but no rankVersion key.
+        empty=json.dumps({'code':0,'data':{'book_list':[],'rankTypeText':'','total_num':0},'message':'success'})
+        with patch('fagao.collectors._fetch',side_effect=[rank,empty]),patch('fagao.collectors.time.sleep'):
+            result=_fanqie({},None)
+        self.assertEqual(result['pagination']['stop_reason'],'empty_page')
+        self.assertTrue(result['complete'])
+        self.assertEqual(result['warnings'],[])
 
     def test_missing_js_field_normalized_without_touching_quotes(self):
         data = _state('<script>__INITIAL_STATE__={"description":undefined,"abstract":"undefined是原文"}</script>')
@@ -98,20 +166,18 @@ class CollectorTests(unittest.TestCase):
             with self.assertRaises(CollectorError):
                 collect('fanqie_short',{},directory)
 
-    def test_encoded_chapter_is_explicit_failure(self):
-        page = {'page':{'bookId':'123456','chapterListWithVolume':[[{'itemId':'999991','title':'第一章','needPay':0}]]}}
-        chapter = {'reader':{'chapterData':{'bookId':'123456','itemId':'999991','content':'<p>'+('编码\ue123'*100)+'</p>'}}}
-        responses = ['<script>__INITIAL_STATE__='+json.dumps(v)+'</script>' for v in (page,chapter)]
-        with patch('fagao.collectors._fetch',side_effect=responses):
-            with self.assertRaisesRegex(CollectorError,'字体编码'):
-                fetch_text('fanqie','123456','/unused')
+    def test_text_adapter_preserves_fixed_identity_and_requested_range(self):
+        progress = lambda message: None
+        with patch('fagao.fanqie_content.fetch_book_text', return_value={'book_id':'123456'}) as fetch:
+            result = fetch_text('fanqie','123456','/unused',max_chapters=None,start_chapter=2,progress=progress)
+        fetch.assert_called_once_with('123456','/unused',max_chapters=None,start_chapter=2,progress=progress)
+        self.assertEqual(result['book_id'],'123456')
 
-    def test_paid_chapter_not_requested(self):
-        page = {'page':{'bookId':'123456','chapterListWithVolume':[[{'itemId':'999991','title':'第一章','needPay':1}]]}}
-        with patch('fagao.collectors._fetch',return_value='<script>__INITIAL_STATE__='+json.dumps(page)+'</script>') as fetch:
-            with self.assertRaisesRegex(CollectorError,'权限'):
-                fetch_text('fanqie','123456','/unused')
-        self.assertEqual(fetch.call_count,1)
+    def test_unimplemented_text_platform_does_not_request_fanqie(self):
+        with patch('fagao.fanqie_content.fetch_book_text') as fetch:
+            with self.assertRaisesRegex(CollectorError,'尚未接入'):
+                fetch_text('qidian','123456','/unused')
+        fetch.assert_not_called()
 
     def test_page_ceiling_defaults_to_100_without_fixed_book_cap(self):
         self.assertEqual(_page_options({},10),(100,1000))
