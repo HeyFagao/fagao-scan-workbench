@@ -18,6 +18,7 @@ import time
 import uuid
 
 from .fanqie_codec import decode_text, has_unmapped_pua
+from . import network
 
 BASE = "https://fanqienovel.com"
 CATALOG_TTL = 30 * 60
@@ -138,6 +139,7 @@ def _content_integrity(text, declared):
 
 def catalog(book_id, data_dir=None):
     """Return the source directory in source order, using one-based positions."""
+    network.check_authorization()
     book_id = _identity(book_id)
     cached = _cache_read(data_dir, "catalogs", book_id, CATALOG_TTL)
     if (cached and cached.get("book_id") == book_id and isinstance(cached.get("chapters"), list)
@@ -245,6 +247,7 @@ def _plain_content(raw):
 
 
 def _chapter(book_id, item, data_dir):
+    network.check_authorization()
     item_id = item["item_id"]
     if item.get("restricted"):
         raise _error("此章需要相应正文权限，已停止读取。", "forbidden")
@@ -278,7 +281,7 @@ def _chapter(book_id, item, data_dir):
 def fetch_book_text(book_id, data_dir=None, max_chapters=3, start_chapter=1, progress=None):
     """Download a requested range; ``None`` requests the current full public directory.
 
-    Cancellation raised by progress as ``code=cancelled`` returns obtained text,
+    Cancellation or membership interruption returns already obtained text,
     so a caller can save it with its true range instead of discarding useful work.
     ``complete`` describes a finished whole work; ``coverage_complete`` describes
     completion of the requested range, which may be only the first three chapters.
@@ -289,21 +292,28 @@ def fetch_book_text(book_id, data_dir=None, max_chapters=3, start_chapter=1, pro
     if max_chapters is not None and (isinstance(max_chapters, bool) or not isinstance(max_chapters, int) or not 1 <= max_chapters <= MAX_CHAPTERS):
         raise _error("下载章节数必须是 1 到 5000 的整数。")
     cancelled = False
+    interruption = None
 
     def notify(message):
-        nonlocal cancelled
-        if progress:
-            try:
+        nonlocal cancelled, interruption
+        try:
+            network.check_authorization()
+            if progress:
                 progress(message)
-            except Exception as exc:
-                if getattr(exc, "code", None) == "cancelled" or getattr(exc, "state", None) == "cancelled":
-                    cancelled = True
-                    return False
-                raise
+        except Exception as exc:
+            if network.is_authorization_error(exc):
+                interruption = exc
+                return False
+            if getattr(exc, "code", None) == "cancelled" or getattr(exc, "state", None) == "cancelled":
+                cancelled = True
+                return False
+            raise
         return True
 
     initial = notify("正在读取这本书的公开目录…")
     if not initial:
+        if interruption is not None:
+            raise interruption
         return {"platform": "fanqie", "book_id": book_id, "title": "", "text": "", "scope": "尚未取得正文", "complete": False,
                 "coverage_complete": False, "cancelled": True, "chapters": [], "missing": [], "catalog_chapters": 0,
                 "requested_chapters": max_chapters, "source": f"{BASE}/page/{book_id}", "collected_at": _now(), "status": "",
@@ -333,11 +343,16 @@ def fetch_book_text(book_id, data_dir=None, max_chapters=3, start_chapter=1, pro
             if result["integrity"]["status"] == "partial":
                 break
         except Exception as exc:
+            if network.is_authorization_error(exc):
+                interruption = exc
+                break
             from .collectors import CollectorError
             if not isinstance(exc, CollectorError):
                 raise
             missing.append({"index": item["index"], "id": item["item_id"], "chapter": item["title"], "reason": str(exc)})
             break
+    if not texts and interruption is not None:
+        raise interruption
     if not texts and not cancelled:
         raise _error(missing[0]["reason"] if missing else "当前没有取得可读正文。")
     whole_directory = start_chapter == 1 and len(chapters) == info["catalog_chapters"] and info["catalog_complete"]
@@ -351,7 +366,8 @@ def fetch_book_text(book_id, data_dir=None, max_chapters=3, start_chapter=1, pro
     integrity = {"version": INTEGRITY_VERSION, "status": problem["status"] if problem else ("verified" if chapters else "unverified"),
                  "declared_book_word_count": declared_book, "actual_characters": actual,
                  "reason": problem["reason"] if problem else ("所列章节已逐章核对来源字数" if chapters else "尚未取得正文")}
-    coverage_complete = len(chapters) == len(wanted) and not missing and not cancelled and integrity["status"] == "verified"
+    coverage_complete = (len(chapters) == len(wanted) and not missing and not cancelled
+                         and interruption is None and integrity["status"] == "verified")
     complete = coverage_complete and whole_directory and info["status"] == "已完结"
     if chapters:
         scope = f"公开目录第 {chapters[0]['index']}—{chapters[-1]['index']} 项，共 {len(chapters)} 章（当前目录 {info['catalog_chapters']} 章）"
@@ -366,13 +382,18 @@ def fetch_book_text(book_id, data_dir=None, max_chapters=3, start_chapter=1, pro
         scope = "尚未取得正文"
     if cancelled:
         scope += "；下载已取消"
+    elif interruption is not None:
+        scope += "；会员状态变化，下载已暂停"
     elif missing:
         scope += "；后续章节未取得"
-    if not cancelled:
+    if not cancelled and interruption is None:
         notify(integrity["reason"] if integrity["status"] != "verified" else f"本次已取得 {len(chapters)}/{len(wanted)} 章正文。")
         if cancelled:
             coverage_complete = complete = False
             scope += "；下载已取消"
+        elif interruption is not None:
+            coverage_complete = complete = False
+            scope += "；会员状态变化，下载已暂停"
     return {"platform": "fanqie", "book_id": book_id, "title": info["title"], "text": "\n\n".join(texts),
             "scope": scope, "complete": complete,
             "completeness_basis": "来源标为已完结，完整目录逐章核对字数，且无内容缺口" if complete else integrity["reason"],
@@ -380,4 +401,7 @@ def fetch_book_text(book_id, data_dir=None, max_chapters=3, start_chapter=1, pro
             "source": info["source"], "chapters": chapters, "missing": missing,
             "catalog_chapters": info["catalog_chapters"], "catalog_complete": info["catalog_complete"],
             "requested_chapters": len(wanted), "requested_start": start_chapter, "coverage_complete": coverage_complete,
-            "cancelled": cancelled, "collected_at": _now(), "status": info["status"]}
+            "cancelled": cancelled, "collected_at": _now(), "status": info["status"],
+            **({"interrupted": True, "interrupted_reason": interruption.code,
+                "interrupted_message": str(getattr(interruption, "message", "会员状态变化，下载已暂停。"))[:1200]}
+               if interruption is not None else {})}

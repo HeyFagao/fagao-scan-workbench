@@ -12,3 +12,10 @@ runtime.json
 current.json
 .fagao-install.json
 .fagao-release.json
+.membership/
+accounts/
+legacy-claims/
+legacy-claim.json
+legacy-decisions.json
+.legacy-claim.lock
+network.json

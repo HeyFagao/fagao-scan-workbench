@@ -6,7 +6,7 @@ normalization; list positions are deliberately not labelled official ranks.
 """
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import CancelledError, ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta, timezone
 import hashlib
 import json
@@ -45,6 +45,7 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 def _fetch_json(path):
     """Fetch a fixed feed path; never follow URLs supplied inside its JSON."""
+    network.check_authorization()
     if not isinstance(path, str) or not _PATH.fullmatch(path):
         raise CollectorError("不支持的公开数据路径。", "invalid_source")
     url = RAW_ROOT + path
@@ -230,6 +231,16 @@ def sync_public_rankings(progress=None):
     is returned explicitly for callers to retain caches or use direct sources.
     """
     snapshots, failures, warnings, indexes = [], [], [], {}
+    interruption = None
+
+    def interrupted(exc, pending):
+        nonlocal interruption
+        if not network.is_authorization_error(exc):
+            return False
+        interruption = interruption or exc
+        for future in pending:
+            future.cancel()
+        return True
 
     def failure(channel, stage, exc, source_date=None):
         item = {"channel": channel, "date": source_date, "stage": stage,
@@ -238,21 +249,44 @@ def sync_public_rankings(progress=None):
         warnings.append(f"{CHANNELS[channel]}公开{stage}读取失败：{exc}")
 
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
-        pending = {pool.submit(_fetch_json, f"api/{channel}/new/index.json"): channel for channel in CHANNELS}
+        fetch = network.authorized_callable(_fetch_json)
+        pending = {}
+        for channel in CHANNELS:
+            try:
+                network.check_authorization()
+                pending[pool.submit(fetch, f"api/{channel}/new/index.json")] = channel
+            except Exception as exc:
+                if not interrupted(exc, pending):
+                    raise
+                break
         for future in as_completed(pending):
             channel = pending[future]
             try:
                 record = future.result()
                 source_date, count, books = _index(record["data"], channel)
                 indexes[channel] = {"date": source_date, "categories": count, "entries": books}
-            except (CollectorError, ValueError, TypeError, KeyError) as exc:
+            except CancelledError:
+                continue
+            except Exception as exc:
+                if interrupted(exc, pending):
+                    continue
+                if not isinstance(exc, (CollectorError, ValueError, TypeError, KeyError)):
+                    raise
                 failure(channel, "index", exc)
         pending = {}
         for channel, meta in indexes.items():
+            if interruption is not None:
+                break
             for days in (0, 7):
                 source_date = meta["date"] - timedelta(days=days)
                 path = f"data/{channel}/new/{source_date:%Y%m%d}.json"
-                pending[pool.submit(_fetch_json, path)] = (channel, source_date.isoformat(), days)
+                try:
+                    network.check_authorization()
+                    pending[pool.submit(fetch, path)] = (channel, source_date.isoformat(), days)
+                except Exception as exc:
+                    if not interrupted(exc, pending):
+                        raise
+                    break
         for future in as_completed(pending):
             channel, source_date, days = pending[future]
             try:
@@ -265,13 +299,23 @@ def sync_public_rankings(progress=None):
                     expected_entries=indexes[channel]["entries"] if days == 0 else None,
                 )
                 snapshots.extend(normalized)
-            except (CollectorError, ValueError, TypeError, KeyError) as exc:
+            except CancelledError:
+                continue
+            except Exception as exc:
+                if interrupted(exc, pending):
+                    continue
+                if not isinstance(exc, (CollectorError, ValueError, TypeError, KeyError)):
+                    raise
                 failure(channel, "history" if days else "current", exc, source_date)
                 continue
-            if progress:
+            if progress and interruption is None:
                 # Cancellation belongs to the caller; do not misreport it as
                 # a malformed source and continue with more progress updates.
-                progress(f"已读取{CHANNELS[channel]} {source_date} 公开新书榜样本，共 {sum(len(s['books']) for s in normalized)} 条。")
+                try:
+                    progress(f"已读取{CHANNELS[channel]} {source_date} 公开新书榜样本，共 {sum(len(s['books']) for s in normalized)} 条。")
+                except Exception as exc:
+                    if not interrupted(exc, pending):
+                        raise
     # A history without its matching current feed must not replace the visible
     # current data when today's file is missing or inconsistent with its index.
     current_channels = {channel for channel, meta in indexes.items()
@@ -292,4 +336,7 @@ def sync_public_rankings(progress=None):
                          "history_categories": len(old), "complete_platform": False})
     return {"source_id": SOURCE_ID, "source_name": SOURCE_NAME, "source_url": REPO_URL,
             "fetched_at": _now(), "snapshots": snapshots, "coverage": coverage,
-            "warnings": warnings, "failures": failures}
+            "warnings": warnings, "failures": failures,
+            **({"interrupted": True, "interrupted_reason": interruption.code,
+                "interrupted_message": str(getattr(interruption, "message", "会员状态变化，更新已暂停。"))[:1200]}
+               if interruption is not None else {})}

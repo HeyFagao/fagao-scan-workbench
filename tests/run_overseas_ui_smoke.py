@@ -10,9 +10,14 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from fagao.store import Store
 from fagao.server import WorkbenchServer
+from fagao.runtime import WorkbenchRuntime
+from membership_fixtures import SyntheticMembership
 
-with tempfile.TemporaryDirectory() as directory, patch('fagao.public_rankings.sync_public_rankings', return_value={'snapshots': []}):
-    store = Store(directory)
+with tempfile.TemporaryDirectory() as directory, \
+        patch('fagao.public_rankings.sync_public_rankings', return_value={'snapshots': []}), \
+        patch('fagao.network._Opener.open', side_effect=AssertionError('Overseas UI fixtures must not request external hosts')):
+    runtime = WorkbenchRuntime(directory, SyntheticMembership(directory))
+    store = runtime.capture().store
     domestic = store.save_snapshot({'platform': 'fanqie', 'channel': '女频', 'category': '古言脑洞', 'board': '新书榜', 'books': [
         {'id': 'domestic-1', 'title': '本地测试作品', 'summary': '隔离测试用书目', 'rank': 1}]}, imported=True)
     overseas = store.save_snapshot({'platform': 'goodnovel', 'channel': '全部', 'category': '狼人', 'board': '分类榜', 'pagination': {'pages_fetched': 4, 'max_pages': 100, 'stop_reason': 'source_end'}, 'books': [
@@ -32,7 +37,7 @@ with tempfile.TemporaryDirectory() as directory, patch('fagao.public_rankings.sy
         'pagination': {'stop_reason': 'imported_page', 'pages_fetched': 0, 'pages_imported': 1, 'source_page': 1, 'source_pages': 20}}, imported=True)
     scribble_next = store.save_snapshot({'platform': 'scribblehub', 'channel': '全部', 'category': '全部', 'board': '周收藏榜', 'period': '周榜', 'books': scribble_books}, imported=True)
     store.set_view({'mode': 'long', 'platform': 'fanqie', 'snapshot_id': domestic['id']})
-    server = WorkbenchServer(('127.0.0.1', 0), store)
+    server = WorkbenchServer(('127.0.0.1', 0), runtime=runtime)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     env = dict(os.environ, FAGAO_TEST_URL=f'http://127.0.0.1:{server.server_port}', FAGAO_TEST_OVERSEAS_SNAPSHOT=overseas['id'], FAGAO_TEST_ROYAL_SNAPSHOT=royal['id'], FAGAO_TEST_SCRIBBLE_FIRST=scribble_first['id'], FAGAO_TEST_SCRIBBLE_NEXT=scribble_next['id'])

@@ -52,6 +52,13 @@ class ArchiveTests(unittest.TestCase):
     def test_rejects_branch_instead_of_fixed_sha(self):
         for commit in ['main','latest','abc123','a'*39,'a'*41]:
             with self.assertRaises(bootstrap.InstallError):bootstrap.download_archive('owner/repo',commit,self.base/'download')
+    def test_rejects_archives_containing_device_credentials_or_account_cache(self):
+        for name in ['.membership/session.json','accounts/member/body.json','legacy-claims/receipt.json','legacy-decisions.json']:
+            with self.subTest(name=name):
+                self.archive_with([('repo-sha/'+name,'private data')])
+                with self.assertRaisesRegex(bootstrap.InstallError,'账号凭据'):
+                    bootstrap.extract_archive(self.archive,self.base/'out','repo-sha')
+                self.assertFalse((self.base/'out').exists())
     def test_redirect_remains_https_codeload_only(self):
         redirect=bootstrap.PinnedRedirect()
         with self.assertRaises(bootstrap.InstallError):redirect.redirect_request(None,None,302,'',{},'https://evil.test/payload')
@@ -139,6 +146,16 @@ class InstallationTests(unittest.TestCase):
         with self.assertRaises(bootstrap.InstallError):
             bootstrap.install(source_dir=self.source,install_root=self.source/'app',data_dir=self.data,no_browser=True)
         self.assertFalse((self.source/'app').exists())
+    def test_never_copies_membership_credentials_or_account_json_into_release(self):
+        private=['.membership/session.json','accounts/owner/body-cache/chapter.json',
+                 'legacy-claims/receipt.json','legacy-claim.json','legacy-decisions.json','.legacy-claim.lock','network.json']
+        for name in private:
+            path=self.source/name;path.parent.mkdir(parents=True,exist_ok=True)
+            path.write_text('private-device-token-and-personal-content')
+        release=Path(self.install()['release_dir'])
+        for name in private:self.assertFalse((release/name).exists(),name)
+        self.assertNotIn('private-device-token-and-personal-content',
+                         ''.join(p.read_text(errors='ignore') for p in release.rglob('*') if p.is_file()))
     def test_refuses_extra_executable_file_in_installed_release(self):
         first=self.install(); injected=Path(first['release_dir'])/'scripts/json.py'; injected.write_text('# unexpected new code')
         with self.assertRaises(bootstrap.InstallError): self.install()
@@ -150,7 +167,7 @@ class InstallationTests(unittest.TestCase):
         self.assertEqual(self.install()['release_id'],first['release_id'])
     def test_stable_project_workspace_and_interpreter_returned(self):
         first=self.install(); project=Path(first['project_dir'])
-        self.assertEqual(project,self.root/'workspace')
+        self.assertEqual(project,(self.root/'workspace').resolve())
         instructions=(project/'AGENTS.md').read_text()
         self.assertIn('current.json',instructions); self.assertNotIn(first['release_id'],instructions)
         current=json.loads((self.root/'current.json').read_text())

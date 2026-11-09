@@ -11,11 +11,19 @@ async function wait(fn,message){for(let i=0;i<300;i++){if(await fn())return;awai
  const vc=new VirtualConsole();vc.on('jsdomError',error=>errors.push(String(error)));
  const dom=new JSDOM(await(await fetch(base+'/')).text(),{url:base+'/',runScripts:'outside-only',pretendToBeVisual:true,virtualConsole:vc});
  const w=dom.window,d=w.document;
+ const membership=await(await fetch(base+'/api/membership/status')).json();
+ assert.equal(membership.allowed,true,'The isolated fixture must provide an active synthetic member');
  let scribbleJob=null, royalPhase='blocked', crossTabDenial=null;const moreRequests=[],htmlImports=[];
  let releaseTranslation;
  const translationGate=new Promise(resolve=>releaseTranslation=resolve);
  w.fetch=async(path,init)=>{
-  const pathname=new URL(path,base).pathname;
+  const requestURL=new URL(path,base),pathname=requestURL.pathname;
+  assert.equal(requestURL.origin,new URL(base).origin,'DOM test attempted an external request');
+  if(pathname.startsWith('/api/')&&!pathname.startsWith('/api/membership/')){
+   const headers=new Headers(init?.headers);
+   assert.equal(headers.get('X-Fagao-Account'),membership.account.id,'Protected request lost its account binding');
+   assert.equal(headers.get('X-Fagao-Generation'),String(membership.generation),'Protected request lost its session generation');
+  }
   if(pathname==='/api/collect'){
    const request=JSON.parse(init.body);collections.push(request);
    if(request.platform==='meganovel'){
@@ -48,7 +56,10 @@ async function wait(fn,message){for(let i=0;i<300;i++){if(await fn())return;awai
    return Response.json(data);
   }
   if(pathname==='/api/import/overseas-html'){
-   htmlImports.push(JSON.parse(init.body));return fetch(base+'/api/snapshots/'+process.env.FAGAO_TEST_SCRIBBLE_FIRST);
+   htmlImports.push(JSON.parse(init.body));
+   // The import result is a prebuilt, synthetic saved-page snapshot. Its real
+   // API lookup must preserve the same displayed account/session as the import.
+   return fetch(base+'/api/snapshots/'+process.env.FAGAO_TEST_SCRIBBLE_FIRST,{headers:init.headers,cache:'no-store'});
   }
   if(pathname==='/api/overview/refresh')return Response.json({status:'fresh',retry_after_seconds:900});
   if(pathname==='/api/translation-context'){translations.push(JSON.parse(init.body));await translationGate;}

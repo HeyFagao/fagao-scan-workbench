@@ -29,15 +29,240 @@
   const AUTO_TTL = 15 * 60 * 1000;
   const nextAutoAt = new Map(), autoMessages = new Map(), latestResults = new Map(), snapshotJobs=new Map();
   let historyViews = {};
-  try { historyViews = JSON.parse(localStorage.getItem('fagao-history-views') || '{}'); } catch {}
-  try {
-    savedOptions = JSON.parse(localStorage.getItem('fagao-collection-options') || '{}');
-    if(localStorage.getItem('fagao-options-version')!=='3'){
-      for(const value of Object.values(savedOptions)){if(value.limit==null || value.limit===1000)value.limit=10000;value.max_pages ??= 100;}
-      localStorage.setItem('fagao-options-version','3');
-      localStorage.setItem('fagao-collection-options',JSON.stringify(savedOptions));
+  const MEMBER_SITE='https://www.fagaochuangzuo.com/';
+  let membership={allowed:false,reason:'checking',account:null}, accountEpoch=0, membershipRequest=0;
+  let membershipTimer=null, membershipDeadlineTimer=null, membershipBusy=false, logoutPending=false, storageAccount=null;
+  let legacy={checked:false,checking:false,decision_required:false,counts:{},error:''},legacyBusy=false,legacyConfirmed=false,legacyRequest=0;
+  let callbackNotice='';
+  const readable=()=>membership.allowed || membership.can_read_history===true;
+  const legacyBlocked=()=>membership.allowed && (!legacy.checked || legacy.decision_required || !!legacy.error);
+  const readOnlyPosts=new Set(['/api/view','/api/insights','/api/resolve']);
+  const writeActions=new Set(['collect','overview-refresh','overview-retry','collection-options','translation-context','favorite','import-snapshot','import-ranking-html','import-text','choose-text','catalog','reload-catalog','chapter-preset','chapter-all','choose-chapter','context']);
+  const dataRequests=new Set(), downloadURLs=new Set();
+  const membershipCopy={
+    checking:['正在连接你的工作台','正在确认发糕账号与会员状态。'],
+    not_authenticated:['连接发糕账号','使用发糕写作的现有账号，在官网确认后即可打开工作台。'],
+    not_eligible:['当前账号暂无工作台权益','工作台向符合条件的有效付费会员开放，可前往发糕写作查看会员权益。'],
+    expired:['会员已到期','前往发糕写作续费后，工作台会恢复使用。已有资料继续保存在这台电脑。'],
+    suspended:['工作台暂时停用','当前账号的工作台权益已停用，请联系发糕写作客服。'],
+    device_revoked:['这台电脑已退出授权','重新连接发糕账号，确认这台电脑后继续使用。'],
+    device_limit:['已达到设备数量上限','请先在发糕写作移除不再使用的电脑，再重新连接。'],
+    account_changed:['账号已在其他窗口更改','请重新确认当前账号，再继续打开工作台。'],
+    verification_unavailable:['暂时无法确认会员状态','请检查网络后重试。已有榜单、正文和报告仍保存在本机。']
+  };
+  function storageKey(name){return storageAccount===null?null:`${name}:${encodeURIComponent(storageAccount)}`;}
+  function savePreference(name,value){const key=storageKey(name);if(key)try{localStorage.setItem(key,value);}catch{}}
+  function loadPreferences(accountID){
+    storageAccount=accountID;historyViews={};savedOptions={};
+    try{const value=JSON.parse(localStorage.getItem(storageKey('fagao-history-views')) || '{}');if(value && typeof value==='object' && !Array.isArray(value))historyViews=value;}catch{}
+    try{
+      const value=JSON.parse(localStorage.getItem(storageKey('fagao-collection-options')) || '{}');
+      if(value && typeof value==='object' && !Array.isArray(value))savedOptions=value;
+      if(localStorage.getItem(storageKey('fagao-options-version'))!=='3'){
+        for(const value of Object.values(savedOptions)){if(!value || typeof value!=='object')continue;if(value.limit==null || value.limit===1000)value.limit=10000;value.max_pages ??= 100;}
+        savePreference('fagao-options-version','3');savePreference('fagao-collection-options',JSON.stringify(savedOptions));
+      }
+    }catch{savedOptions={};}
+  }
+  function staleAccount(){const error=new Error('');error.code='stale_account';return error;}
+  function assertAccount(epoch=accountEpoch,write=false){if(epoch!==accountEpoch || !readable() || (write && !membership.allowed))throw staleAccount();}
+  function freezeAccountWrites(){
+    accountEpoch++;viewGeneration++;refreshGeneration++;loadingVersion++;navigationGeneration++;overviewRequest++;contentPanelSequence++;
+    for(const controller of dataRequests)controller.abort();dataRequests.clear();
+    clearTimeout(pollTimer);clearTimeout(searchTimer);pollTimer=null;
+    saving=Promise.resolve();pendingViewMutations=0;activeRequest=false;loadingMore=false;
+    overviewLoading=false;overviewRefreshing=false;pendingText=null;pendingSnapshotImport=null;
+    contentPanel=null;
+    legacyRequest++;legacy={checked:false,checking:false,decision_required:false,counts:{},error:''};legacyBusy=false;legacyConfirmed=false;
+    if($('#dialog').dataset.kind==='text' || $('#dialog').querySelector('form')){$('#dialog').close();$('#dialog-body').replaceChildren();}
+  }
+  function clearAccountView(){
+    accountEpoch++;viewGeneration++;refreshGeneration++;loadingVersion++;navigationGeneration++;overviewRequest++;contentPanelSequence++;
+    for(const controller of dataRequests)controller.abort();dataRequests.clear();
+    for(const url of downloadURLs)URL.revokeObjectURL(url);downloadURLs.clear();
+    clearTimeout(pollTimer);clearTimeout(searchTimer);clearTimeout(toastTimer);clearTimeout(membershipDeadlineTimer);pollTimer=null;
+    listObserver?.disconnect();listObserver=null;
+    state=null;snapshot=null;pendingText=null;pendingSnapshotImport=null;contentPanel=null;
+    saving=Promise.resolve();pendingViewMutations=0;activeRequest=false;loadingMore=false;
+    overview=null;overviewLoading=false;overviewError='';overviewRefreshing=false;overviewNextAt=0;overviewPollKey='';
+    section='overview';domesticMode='long';overviewPlatform='fanqie';overviewChannel='全部';dashboardCategoryMetric='primary_median';
+    listWindow={key:'',count:20};lastListScrollAt=0;
+    nextAutoAt.clear();autoMessages.clear();latestResults.clear();snapshotJobs.clear();
+    historyViews={};savedOptions={};storageAccount=null;
+    legacyRequest++;legacy={checked:false,checking:false,decision_required:false,counts:{},error:''};legacyBusy=false;legacyConfirmed=false;
+    $('#bridge').replaceChildren();$('#content').replaceChildren();$('#content').classList.remove('overseas-content');
+    $('#dialog').close();$('#dialog-body').replaceChildren();$('#dialog').dataset.kind='';$('#dialog').dataset.snapshot='';
+    $('#notice').hidden=true;$('#notice').replaceChildren();$('#toast').hidden=true;$('#toast').textContent='';
+    $('#platforms').replaceChildren();$('#overseas-platforms').replaceChildren();$('#overseas-platforms').hidden=true;
+    $('#favorite-count').textContent='0';$('#report-count').textContent='0';$('#snapshot-file').value='';$('#text-file').value='';
+    $('#main-site').href=MEMBER_SITE;$('#points-entry').innerHTML='<button class="soon" disabled>积分站 <span>即将上线</span></button>';
+  }
+  function normalizedMembership(value){
+    if(!value || typeof value!=='object' || typeof value.allowed!=='boolean')return {allowed:false,reason:'verification_unavailable',account:null};
+    const reason=typeof value.reason==='string'?value.reason.replace(/^membership_/,''):'';
+    const account=value.account && typeof value.account.id==='string' && value.account.id.length>0 && value.account.id.length<=256
+      ? {id:value.account.id,display_name:typeof value.account.display_name==='string'?value.account.display_name.slice(0,160):'已连接账号'}:null;
+    const result={allowed:false,can_read_history:false,access_mode:'none',reason:membershipCopy[reason]?reason:'verification_unavailable',account,generation:typeof value.generation==='string' || typeof value.generation==='number'?String(value.generation):'',membership_expires_at:value.membership_expires_at,permit_expires_at:value.permit_expires_at,identity_expires_at:value.identity_expires_at,history_eligible:value.history_eligible===true,history_membership_expires_at:value.history_membership_expires_at,server_time:value.server_time,policy_version:value.policy_version};
+    if(value.allowed){
+      const expires=Date.parse(value.membership_expires_at),permit=Date.parse(value.permit_expires_at),server=Date.parse(value.server_time);
+      if(account && result.generation && reason==='active' && [expires,permit,server].every(Number.isFinite) && server<permit && permit<=expires){result.allowed=true;result.access_mode='full';result.reason='active';}
+      else result.reason='verification_unavailable';
+    }else if(value.can_read_history===true && value.access_mode==='read_only' && reason==='expired'){
+      const expires=Date.parse(value.membership_expires_at),server=Date.parse(value.server_time),identity=value.identity_expires_at==null?null:Date.parse(value.identity_expires_at);
+      if(account && result.generation && [expires,server].every(Number.isFinite) && expires<=server && (identity===null || (Number.isFinite(identity) && identity>server))){result.can_read_history=true;result.access_mode='read_only';}
+      else result.reason='verification_unavailable';
+    }else if(value.can_read_history===true && value.access_mode==='read_only' && reason==='not_eligible'){
+      const historyEnd=Date.parse(value.history_membership_expires_at),server=Date.parse(value.server_time),identity=Date.parse(value.identity_expires_at);
+      if(account && result.generation && value.history_eligible===true && [historyEnd,server,identity].every(Number.isFinite) && historyEnd<=server && identity>server){result.can_read_history=true;result.access_mode='read_only';}
+      else result.reason='verification_unavailable';
     }
-  } catch { savedOptions = {}; }
+    return result;
+  }
+  function applyReadOnlyControls(){
+    document.querySelectorAll('[data-action]').forEach(button=>{
+      if(button.tagName!=='BUTTON' || !writeActions.has(button.dataset.action))return;
+      if(membership.can_read_history){
+        if(!button.hasAttribute('data-readonly-disabled'))button.dataset.readonlyDisabled=String(button.disabled);
+        button.disabled=true;button.title='续费会员后恢复此操作';
+      }else if(button.hasAttribute('data-readonly-disabled')){
+        button.disabled=button.dataset.readonlyDisabled==='true';delete button.dataset.readonlyDisabled;button.removeAttribute('title');
+      }
+    });
+  }
+  function renderMembership(){
+    const info=membershipCopy[membership.reason] || membershipCopy.verification_unavailable, account=membership.account;
+    document.body.classList.toggle('membership-locked',!readable());document.body.classList.toggle('membership-read-only',membership.can_read_history===true);document.body.classList.toggle('legacy-pending',legacyBlocked());
+    const sidebar=$('.sidebar');sidebar.inert=!readable() || legacyBlocked();sidebar.setAttribute('aria-disabled',String(sidebar.inert));
+    const expiry=account && membership.membership_expires_at?new Date(membership.membership_expires_at):null;
+    const expiryLabel=expiry && Number.isFinite(expiry.getTime())?expiry.toLocaleString('zh-CN',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}):'';
+    const historyOnlyLabel=membership.reason==='not_eligible'?'当前权益仅可查看历史资料':'会员已到期 · 历史资料只读';
+    $('#membership-account').innerHTML=account?`<div class="membership-account-text"><strong>${escape(account.display_name || '已连接账号')}</strong><small>${membership.allowed?'会员有效'+(expiryLabel?' · '+escape(expiryLabel)+' 到期':''):membership.can_read_history?historyOnlyLabel:escape(info[0])}</small></div><button class="quiet-button membership-check" data-action="membership-refresh" aria-label="重新确认会员状态" ${membershipBusy?'disabled':''}>↻</button><button class="quiet-button" data-action="membership-logout" ${membershipBusy?'disabled':''}>退出</button>`:'<span class="membership-unconnected">'+(membership.reason==='checking'?'正在确认账号':'尚未连接账号')+'</span>';
+    $('#membership-notice').hidden=!membership.can_read_history;
+    const priorPaidEnd=membership.history_membership_expires_at?new Date(membership.history_membership_expires_at).toLocaleString('zh-CN',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}):'';
+    $('#membership-notice').innerHTML=membership.can_read_history?`<div><strong>${membership.reason==='not_eligible'?'当前会员权益不含新任务，历史资料可以继续查看':'会员已到期，历史资料可以继续查看'}</strong><span>${membership.reason==='not_eligible'?`此前付费权益截止 ${escape(priorPaidEnd)}。当前主站会员截止${expiryLabel?' '+escape(expiryLabel):'时间以官网为准'}；这段权益不作为扫榜付费资格。`:'已有榜单、收藏、正文和报告保留；续费后恢复更新与新任务。'}</span></div><a class="button secondary small" href="${MEMBER_SITE}" target="_blank" rel="noopener noreferrer">前往官网续费 ↗</a>`:'';
+    applyReadOnlyControls();
+    if(readable())return;
+    const checking=membership.reason==='checking', reconnect=['not_authenticated','device_revoked','device_limit'].includes(membership.reason);
+    $('#content').innerHTML=`<section id="membership-card" class="membership-card" aria-labelledby="membership-title"><div class="membership-symbol" aria-hidden="true">${checking?'<span class="spinner"></span>':'▦'}</div><span class="membership-eyebrow">发糕扫榜工作台</span><h1 id="membership-title">${escape(info[0])}</h1><p>${escape(info[1])}</p>${account?`<div class="membership-current">${escape(account.display_name || '已连接账号')}${expiryLabel?`<span>会员截止 ${escape(expiryLabel)}</span>`:''}</div>`:''}<div class="membership-actions">${checking?'':reconnect?`<button class="button primary" data-action="membership-connect" ${membershipBusy?'disabled':''}>${membershipBusy?'正在连接…':'连接发糕账号'}</button>`:`<a class="button primary" href="${MEMBER_SITE}" target="_blank" rel="noopener noreferrer">${membership.reason==='expired'?'前往官网续费':'前往发糕写作'} ↗</a>`}${checking?'':`<button class="button ${reconnect?'quiet-button':'secondary'}" data-action="membership-refresh" ${membershipBusy?'disabled':''}>${membershipBusy?'正在确认…':'重新确认状态'}</button>`}</div><small>${reconnect?'将在官网完成登录，工作台不会索取你的密码。':'账号恢复权益后可继续使用，无需重新安装。'}</small></section>`;
+  }
+  function renderLegacy(){
+    if(!membership.allowed || !legacyBlocked())return;
+    $('#bridge').replaceChildren();$('#content').classList.remove('overseas-content');
+    const account=membership.account?.display_name || '当前账号';
+    if(legacy.error){
+      $('#content').innerHTML=`<section id="legacy-claim-card" class="membership-card"><div class="membership-symbol" aria-hidden="true">▤</div><h1>旧版资料暂时无法确认</h1><p>${escape(legacy.error)}</p><p>旧资料与当前账号资料均保留。在确认完成前，工作台暂不自动采集。</p><div class="membership-actions"><button class="button primary" data-action="legacy-retry">重新检查</button></div></section>`;
+      return;
+    }
+    if(!legacy.checked || legacy.checking){
+      $('#content').innerHTML='<section id="legacy-claim-card" class="membership-card"><div class="membership-symbol" aria-hidden="true"><span class="spinner"></span></div><h1>正在检查本机旧资料</h1><p>先确认旧版资料的归属，再打开当前账号的工作台。</p></section>';
+      return;
+    }
+    const labels={snapshots:'榜单',favorites:'收藏',texts:'正文',reports:'报告'};
+    const counts=Object.entries(labels).filter(([key])=>Number.isSafeInteger(legacy.counts?.[key]) && legacy.counts[key]>0).map(([key,label])=>`<li><strong>${legacy.counts[key].toLocaleString()}</strong><span>${label}</span></li>`).join('');
+    const canClaim=legacy.can_claim===true,inspectionMessage=typeof legacy.inspection_error?.message==='string'?legacy.inspection_error.message.slice(0,500):'旧资料暂时无法安全读取；可保留原资料并跳过，认领需先检查。';
+    $('#content').innerHTML=`<section id="legacy-claim-card" class="membership-card legacy-claim-card"><div class="membership-symbol" aria-hidden="true">▤</div><span class="membership-eyebrow">旧版资料归属</span><h1>${canClaim?'这台电脑留有尚未关联账号的资料':'旧版资料暂时无法安全读取'}</h1><p>${canClaim?`请确认是否将这些旧资料复制到 <strong>${escape(account)}</strong>。资料不会因为首次登录而自动归入这个账号。`:escape(inspectionMessage)}</p>${counts?`<ul class="legacy-counts" aria-label="旧资料数量">${counts}</ul>`:''}<p class="legacy-preservation">${canClaim?'认领前会创建可恢复备份，原资料保留。选择跳过后，使用当前账号的独立资料。':'选择跳过后，旧资料仍留在原处，当前账号使用独立资料。'}</p><label class="legacy-confirm"><input id="legacy-confirm" type="checkbox" ${legacyConfirmed && canClaim?'checked':''} ${legacyBusy || !canClaim?'disabled':''}><span>我确认这些旧资料属于当前账号，并同意复制。</span></label><div class="membership-actions"><button class="button primary" data-action="legacy-claim" ${!canClaim || !legacyConfirmed || legacyBusy?'disabled':''}>${legacyBusy?'正在处理…':legacy.decision==='resume_required'?'继续认领':'认领并保留原件'}</button>${legacy.can_skip?`<button class="button secondary" data-action="legacy-skip" ${legacyBusy?'disabled':''}>跳过，开始使用</button>`:''}</div><small>${legacy.can_skip?'跳过不会删除原资料，也不会将其分配给其他账号。':'已有认领正在恢复，请完成当前认领后继续。'}</small></section>`;
+  }
+  async function ensureLegacy({force=false}={}){
+    if(!membership.allowed)return true;
+    if(legacyBusy && !force)return false;
+    if(legacy.checked && !legacy.decision_required && !legacy.error && !force)return true;
+    const epoch=accountEpoch,request=++legacyRequest;
+    legacy={...legacy,checking:!legacy.checked,error:''};renderMembership();renderLegacy();
+    try{
+      const result=await api('/api/legacy-data/status');assertAccount(epoch,true);
+      if(request!==legacyRequest)return false;
+      if(!result || typeof result.available!=='boolean' || typeof result.decision_required!=='boolean'
+          || typeof result.can_skip!=='boolean' || typeof result.can_claim!=='boolean' || result.original_preserved!==true
+          || !result.counts || typeof result.counts!=='object' || Array.isArray(result.counts))throw new Error('旧资料检查结果不完整，请重新检查或让维护助手处理。');
+      legacy={...result,checked:true,checking:false,error:''};
+      renderMembership();if(legacyBlocked())renderLegacy();
+      return !legacyBlocked();
+    }catch(error){
+      if(epoch!==accountEpoch || request!==legacyRequest)return false;
+      legacy={...legacy,checked:false,checking:false,error:error.message || '旧资料检查未完成，请重试。'};renderMembership();renderLegacy();return false;
+    }
+  }
+  async function decideLegacy(action){
+    if(legacyBusy || !membership.allowed || !legacy.checked || !legacy.decision_required)return;
+    if(action==='claim' && (!legacyConfirmed || legacy.can_claim!==true))return;
+    if(action==='skip' && !legacy.can_skip)return;
+    const epoch=accountEpoch;legacyBusy=true;renderLegacy();
+    try{
+      await api('/api/legacy-data/'+action,{confirmed:true});assertAccount(epoch,true);
+      legacyConfirmed=false;legacy.checked=false;
+      if(await ensureLegacy({force:true})){assertAccount(epoch,true);await refresh();assertAccount(epoch,true);notice(action==='claim'?'旧版资料已复制到当前账号，原件与认领备份均已保留。':'已保留旧版资料，当前账号使用独立的工作台资料。');}
+    }catch(error){if(epoch===accountEpoch){legacy.error=error.message || '资料处理未完成，请重新检查后继续。';renderLegacy();}}
+    finally{if(epoch===accountEpoch){legacyBusy=false;renderMembership();if(legacyBlocked())renderLegacy();}}
+  }
+  function applyMembership(value){
+    const next=normalizedMembership(value), oldID=membership.account?.id, nextID=next.account?.id;
+    const changed=oldID!==nextID || membership.generation!==next.generation;
+    const wasReadable=readable(),nextReadable=next.allowed || next.can_read_history;
+    const readOnlyChange=membership.can_read_history!==next.can_read_history;
+    if(changed || (wasReadable && !nextReadable))clearAccountView();
+    else if(membership.allowed && next.can_read_history)freezeAccountWrites();
+    const unlocked=(nextReadable && (!wasReadable || changed)) || (next.allowed && !membership.allowed);
+    membership=next;
+    if(nextReadable && storageAccount!==nextID)loadPreferences(nextID);
+    renderMembership();clearTimeout(membershipDeadlineTimer);
+    if(readOnlyChange && state)render();
+    const deadline=next.allowed?next.permit_expires_at:next.can_read_history?next.identity_expires_at:null;
+    if(deadline){
+      const remaining=Math.max(0,Date.parse(deadline)-Date.parse(next.server_time));
+      const epoch=accountEpoch;
+      membershipDeadlineTimer=setTimeout(()=>{
+        if(epoch!==accountEpoch || !readable())return;
+        const expired=next.allowed && Date.parse(next.membership_expires_at)<=Date.parse(next.permit_expires_at);
+        applyMembership({...membership,allowed:false,can_read_history:false,access_mode:'none',reason:expired?'expired':'verification_unavailable'});
+        checkMembership({force:true}).catch(()=>{});
+      },Math.min(remaining,2147483647));
+    }
+    return unlocked;
+  }
+  function scheduleMembership(){
+    clearTimeout(membershipTimer);
+    if(logoutPending)return;
+    const lease=membership.allowed?membership.permit_expires_at:membership.can_read_history?membership.identity_expires_at:null;
+    const remaining=lease?Date.parse(lease)-Date.parse(membership.server_time):Infinity;
+    const renewSoon=Number.isFinite(remaining) && remaining<=45000;
+    membershipTimer=setTimeout(()=>checkMembership({force:renewSoon}).catch(()=>{}),renewSoon?Math.max(1,Math.min(15000,remaining/2)):15000);
+  }
+  async function checkMembership({force=false,reload=false}={}){
+    if(logoutPending && !force)return;
+    if(force)logoutPending=false;
+    const request=++membershipRequest;
+    try{
+      const value=await api(force?'/api/membership/refresh':'/api/membership/status',force?{}:undefined);
+      if(request!==membershipRequest)return;
+      const unlocked=applyMembership(value);
+      $('#server-dot').classList.add('online');$('#server-label').textContent='本地工作台已连接';
+      if(membership.allowed && !await ensureLegacy())return;
+      if(request!==membershipRequest)return;
+      if(readable() && (unlocked || reload || !state))await refresh();
+    }catch(error){
+      if(request!==membershipRequest || error.code==='stale_account')return;
+      applyMembership({...membership,allowed:false,can_read_history:false,access_mode:'none',reason:'verification_unavailable'});
+    }finally{if(request===membershipRequest){scheduleMembership();if(callbackNotice){notice(callbackNotice);callbackNotice='';}}}
+  }
+  async function connectMembership(){
+    if(membershipBusy)return;
+    membershipBusy=true;membershipRequest++;renderMembership();
+    try{
+      const result=await api('/api/membership/connect',{}, {binding:membership}), url=new URL(result.authorization_url);
+      if(url.origin!==new URL(MEMBER_SITE).origin || url.username || url.password || url.pathname!=='/workbench/authorize')throw new Error('未取得有效的官网授权入口，请重试。');
+      window.location.assign(url.href);
+    }catch(error){notice(error.message || '暂时无法连接官网，请稍后重试。');}
+    finally{membershipBusy=false;renderMembership();scheduleMembership();}
+  }
+  async function logoutMembership(){
+    if(membershipBusy)return;
+    const binding=membership;
+    membershipBusy=true;logoutPending=true;membershipRequest++;clearTimeout(membershipTimer);
+    clearAccountView();membership={allowed:false,reason:'not_authenticated',account:null};renderMembership();
+    try{const result=await api('/api/membership/logout',{}, {binding});applyMembership(result);logoutPending=false;}
+    catch(error){membership={allowed:false,reason:error.code==='membership_account_changed'?'account_changed':'verification_unavailable',account:null};notice('退出尚未完成，请重新确认当前账号状态。');}
+    finally{membershipBusy=false;renderMembership();scheduleMembership();}
+  }
   const mode = () => Object.hasOwn(modes,state?.active_mode) ? state.active_mode : 'long';
   const view = () => state?.views?.[mode()] || {};
   const platformID = () => view().platform || firstPlatform[mode()];
@@ -50,7 +275,7 @@
   const favorite = (book, snap = snapshot) => (state?.favorites || []).some((f) => f.book_id === book.id && f.platform === snap?.platform);
   const date = (value) => { if (!value) return '未提供'; const d = new Date(value); return Number.isNaN(d.getTime()) ? String(value) : d.toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}); };
   const snapshotDate = (snap) => snap?.collected_at || snap?.created_at;
-  const currentJob = () => (state?.jobs || []).find((j) => !['text','overview'].includes(j.kind) && j.platform === platformID() && (!j.options || scopeKey(j.platform,j.options)===scopeKey()) && ['queued','running','pending'].includes(j.status));
+  const currentJob = () => membership.allowed?(state?.jobs || []).find((j) => !['text','overview'].includes(j.kind) && j.platform === platformID() && (!j.options || scopeKey(j.platform,j.options)===scopeKey()) && ['queued','running','pending'].includes(j.status)):null;
   const latestCollectionJob = () => (state?.jobs || []).find(j=>!['text','overview'].includes(j.kind) && j.platform===platformID() && (!j.options || scopeKey(j.platform,j.options)===scopeKey()));
   const accessRestricted = job => ['failed','interrupted'].includes(job?.status) && ['forbidden','source_access_denied','verification_required'].includes(job.error_code);
   function sourceActions(p) {
@@ -92,7 +317,7 @@
   function viewingHistory(){return historyViews[mode()]===view().snapshot_id && !!view().snapshot_id;}
   function setHistory(snapshotId,targetMode=mode()){
     if(snapshotId)historyViews[targetMode]=snapshotId;else delete historyViews[targetMode];
-    try{localStorage.setItem('fagao-history-views',JSON.stringify(historyViews));}catch{}
+    savePreference('fagao-history-views',JSON.stringify(historyViews));
   }
   function boardNames(id=platformID()) { return platforms().find(p=>p.id===id)?.boards || (id==='fanqie'?['新书榜','阅读榜']:id==='qidian'?['月票榜','签约新书榜','公众新书榜','新人新书榜','畅销榜']:id==='ciweimao'?['月票榜']:id==='heiyan'?['书库']:['热门故事']); }
   const stopReasons={loading:'当前作品已载入，后续页面会继续补充',waiting_for_more:'向下浏览时继续读取后续作品',paused_for_demand:'已暂停读取，继续向下浏览时恢复',last_page:'已读取平台最后一页',source_end:'已到来源末页',awaiting_demand:'向下浏览时继续读取后续作品',empty_page:'平台已无更多书目',requested_limit:'已达到本次采集数量',max_pages:'已达到本次页数上限',repeated_page:'平台返回重复页面，已停止避免重复',version_changed:'榜单版本发生变化，已保留本次结果',invalid_response:'平台返回的数据暂不可读',wrong_page:'平台返回的页码不一致',request_failed:'后续页面暂时无法连接',session_required:'后续页面需要平台登录',pagination_unverified:'后续翻页方式仍待核实',rank_conflict:'不同页面出现名次冲突',book_conflict:'不同页面出现作品信息冲突',invalid_next_page:'平台未提供可用的下一页'};
@@ -111,15 +336,39 @@
     const metrics=Array.isArray(book.metrics)?book.metrics:[];
     return metrics.slice(0,limit).map(metric=>`<span>${escape(metric.name)} <strong>${escape(metric.value)}</strong>${escape(metric.unit || '')}</span>`).join('');
   }
-  function toast(message) { clearTimeout(toastTimer); $('#toast').textContent = message; $('#toast').hidden = false; toastTimer = setTimeout(() => { $('#toast').hidden = true; }, 4200); }
-  function notice(message) { $('#notice').innerHTML = `<span>${escape(message)}</span><button data-action="dismiss-notice" aria-label="关闭提示">×</button>`; $('#notice').hidden = false; }
-  async function api(path, body) {
-    const response = await fetch(path, body === undefined ? {cache:'no-store'} : {method:'POST',headers:{'Content-Type':'application/json','X-Fagao-Request':'1'},body:JSON.stringify(body)});
-    let result; try { result = await response.json(); } catch { throw new Error('工作台返回了无法读取的数据，请重新启动后重试。'); }
-    if (!response.ok || result.error) throw new Error(result.error?.message || result.message || `请求未完成（${response.status}）`);
-    return result;
+  function toast(message) { if(!message || !membership.allowed)return;clearTimeout(toastTimer); $('#toast').textContent = message; $('#toast').hidden = false; toastTimer = setTimeout(() => { $('#toast').hidden = true; }, 4200); }
+  function notice(message) { if(!message)return;$('#notice').innerHTML = `<span>${escape(message)}</span><button data-action="dismiss-notice" aria-label="关闭提示">×</button>`; $('#notice').hidden = false; }
+  async function api(path, body, options={}) {
+    const publicRequest=path.startsWith('/api/membership/'), epoch=accountEpoch, controller=new AbortController();
+    const write=body!==undefined && !readOnlyPosts.has(path);
+    if(!publicRequest){assertAccount(epoch,write);if(legacyBlocked() && !path.startsWith('/api/legacy-data/'))throw staleAccount();dataRequests.add(controller);}
+    try{
+      const binding=publicRequest?options.binding:membership;
+      const headers=body===undefined?{}:{'Content-Type':'application/json','X-Fagao-Request':'1'};
+      if(binding?.account?.id)headers['X-Fagao-Account']=binding.account.id;
+      if(binding?.generation)headers['X-Fagao-Generation']=binding.generation;
+      const init=body===undefined?{cache:'no-store',headers}:{method:'POST',headers,body:JSON.stringify(body)};
+      const response=await fetch(path,{...init,signal:controller.signal});
+      if(options.blob && response.ok){const result=await response.blob();assertAccount(epoch);return result;}
+      let result;try{result=await response.json();}catch{if(!publicRequest)assertAccount(epoch);throw new Error('工作台返回了无法读取的数据，请重新启动后重试。');}
+      if(!publicRequest)assertAccount(epoch,write);
+      if(!response.ok || result?.error){
+        const error=new Error(result?.error?.message || result?.message || `请求未完成（${response.status}）`);
+        error.code=result?.error?.code || 'request_failed';error.status=response.status;
+        if(!publicRequest && error.code.startsWith('membership_')){
+          applyMembership({...membership,allowed:false,reason:error.code.slice('membership_'.length)});scheduleMembership();
+        }
+        if(!publicRequest && error.code==='legacy_decision_required'){
+          freezeAccountWrites();renderMembership();renderLegacy();queueMicrotask(()=>checkMembership({reload:true}).catch(()=>{}));
+        }
+        throw error;
+      }
+      return result;
+    }catch(error){if(!publicRequest && (epoch!==accountEpoch || controller.signal.aborted))throw staleAccount();throw error;}
+    finally{dataRequests.delete(controller);}
   }
   function acceptState(next) {
+    if(!readable())return;
     if (next?.views) {
       const retained=(state?.jobs || []).filter(job=>(['queued','running','pending','cancelling'].includes(job.status) || job.paused_for_demand) && !(next.jobs || []).some(item=>item.id===job.id));
       state=next;state.jobs=[...(next.jobs || []),...retained];
@@ -128,19 +377,25 @@
     state.views ||= {}; state.snapshots ||= []; state.favorites ||= []; state.history ||= []; state.reports ||= []; state.jobs ||= []; state.texts ||= [];
   }
   async function refresh({silent = false} = {}) {
+    const epoch=accountEpoch;assertAccount(epoch);
+    if(legacyBlocked()){renderLegacy();return;}
     while(pendingViewMutations>0)await saving.catch(()=>{});
+    assertAccount(epoch);
     const viewVersion=viewGeneration, requestVersion=++refreshGeneration;
     const next = await api('/api/state');
     if(pendingViewMutations>0 || viewVersion!==viewGeneration || requestVersion!==refreshGeneration)return;
     acceptState(next);
     $('#server-dot').classList.add('online'); $('#server-label').textContent = '本地工作台已连接';
     if (!silent) await loadSnapshot(); else render();
+    assertAccount(epoch);
     syncContentPanel();
     if(section==='overview')await loadOverview();
+    assertAccount(epoch);
     schedulePoll();
     queueMicrotask(()=>{maybeAutoCollect().catch(()=>{});maybeAutoOverview().catch(()=>{});});
   }
   async function loadSnapshot() {
+    assertAccount();
     const version = ++loadingVersion, viewVersion=viewGeneration;
     const id = view().snapshot_id;
     if (!id) { snapshot = null; render(); return; }
@@ -151,14 +406,16 @@
     render();
   }
   function updateView(patch) {
+    const epoch=accountEpoch;assertAccount(epoch);
     const targetMode = patch.mode || mode(), version=++viewGeneration;
     pendingViewMutations++;
     saving = saving.catch(() => {}).then(async () => {
       try{
+        assertAccount(epoch);
         const next=await api('/api/view', {mode:targetMode,...patch});
         if(version!==viewGeneration)return;
         acceptState(next);await loadSnapshot();
-      } finally {pendingViewMutations--;}
+      } finally {if(epoch===accountEpoch)pendingViewMutations--;}
     });
     return saving;
   }
@@ -196,6 +453,8 @@
   }
   function scopeOf(snap = snapshot) { return [snap?.channel,snap?.category,snap?.board,snap?.period].filter(Boolean).join(' · '); }
   function render() {
+    if(!readable()){renderMembership();return;}
+    if(legacyBlocked()){renderLegacy();return;}
     if (!state) return;
     const previousDetail=$('.detail');
     const detailPosition=previousDetail?.dataset.book ? {book:previousDetail.dataset.book,snapshot:previousDetail.dataset.snapshot,top:previousDetail.scrollTop} : null;
@@ -206,6 +465,7 @@
     if(detailPosition && currentDetail?.dataset.book===detailPosition.book && currentDetail.dataset.snapshot===detailPosition.snapshot)currentDetail.scrollTop=detailPosition.top;
     observeListEnd();
     renderBridge();
+    applyReadOnlyControls();
     if(focusedQuery && $('#query')){
       const input=$('#query');input.value=focusedQuery.value;input.focus({preventScroll:true});
       try{input.setSelectionRange(focusedQuery.start,focusedQuery.end);}catch{}
@@ -218,15 +478,15 @@
     const isLibrary = p.id === 'heiyan', unsupported = ['planned','unavailable'].includes(p.status) && p.id === 'fanqie_short';
     const options=optionsFor(), key=scopeKey();
     const title = isLibrary ? '黑岩故事会 · 选题书单' : `${nameOf(p.id)} · ${options.board || '作品发现'}`;
-    const sub = isLibrary ? '直接打开腾讯文档书单，在原页面登录后查看。' : mode()==='overseas' ? '英文书名与简介 · 中文分类浏览 · 选中后可回 WorkBuddy 翻译或分析' : '持续更新平台榜单，发现值得阅读与研究的作品。';
+    const sub = membership.can_read_history ? '查看这台电脑上已保存的榜单与作品资料。' : isLibrary ? '直接打开腾讯文档书单，在原页面登录后查看。' : mode()==='overseas' ? '英文书名与简介 · 中文分类浏览 · 选中后可回 WorkBuddy 翻译或分析' : '持续更新平台榜单，发现值得阅读与研究的作品。';
     const action = isLibrary ? '' : `${snapshot && mode()!=='overseas'?'<button class="button secondary" data-action="insights">榜单观察</button>':''}<button class="button secondary" data-action="collection-options" aria-label="调整采集设置">采集设置</button><button class="button secondary" data-action="collect" ${job || activeRequest || unsupported ? 'disabled' : ''}>${job ? (job.waiting_for_more?'已加载 · 向下继续':'<span class="spinner"></span>正在读取') : '↻ '+(isLibrary?'更新书库':'更新榜单')}</button>`;
     let body = pageHead(title,sub,action)+(isLibrary ? heiyanBooklistCard(!!snapshot) : renderBoardControls());
     const freshResult=latestResults.get(key);
     if(freshResult && freshResult!==snapshot?.id)body+=`<div class="new-results"><span>新的榜单已更新。当前选中的作品仍保留在原记录中。</span><button data-action="show-latest" data-id="${escape(freshResult)}">查看最新榜单 →</button></div>`;
     if(isLibrary && !snapshot){$('#content').innerHTML=body;return;}
     const related = state.snapshots.filter((s) => s.platform === p.id && s.mode === mode());
-    body += '<section class="surface" aria-label="作品列表"><div class="surface-head"><div><strong>'+escape(snapshot ? scopeOf() || '本次作品' : failed?'榜单更新未完成':'正在同步'+(isLibrary?'书库':'榜单'))+'</strong><span class="badge">'+(isLibrary?'书库资料':'平台榜单')+'</span>';
-    body += `<div class="meta">${snapshot ? `${(snapshot.books || []).length} 本作品 · 采集于 ${escape(date(snapshotDate(snapshot)))}` : '自动保存每次榜单，更新不会改变已选中的作品'}</div></div>`;
+    body += '<section class="surface" aria-label="作品列表"><div class="surface-head"><div><strong>'+escape(snapshot ? scopeOf() || '本次作品' : membership.can_read_history?'暂无已保存榜单':failed?'榜单更新未完成':'正在同步'+(isLibrary?'书库':'榜单'))+'</strong><span class="badge">'+(isLibrary?'书库资料':'平台榜单')+'</span>';
+    body += `<div class="meta">${snapshot ? `${(snapshot.books || []).length} 本作品 · 采集于 ${escape(date(snapshotDate(snapshot)))}` : membership.can_read_history?'会员到期期间仅查看已保存资料':'自动保存每次榜单，更新不会改变已选中的作品'}</div></div>`;
     if(snapshot?.provenance?.source_name)body+=`<div class="meta snapshot-source">来源：${escape(snapshot.provenance.source_name)} · 数据日期：${escape(snapshot.data_date || '来源未提供')}</div>`;
     if(snapshot?.pagination)body+=`<div class="meta pagination-summary">${escape(paginationSummary(snapshot))}</div>`;
     if (related.length > 1) body += `<select class="snapshot-select" id="snapshot-select" aria-label="切换历史榜单">${related.map((s) => `<option value="${escape(s.id)}" ${s.id===snapshot?.id?'selected':''}>${escape(date(snapshotDate(s)))} · ${escape(s.category || s.board || '')} · ${s.books_count ?? s.count ?? '?'} 本</option>`).join('')}</select>`;
@@ -235,7 +495,8 @@
     if(failed && snapshot)body+=`<div class="job-strip job-warning"><span>${escape(recentJob.message || '上次采集未完成，已有结果保留。')}</span>${sourceActions(p)}</div>`;
 
     if (!snapshot) {
-      if (unsupported) body += empty('这个来源还在接入中',p.message || '可以先导入已有的书目文件，继续选书和分析。','<button class="button secondary" data-action="import-snapshot">导入书目 JSON</button>','▤');
+      if(membership.can_read_history)body+=empty('这里还没有历史榜单','可以查看其他已保存的平台与记录，续费后恢复榜单更新。','','▤');
+      else if (unsupported) body += empty('这个来源还在接入中',p.message || '可以先导入已有的书目文件，继续选书和分析。','<button class="button secondary" data-action="import-snapshot">导入书目 JSON</button>','▤');
       else if(failed)body+=empty(restricted?'来源暂不接受工作台读取':'本次榜单读取未完成', (recentJob.message || '请稍后重试。')+(p.id==='scribblehub'?' 也可导入在浏览器中保存的榜单 HTML。':''),sourceActions(p)+'<button class="button secondary small" data-action="collect">重试读取</button>','▤','source-failure');
       else body += empty(job ? '正在读取平台榜单' : '正在同步作品',job ? '作品会在完成后自动显示。你可以先浏览其他平台。' : '工作台会自动取得当前榜单。已有资料也可以直接导入。','<button class="button secondary" data-action="import-snapshot">导入已有书目</button>','▤');
     } else {
@@ -247,7 +508,7 @@
       body += '<div class="book-layout"><div class="book-list"><div class="list-key"><span>列表序号 / 作品</span><span>'+ (isLibrary ? '资料来源' : mode()==='overseas'?'来源名次':'原榜名次') +'</span></div>';
       if (!books.length) body += empty('没有匹配的作品','换个关键词，或清除筛选条件。','<button class="button secondary small" data-action="clear-filters">清除筛选</button>','⌕','compact');
       else body += sliced.map((b,i) => `<button class="book-row" data-action="select-book" data-book="${escape(b.id)}" aria-pressed="${b.id===view().selected_id}"><span class="list-number">${String(start+i+1).padStart(2,'0')}</span>${cover(b)}<span class="row-content"><span class="book-title">${escape(b.title)}${favorite(b) ? '<span class="star" aria-label="已收藏"> ♡</span>' : ''}</span><span class="book-meta">${escape(b.author || '作者未提供')}${(b.tags?.length) ? '<span>·</span>'+escape(Array.isArray(b.tags)?b.tags.slice(0,2).join(' · '):b.tags) : ''}${b.status?'<span>·</span>'+escape(b.status):''}</span><span class="row-summary">${escape(b.summary || '本次来源未提供简介')}</span><span class="row-metrics">${metricsHTML(b)}</span></span><span class="rank">${isLibrary ? '书库' : Number.isFinite(b.rank) ? '# '+b.rank : '—'}</span></button>`).join('');
-      const continuation=continuationJob();
+      const continuation=membership.allowed?continuationJob():null;
       if(page===1 && (end<books.length || continuation))body+=`<div class="list-load-more" id="list-end"><button class="button secondary" data-action="load-more">${end<books.length?`加载更多作品（已显示 ${end} / ${books.length}）`:'继续读取后续作品'}</button><small>${end<books.length?'向下浏览时继续显示后续作品':'已取得的作品可先浏览，继续向下时再读取后续页面'}</small></div>`;
       if (books.length) body += `<div class="pagination"><span>共 ${books.length} 本 · 序号跨页连续</span><div><button data-action="page" data-page="${page-1}" aria-label="上一页" ${page<=1?'disabled':''}>‹</button><span>${Math.min(page,pages)} / ${pages}</span><button data-action="page" data-page="${page+1}" aria-label="下一页" ${page>=pages?'disabled':''}>›</button></div></div>`;
       body += '</div>'+renderDetail(books)+'</div>';
@@ -261,7 +522,7 @@
   }
   function overviewJob(){return overview?.update || (state?.jobs || []).find(job=>job.kind==='overview') || null;}
   function overviewJobActive(job){return ['queued','running','pending','cancelling'].includes(job?.status) || job?.public_source?.status==='running';}
-  function overviewRunning(){return overviewJobActive(overviewJob());}
+  function overviewRunning(){return membership.allowed && overviewJobActive(overviewJob());}
   function compactNumber(value){
     if(!Number.isFinite(value))return '—';
     return Math.abs(value)>=100000000?(value/100000000).toLocaleString('zh-CN',{maximumFractionDigits:1})+'亿':Math.abs(value)>=10000?(value/10000).toLocaleString('zh-CN',{maximumFractionDigits:1})+'万':value.toLocaleString('zh-CN',{maximumFractionDigits:1});
@@ -338,11 +599,11 @@
     const panels=overview?.platforms || [],panel=panels.find(item=>item.platform===overviewPlatform),job=overviewJob(),running=overviewRunning();
     const {data,channel,channels}=dashboardView(panel),metric=panel?.metric_label || (overviewPlatform==='fanqie'?'在读':'月票'),coverage=panel?.coverage || {};
     let html=`<div class="page-head overview-head data-overview-head"><div><div class="eyebrow">发糕情报室 <span class="dot">/</span> 数据总览</div><h1>榜单数据总览</h1></div><div class="head-actions"><button class="button secondary" data-action="overview-refresh" ${running || overviewRefreshing?'disabled':''}>${running || overviewRefreshing?'<span class="spinner"></span>更新中':'↻ 更新数据'}</button></div></div>`;
-    html+=`<div class="overview-collection-status" role="status"><span class="status-dot ${overviewError?'':'online'}"></span><span>${escape(running?(job.public_source?.status==='running' && !['queued','running','pending','cancelling'].includes(job.status)?'正在补充公开榜单快照，已有数据可继续浏览':job.message || '正在更新，已有数据可继续查看'):overviewError || (overview?'本机数据已载入 · 自动检查更新':'正在读取本机保存的榜单…'))}</span>${running?`<button data-action="cancel-job" data-id="${escape(job.id)}">暂停</button>`:`<small>${coverage.latest_collected_at?date(coverage.latest_collected_at):''}</small>`}</div>`;
+    html+=`<div class="overview-collection-status" role="status"><span class="status-dot ${overviewError?'':'online'}"></span><span>${escape(running?(job.public_source?.status==='running' && !['queued','running','pending','cancelling'].includes(job.status)?'正在补充公开榜单快照，已有数据可继续浏览':job.message || '正在更新，已有数据可继续查看'):overviewError || (overview?(membership.can_read_history?'本机历史数据已载入 · 更新已暂停':'本机数据已载入 · 自动检查更新'):'正在读取本机保存的榜单…'))}</span>${running?`<button data-action="cancel-job" data-id="${escape(job.id)}">暂停</button>`:`<small>${coverage.latest_collected_at?date(coverage.latest_collected_at):''}</small>`}</div>`;
     html+=`<nav class="overview-tabs data-platform-tabs" aria-label="总览平台">${[{id:'fanqie',name:'番茄小说',board:'男频 · 女频新书榜'},{id:'qidian',name:'起点中文网',board:'月票榜'},{id:'ciweimao',name:'刺猬猫',board:'月票榜'}].map(item=>`<button data-action="overview-platform" data-platform="${item.id}" aria-pressed="${overviewPlatform===item.id}"><strong>${item.name}</strong><span>${item.board}</span><small>${statNumber(panels.find(p=>p.platform===item.id)?.summary?.books || 0)} 本</small></button>`).join('')}</nav>`;
     html+=`<div class="overview-scope dashboard-scope"><span>${overviewPlatform==='fanqie'?'仅新书榜 · 阅读榜不参与汇总':'月票榜 · 使用本平台原始指标'}</span>${overviewPlatform==='fanqie'?`<div class="chart-switch channel-switch" aria-label="汇总频道">${channels.map(value=>`<button data-action="dashboard-channel" data-channel="${escape(value)}" aria-pressed="${channel===value}">${value==='全部'?'全部频道':escape(value)}</button>`).join('')}</div>`:''}</div>`;
     if(!panel?.summary?.books || !data){
-      html+=`<section class="overview-empty"><h2>${running?'正在整理第一批数据':'等待可用的榜单数据'}</h2><p>${overviewPlatform==='fanqie'?'自动汇总男频、女频新书榜各分类。':'自动读取本平台月票榜。'}取得数据后即显示统计。</p><div class="overview-empty-sections"><span>分类对比</span><span>字数分布</span><span>黑马雷达</span></div>${overviewError?'<button class="button secondary" data-action="overview-retry">重新读取</button>':''}</section>`;$('#content').innerHTML=html;return;
+      html+=`<section class="overview-empty"><h2>${membership.can_read_history?'暂无历史榜单数据':running?'正在整理第一批数据':'等待可用的榜单数据'}</h2><p>${membership.can_read_history?'当前平台没有已保存的汇总，续费后恢复更新。':(overviewPlatform==='fanqie'?'自动汇总男频、女频新书榜各分类。':'自动读取本平台月票榜。')+'取得数据后即显示统计。'}</p><div class="overview-empty-sections"><span>分类对比</span><span>字数分布</span><span>黑马雷达</span></div>${overviewError?'<button class="button secondary" data-action="overview-retry">重新读取</button>':''}</section>`;$('#content').innerHTML=html;return;
     }
     const kpi=data.kpis || {},fanqie=overviewPlatform==='fanqie';
     html+=dashboardSources(data);
@@ -355,54 +616,63 @@
     $('#content').innerHTML=html;
   }
   async function loadOverview(){
-    if(overviewLoading)return;
+    if(!readable() || overviewLoading)return;
+    const epoch=accountEpoch;
     overviewLoading=true;const request=++overviewRequest;
     try{const data=await api('/api/overview');if(request!==overviewRequest)return;overview=data;overviewError='';}
-    catch(error){overviewError=error.message;}
-    finally{overviewLoading=false;if(section==='overview')render();}
+    catch(error){if(epoch===accountEpoch)overviewError=error.message;}
+    finally{if(epoch===accountEpoch){overviewLoading=false;if(section==='overview')render();}}
   }
   async function maybeAutoOverview(){
-    if(!state || document.hidden || section!=='overview' || overviewRefreshing || overviewRunning() || Date.now()<overviewNextAt)return;
+    if(!membership.allowed || legacyBlocked() || !state || document.hidden || section!=='overview' || overviewRefreshing || overviewRunning() || Date.now()<overviewNextAt)return;
     await refreshOverview(true);
   }
   async function refreshOverview(automatic=true){
-    if(overviewRefreshing || overviewRunning())return;
+    if(!membership.allowed || legacyBlocked() || overviewRefreshing || overviewRunning())return;
+    const epoch=accountEpoch;
     overviewRefreshing=true;overviewNextAt=Date.now()+60000;if(section==='overview')render();
     try{
       const result=await api('/api/overview/refresh',{automatic});
+      assertAccount(epoch);
       overviewNextAt=Date.now()+(result.retry_after_seconds || (result.status==='cooldown'?300:900))*1000;
       if(result.job){overview ||= {platforms:[]};overview.update=result.job;state.jobs=[result.job,...state.jobs.filter(job=>job.id!==result.job.id)];}
       await loadOverview();
+      assertAccount(epoch);
       if(!automatic && result.status==='fresh')toast('总览已是最新。');
-    }catch(error){overviewError=error.message;overviewNextAt=Date.now()+300000;if(!automatic)notice(error.message);}
-    finally{overviewRefreshing=false;if(section==='overview')render();}
+    }catch(error){if(epoch===accountEpoch){overviewError=error.message;overviewNextAt=Date.now()+300000;if(!automatic)notice(error.message);}}
+    finally{if(epoch===accountEpoch){overviewRefreshing=false;if(section==='overview')render();}}
   }
   async function pollOverview(){
+    const epoch=accountEpoch;assertAccount(epoch);
     const job=overviewJob();if(!overviewJobActive(job))return;
     const result=await api(`/api/jobs/${encodeURIComponent(job.id)}`), next=result.job || result;
+    assertAccount(epoch);
     if(overview)overview.update=next;
     state.jobs=state.jobs.map(item=>item.id===next.id?next:item);
     const key=JSON.stringify([next.id,next.status,next.progress,next.partial_snapshot_id,next.message,next.public_source?.status,next.public_source?.snapshot_count,next.public_source?.updated_at,next.public_source?.finished_at,next.updated_at]);
     if(key!==overviewPollKey){overviewPollKey=key;await loadOverview();}
+    assertAccount(epoch);
     if(!overviewJobActive(next)){overviewNextAt=Date.now()+(['failed','cancelled','interrupted'].includes(next.status)?300000:AUTO_TTL);await refresh();}
     else if(section==='overview')render();
   }
   function continuationJob(){return !viewingHistory() && (state?.jobs || []).find(job=>!['text','overview'].includes(job.kind) && job.platform===platformID() && (!job.options || scopeKey(job.platform,job.options)===scopeKey()) && (job.waiting_for_more || job.paused_for_demand) && (!view().selected_id || !job.partial_snapshot_id || job.partial_snapshot_id===snapshot?.id));}
   let loadingMore=false;
   async function loadMoreBooks(){
-    if(loadingMore)return;
+    if(!readable() || loadingMore)return;
+    const epoch=accountEpoch;
     const active=currentJob();if(active && !active.waiting_for_more && Number(active.demand_count)>Number(active.partial_count) && listWindow.count>=orderedBooks().length)return;
-    const books=orderedBooks(), job=continuationJob();
+    const books=orderedBooks(), job=membership.allowed?continuationJob():null;
     listWindow.count+=Math.max(20,Number(view().page_size) || 20);
     if(listWindow.count>books.length && job){
       loadingMore=true;
-      try{const result=await api('/api/jobs/more',{job_id:job.id,count:100});if(result.job)state.jobs=[result.job,...state.jobs.filter(item=>item.id!==result.job.id)];}
-      finally{loadingMore=false;}
+      try{const result=await api('/api/jobs/more',{job_id:job.id,count:100});assertAccount(epoch);if(result.job)state.jobs=[result.job,...state.jobs.filter(item=>item.id!==result.job.id)];}
+      finally{if(epoch===accountEpoch)loadingMore=false;}
     }
     render();
   }
   function observeListEnd(){
     listObserver?.disconnect();listObserver=null;
+    if(!readable())return;
     const sentinel=$('#list-end');if(!sentinel || typeof IntersectionObserver==='undefined')return;
     listObserver=new IntersectionObserver(entries=>{
       if(Date.now()-lastListScrollAt<2000 && entries.some(entry=>entry.isIntersecting) && $('#list-end')===sentinel){listObserver.disconnect();loadMoreBooks().catch(error=>notice(error.message));}
@@ -417,7 +687,7 @@
   }
   function renderBoardControls(){
     const id=platformID(), options=optionsFor(), key=scopeKey(), supported=id!=='fanqie_short';
-    const status=viewingHistory()?'查看历史记录 · 自动更新已暂停':currentJob()?(currentJob().waiting_for_more?'已载入首批 · 向下浏览继续读取':'后台自动更新中'):accessRestricted(latestCollectionJob())?'来源拒绝读取 · 自动重试已暂停':autoMessages.get(key) || (supported?'自动更新 · 每 15 分钟检查':'此来源待接入');
+    const status=membership.can_read_history?'历史资料只读 · 更新与新任务已暂停':viewingHistory()?'查看历史记录 · 自动更新已暂停':currentJob()?(currentJob().waiting_for_more?'已载入首批 · 向下浏览继续读取':'后台自动更新中'):accessRestricted(latestCollectionJob())?'来源拒绝读取 · 自动重试已暂停':autoMessages.get(key) || (supported?'自动更新 · 每 15 分钟检查':'此来源待接入');
     const channels=channelsFor(id);
     const categories=categoryNames(options), frequent=(options.channel==='女频'?['古言脑洞','现言脑洞','豪门总裁','年代','种田','快穿']:[options.category]).filter(value=>categories.includes(value));
     return `<div class="board-controls"><label>频道<select id="board-channel" ${channels.length===1?'disabled':''}>${channels.map(value=>`<option ${value===options.channel?'selected':''}>${escape(value)}</option>`).join('')}</select></label><label>榜单<select id="board-kind">${boardNames(id).map(value=>`<option ${value===options.board?'selected':''}>${escape(value)}</option>`).join('')}</select></label><label>分类<select id="board-category" aria-label="榜单分类" ${categories.length===1?'disabled':''}>${categories.map(value=>`<option ${value===options.category?'selected':''}>${escape(value)}</option>`).join('')}</select></label><div class="auto-status">${currentJob() && !currentJob().waiting_for_more?'<span class="spinner"></span>':`<span class="status-dot${!viewingHistory() && accessRestricted(latestCollectionJob())?'':' online'}"></span>`}<span>${escape(status)}</span>${viewingHistory()?'<button data-action="resume-auto">恢复自动更新</button>':''}</div></div>${(id==='fanqie' || mode()==='overseas') && (mode()==='overseas'?categories:frequent).length>1?`<div class="category-shortcuts" aria-label="常用分类"><span>${mode()==='overseas'?'分类':'常用'}</span>${(mode()==='overseas'?categories:frequent).map(value=>`<button data-action="category" data-category="${escape(value)}" aria-pressed="${value===options.category}">${escape(value)}</button>`).join('')}</div>`:''}`;
@@ -431,13 +701,14 @@
     if (!b) return '<aside class="detail" aria-label="作品详情">'+empty('选一本，进一步了解','点击左侧作品，查看简介和准确的榜单位置。','','▤','compact')+'</aside>';
     const position = visible.findIndex((x) => x.id === b.id)+1, url = safeURL(b.url), metrics = Array.isArray(b.metrics) ? b.metrics : [];
     const reports = state.reports.filter((r) => r.book_id === b.id && (!r.platform || r.platform === snapshot.platform));
-    return `<aside class="detail" aria-label="作品详情" data-book="${escape(b.id)}" data-snapshot="${escape(snapshot.id)}"><div class="detail-top"><span>已选中的作品</span><button class="favorite-button" data-action="favorite" data-book="${escape(b.id)}" aria-pressed="${favorite(b)}">${favorite(b)?'♥ 已收藏':'♡ 收藏'}</button></div>${cover(b,true)}<h2>${escape(b.title)}</h2><p class="author">${escape(b.author || '作者未提供')}${b.status?' · '+escape(b.status):''}</p><div class="positions"><span>${position?'列表第 '+position+' 本':'已被当前筛选隐藏'}</span>${snapshot.platform!=='heiyan' && Number.isFinite(b.rank)?`<span class="original">${mode()==='overseas'?'来源榜单':'原榜'}第 ${b.rank} 名</span>`:''}</div>${mode()==='overseas'?`<div class="translation-card"><span class="translation-mark" aria-hidden="true">译</span><div><strong>回 WorkBuddy 说“翻译这本”</strong><p>翻译所选作品的英文书名与简介。</p><button class="button secondary small" data-action="translation-context">复制翻译请求</button></div></div>`:''}<p class="summary">${escape(b.summary || '本次来源未提供简介，可在作品原页查看。')}</p>${metrics.length?`<div class="metrics">${metrics.map((m)=>`<span>${escape(m.name)} <strong>${escape(m.value)}</strong>${escape(m.unit || '')}</span>`).join('')}</div>`:''}<div class="detail-actions">${url?`<a class="source-link" href="${escape(url)}" target="_blank" rel="noopener noreferrer">打开作品原页 ↗</a>`:''}${snapshot.platform==='fanqie'?'<button class="button primary small" data-action="catalog">目录与正文</button>':''}<button class="button secondary small" data-action="import-text">导入正文</button></div><p class="text-status">已选对象已保存，可回到 WorkBuddy 继续分析。</p>${renderTextAssets(b)}${reports.map((r)=>`<button class="report-item" data-action="report" data-id="${escape(r.id)}">▤ ${escape(r.title || '拆书报告')}<br><small>${escape(r.scope || '')}</small></button>`).join('')}</aside>`;
+    return `<aside class="detail" aria-label="作品详情" data-book="${escape(b.id)}" data-snapshot="${escape(snapshot.id)}"><div class="detail-top"><span>已选中的作品</span><button class="favorite-button" data-action="favorite" data-book="${escape(b.id)}" aria-pressed="${favorite(b)}">${favorite(b)?'♥ 已收藏':'♡ 收藏'}</button></div>${cover(b,true)}<h2>${escape(b.title)}</h2><p class="author">${escape(b.author || '作者未提供')}${b.status?' · '+escape(b.status):''}</p><div class="positions"><span>${position?'列表第 '+position+' 本':'已被当前筛选隐藏'}</span>${snapshot.platform!=='heiyan' && Number.isFinite(b.rank)?`<span class="original">${mode()==='overseas'?'来源榜单':'原榜'}第 ${b.rank} 名</span>`:''}</div>${mode()==='overseas' && membership.allowed?`<div class="translation-card"><span class="translation-mark" aria-hidden="true">译</span><div><strong>回 WorkBuddy 说“翻译这本”</strong><p>翻译所选作品的英文书名与简介。</p><button class="button secondary small" data-action="translation-context">复制翻译请求</button></div></div>`:''}<p class="summary">${escape(b.summary || '本次来源未提供简介，可在作品原页查看。')}</p>${metrics.length?`<div class="metrics">${metrics.map((m)=>`<span>${escape(m.name)} <strong>${escape(m.value)}</strong>${escape(m.unit || '')}</span>`).join('')}</div>`:''}<div class="detail-actions">${url?`<a class="source-link" href="${escape(url)}" target="_blank" rel="noopener noreferrer">打开作品原页 ↗</a>`:''}${snapshot.platform==='fanqie'?'<button class="button primary small" data-action="catalog">目录与正文</button>':''}<button class="button secondary small" data-action="import-text">导入正文</button></div><p class="text-status">${membership.can_read_history?'当前查看已保存资料，续费后恢复分析与正文获取。':'已选对象已保存，可回到 WorkBuddy 继续分析。'}</p>${renderTextAssets(b)}${reports.map((r)=>`<button class="report-item" data-action="report" data-id="${escape(r.id)}">▤ ${escape(r.title || '拆书报告')}<br><small>${escape(r.scope || '')}</small></button>`).join('')}</aside>`;
   }
   function empty(title,text,actions='',symbol='▤',extra='') { return `<div class="empty ${extra}"><div class="empty-symbol" aria-hidden="true">${symbol}</div><h2>${escape(title)}</h2><p>${escape(text)}</p>${actions?`<div class="actions">${actions}</div>`:''}</div>`; }
   function heiyanBooklistCard(compact=false){
     return `<section class="heiyan-booklist${compact?' heiyan-booklist-compact':''}" aria-label="黑岩腾讯文档书单"><div class="booklist-icon" aria-hidden="true">▤</div><span class="overview-kicker">黑岩故事会 · 腾讯文档</span><h2>从书单里，找到下一篇灵感</h2><p>打开书单后，在腾讯文档页面完成登录即可查看。已在浏览器登录的账号可继续使用。</p><a class="button primary" id="heiyan-booklist" href="${HEIYAN_BOOKLIST}" target="_blank" rel="noopener noreferrer">打开黑岩书单 <span aria-hidden="true">↗</span></a><small>书单在新标签页打开 · 不需要额外安装浏览器</small>${compact?'<p class="booklist-saved-note">以下是此前保存在本机的书目，继续保留供你查阅。</p>':''}</section>`;
   }
   function renderBridge() {
+    if(membership.can_read_history){$('#bridge').innerHTML='';return;}
     const b = snapshot?.books?.find((x)=>x.id===view().selected_id);
     if (section !== 'browse' || !b) { $('#bridge').innerHTML = ''; return; }
     $('#bridge').innerHTML = `<section class="bridge" aria-label="WorkBuddy 对话提示"><div class="bridge-main"><div><div class="bridge-label">回到 WorkBuddy，可以说</div><p>${mode()==='overseas'?'“翻译我刚选的这本书名和简介，再分析它的故事卖点。”':'“分析我刚选的这本，重点看开头怎么吸引读者。”'}</p></div><button data-action="context">查看引用 ⌄</button></div><small>已保存：${escape(b.title)} · ${escape(scopeOf())} · ${escape(date(snapshotDate(snapshot)))}</small></section>`;
@@ -454,15 +725,17 @@
       html+='<div class="surface-head"><strong>历史榜单与书库</strong></div>';
       html+=state.snapshots.length?'<div class="saved-list">'+state.snapshots.map((s)=>savedRow([nameOf(s.platform),s.board].filter(Boolean).join(' · '),[s.channel,s.category,`${s.books_count ?? s.count ?? '?'} 本`].filter(Boolean).join(' · '),snapshotDate(s),'open-record',{'snapshot':s.id})).join('')+'</div>':empty('还没有采集记录','第一次采集成功后，完整书目将保存在这里。','','▤','compact');
     } else {
-      html+=state.reports.length?'<div class="saved-list">'+state.reports.map((r)=>savedRow(r.title||'拆书报告',r.scope||'阅读范围见报告',r.created_at,'report',{'id':r.id})).join('')+'</div>':empty('还没有拆书报告','在工作台选一本书，再回到 WorkBuddy 说“分析我刚选的这本”。完成分析并保存报告后，就能在这里继续查看。');
+      html+=state.reports.length?'<div class="saved-list">'+state.reports.map((r)=>savedRow(r.title||'拆书报告',r.scope||'阅读范围见报告',r.created_at,'report',{'id':r.id})).join('')+'</div>':empty('还没有拆书报告',membership.can_read_history?'这个账号尚未保存拆书报告。续费后可继续开始新的分析。':'在工作台选一本书，再回到 WorkBuddy 说“分析我刚选的这本”。完成分析并保存报告后，就能在这里继续查看。');
     }
     $('#content').innerHTML=html+'</section>';
   }
   function savedRow(title,sub,time,action,attrs) { return `<div class="saved-row"><button class="saved-open" data-action="${action}" ${Object.entries(attrs).filter(([,v])=>v).map(([k,v])=>`data-${k}="${escape(v)}"`).join(' ')}><strong>${escape(title)}</strong><small>${escape(sub)}</small></button><span class="saved-date">${escape(date(time))}</span></div>`; }
   function showDialog(title,content,subtitle='') {
+    if(!readable())return;
     $('#dialog').dataset.kind='';
     $('#dialog-body').innerHTML=`<div class="dialog-head"><div><h2>${escape(title)}</h2>${subtitle?`<p>${escape(subtitle)}</p>`:''}</div><button class="close-dialog" data-action="close-dialog" aria-label="关闭窗口">×</button></div><div class="dialog-content">${content}</div>`;
     if(!$('#dialog').open) $('#dialog').showModal();
+    applyReadOnlyControls();
   }
   function collectionOptions() {
     const id=platformID(), current=optionsFor(id), categories=categoryNames(current);
@@ -471,15 +744,18 @@
     showDialog('采集设置',`<form id="options-form"><p>设置保存后自动更新。日常使用无需再次填写。</p><div class="form-grid"><div class="field"><label for="channel">频道</label>${select('channel',channelsFor(id))}</div><div class="field"><label for="category">分类</label>${category}</div><div class="field"><label for="board">榜单</label>${select('board',boardNames(id))}</div><div class="field"><label for="limit">最大采集数量</label><input id="limit" name="limit" type="number" min="1" max="10000" value="${current.limit || 10000}" required></div></div><p class="help-inline">先显示首批作品，向下浏览时继续读取；最多读取 100 页，以来源实际提供数量为准。</p><div class="form-actions"><button class="button secondary" type="button" data-action="close-dialog">取消</button><button class="button primary" type="submit">保存条件</button></div></form>`);
   }
   async function copyTranslationContext(){
+    const epoch=accountEpoch;assertAccount(epoch);
     const book=snapshot?.books?.find(item=>item.id===view().selected_id);
     if(!book)return;
     const pinned={snapshot_id:snapshot.id,book_id:book.id};
     const result=await api('/api/translation-context',pinned);
+    assertAccount(epoch);
     if(typeof result.prompt!=='string' || !result.prompt.trim())throw new Error('未取得这本作品的翻译引用，请重试。');
     try{
       if(!navigator.clipboard?.writeText)throw new Error('clipboard unavailable');
-      await navigator.clipboard.writeText(result.prompt);toast('已复制。粘贴到 WorkBuddy，即可翻译这本作品。');
+      await navigator.clipboard.writeText(result.prompt);assertAccount(epoch);toast('已复制。粘贴到 WorkBuddy，即可翻译这本作品。');
     }catch{
+      assertAccount(epoch);
       showDialog('复制到 WorkBuddy',`<p>这段请求已固定到所选作品，粘贴后即可翻译。</p><textarea class="translation-request" readonly aria-label="WorkBuddy 翻译请求">${escape(result.prompt)}</textarea>`);
       const field=$('.translation-request');field.focus();field.select();
     }
@@ -489,7 +765,9 @@
     await updateView({snapshot_id:id,selected_id:null,page:1});
   }
   async function receiveSnapshot(id,platformId,options,jobId=null){
+    const epoch=accountEpoch;assertAccount(epoch);
     while(pendingViewMutations>0)await saving.catch(()=>{});
+    assertAccount(epoch);
     if(platformID()!==platformId || scopeKey(platformId,options)!==scopeKey() || section!=='browse')return;
     if(jobId)snapshotJobs.set(id,jobId);
     if(!viewingHistory() && view().selected_id && id!==snapshot?.id && jobId && snapshotJobs.get(snapshot?.id)===jobId){
@@ -508,7 +786,7 @@
     if(id!==snapshot?.id)await updateView({snapshot_id:id,selected_id:null,page:1});
   }
   async function maybeAutoCollect(){
-    if(!state || document.hidden || section!=='browse' || viewingHistory() || activeRequest)return;
+    if(!membership.allowed || legacyBlocked() || !state || document.hidden || section!=='browse' || viewingHistory() || activeRequest)return;
     const id=platformID(), p=platform(), options=optionsFor(), key=scopeKey(id,options);
     if(id==='fanqie_short' || id==='heiyan')return;
     if(['planned','unavailable'].includes(p.status) && id!=='heiyan')return;
@@ -519,22 +797,25 @@
     await collect(true);
   }
   async function collect(automatic=false) {
-    if(currentJob() || activeRequest)return;
+    if(!membership.allowed || legacyBlocked() || currentJob() || activeRequest)return;
+    const epoch=accountEpoch;
     const id=platformID(), options=optionsFor(), key=scopeKey(id,options);
     if(id==='heiyan')return;
     if(!automatic){$('#notice').hidden=true;setHistory(null);}
     activeRequest=true;autoMessages.set(key,'正在检查更新…');render();
     try {
       const result=await api('/api/collect',{platform:id,options,automatic,interactive:true});
+      assertAccount(epoch);
       if(result.status==='fresh'){
         nextAutoAt.set(key,Date.now()+(result.retry_after_seconds || 900)*1000);
         autoMessages.set(key,'已是最新 · 每 15 分钟自动检查');
-        await refresh();if(result.snapshot_id)await receiveSnapshot(result.snapshot_id,id,options);return;
+        await refresh();assertAccount(epoch);if(result.snapshot_id)await receiveSnapshot(result.snapshot_id,id,options);return;
       }
       if(result.status==='cooldown'){
         if(result.requires_action){
           if(result.job?.id)state.jobs=[result.job,...state.jobs.filter(job=>job.id!==result.job.id)];
           else await refresh();
+          assertAccount(epoch);
           nextAutoAt.set(key,Infinity);
           autoMessages.set(key,'来源拒绝读取 · 自动重试已暂停');
           render();return;
@@ -546,39 +827,49 @@
       nextAutoAt.set(key,Date.now()+AUTO_TTL);
       autoMessages.set(key,'后台更新中，已有内容可继续查看');
       await refresh();
+      assertAccount(epoch);
       const job=state.jobs.find(item=>item.id===(result.job_id || result.job?.id));
       if(job?.status==='completed' && job.snapshot_id){
         await receiveSnapshot(job.snapshot_id,id,options,job.id);
+        assertAccount(epoch);
         autoMessages.set(key,'已更新 · 每 15 分钟自动检查');
       } else if(job?.status==='failed'){
         autoMessages.set(key,'暂未取得更新，保留上次结果');
         if(!automatic)notice(job.message || '采集未完成，已有结果保留。');
       } else if(!automatic)toast('正在更新，完成后会自动保存。');
     } catch(error){
+      if(epoch!==accountEpoch)return;
       nextAutoAt.set(key,Date.now()+5*60*1000);autoMessages.set(key,'更新暂不可用，稍后自动重试');
       if(!automatic)throw error;
-    } finally {activeRequest=false;render();}
+    } finally {if(epoch===accountEpoch){activeRequest=false;render();}}
   }
   async function changeOptions(patch){
+    const epoch=accountEpoch;assertAccount(epoch);
     const id=platformID(), options={...optionsFor(id),...patch};
-    savedOptions[id]=options;try{localStorage.setItem('fagao-collection-options',JSON.stringify(savedOptions));}catch{}
+    savedOptions[id]=options;savePreference('fagao-collection-options',JSON.stringify(savedOptions));
     setHistory(null);latestResults.delete(scopeKey());
     const matching=bestSnapshotForScope(id,options);
     await updateView({snapshot_id:matching?.id || null,selected_id:null,page:1,filters:{query:'',sort:'source',favorites:false}});
+    assertAccount(epoch);
     await maybeAutoCollect();
   }
   function schedulePoll() {
     clearTimeout(pollTimer);
+    if(!membership.allowed || legacyBlocked())return;
+    const epoch=accountEpoch;
     pollTimer=setTimeout(async()=>{
       try {
+        assertAccount(epoch);
         const jobs=state?.jobs || [], running=jobs.filter(j=>!['text','overview'].includes(j.kind) && ['queued','running','pending'].includes(j.status));
         if(running.length) {
           const results=await Promise.all(running.map(j=>api(`/api/jobs/${encodeURIComponent(j.id)}`)));
+          assertAccount(epoch);
           let ended=false;
           for(let i=0;i<results.length;i++) {
             const job=results[i].job || results[i], idx=state.jobs.findIndex(j=>j.id===job.id);
             if(idx>=0)state.jobs[idx]=job;
             if(job.partial_snapshot_id && section==='browse'){await receiveSnapshot(job.partial_snapshot_id,job.platform,job.options || optionsFor(job.platform),job.id);}
+            assertAccount(epoch);
             if(!['queued','running','pending'].includes(job.status)){
               ended=true;
               if(['failed','error','cancelled'].includes(job.status)){nextAutoAt.set(scopeKey(job.platform,job.options || optionsFor(job.platform)),Date.now()+5*60*1000);autoMessages.set(scopeKey(job.platform,job.options || optionsFor(job.platform)),'更新未完成，已有结果保留');if(!job.automatic)notice(job.message || '采集未完成。已有书目仍然保留。');}
@@ -588,15 +879,19 @@
           if(ended) {
             const completed=results.map(r=>r.job || r).find(j=>j.status==='completed' && j.snapshot_id && j.platform===platformID() && (!j.options || scopeKey(j.platform,j.options)===scopeKey()) && section==='browse');
             await refresh();
-            if(completed){const jobOptions=completed.options || optionsFor(completed.platform);await receiveSnapshot(completed.snapshot_id,completed.platform,jobOptions,completed.id);autoMessages.set(scopeKey(completed.platform,jobOptions),'已更新 · 每 15 分钟自动检查');}
+            assertAccount(epoch);
+            if(completed){const jobOptions=completed.options || optionsFor(completed.platform);await receiveSnapshot(completed.snapshot_id,completed.platform,jobOptions,completed.id);assertAccount(epoch);autoMessages.set(scopeKey(completed.platform,jobOptions),'已更新 · 每 15 分钟自动检查');}
           } else render();
         }
         await pollTextJobs();
+        assertAccount(epoch);
         await pollOverview();
+        assertAccount(epoch);
         await maybeAutoCollect();
+        assertAccount(epoch);
         await maybeAutoOverview();
-      } catch(error) { notice(error.message); }
-      finally { schedulePoll(); }
+      } catch(error) { if(epoch===accountEpoch)notice(error.message); }
+      finally { if(epoch===accountEpoch)schedulePoll(); }
     },2200);
   }
   async function openRecord(el) {
@@ -607,12 +902,20 @@
     section='browse';setHistory(el.dataset.snapshot,snap.mode || platformMode(snap.platform));
     await updateView({mode:snap.mode || platformMode(snap.platform),platform:snap.platform,snapshot_id:el.dataset.snapshot,selected_id:el.dataset.book || null,page:1,filters:{query:'',sort:'source',favorites:false}});
   }
-  async function report(id) { const r=await api(`/api/reports/${encodeURIComponent(id)}`); showDialog(r.title || '拆书报告',`<pre class="report-text">${escape(r.content || r.report?.content || '')}</pre>`,[r.scope,date(r.created_at)].filter(Boolean).join(' · ')); }
+  async function report(id) { const epoch=accountEpoch,r=await api(`/api/reports/${encodeURIComponent(id)}`);assertAccount(epoch);showDialog(r.title || '拆书报告',`<pre class="report-text">${escape(r.content || r.report?.content || '')}</pre>`,[r.scope,date(r.created_at)].filter(Boolean).join(' · ')); }
   const textJobActive=job=>job && ['pending','running','queued','cancelling'].includes(job.status);
   function textAssetsFor(bookId,platformId=snapshot?.platform){
     return (state?.texts || []).filter(item=>item.book_id===bookId && item.platform===platformId);
   }
-  function textDownloadURL(id){return `/api/texts/${encodeURIComponent(id)}/download`;}
+  async function downloadText(id){
+    const epoch=accountEpoch;assertAccount(epoch);
+    const blob=await api(`/api/texts/${encodeURIComponent(id)}/download`,undefined,{blob:true});
+    assertAccount(epoch);
+    const url=URL.createObjectURL(blob);downloadURLs.add(url);
+    const link=document.createElement('a');link.href=url;link.download='发糕正文-'+String(id).replace(/[^a-zA-Z0-9_-]/g,'').slice(0,48)+'.txt';
+    link.hidden=true;document.body.append(link);link.click();link.remove();
+    setTimeout(()=>{URL.revokeObjectURL(url);downloadURLs.delete(url);},1000);
+  }
   function textIntegrity(asset){
     if(asset.acquisition!=='public_download')return {label:asset.complete?'用户标记为完整正文':'按用户导入范围保存',detail:''};
     const integrity=asset.integrity || {}, status=integrity.status;
@@ -626,7 +929,7 @@
   function renderTextAssets(book){
     const assets=textAssetsFor(book.id);
     if(!assets.length)return '';
-    return `<section class="saved-text-assets" aria-label="已保存的正文"><h3>正文资料 <span>${assets.length} 份</span></h3>${assets.slice(0,3).map(asset=>{const integrity=textIntegrity(asset);return `<div class="saved-text-item"><div><strong>${escape(asset.scope || '已保存正文')}</strong><small>${escape(integrity.label)} · ${Number(asset.characters || 0).toLocaleString()} 字符 · ${escape(date(asset.created_at || asset.collected_at))}</small>${integrity.detail?`<small>${escape(integrity.detail)}</small>`:''}</div><div class="text-item-actions"><button data-action="preview-text" data-id="${escape(asset.id)}">查看</button><a href="${textDownloadURL(asset.id)}" download>TXT ↓</a></div></div>`;}).join('')}</section>`;
+    return `<section class="saved-text-assets" aria-label="已保存的正文"><h3>正文资料 <span>${assets.length} 份</span></h3>${assets.slice(0,3).map(asset=>{const integrity=textIntegrity(asset);return `<div class="saved-text-item"><div><strong>${escape(asset.scope || '已保存正文')}</strong><small>${escape(integrity.label)} · ${Number(asset.characters || 0).toLocaleString()} 字符 · ${escape(date(asset.created_at || asset.collected_at))}</small>${integrity.detail?`<small>${escape(integrity.detail)}</small>`:''}</div><div class="text-item-actions"><button data-action="preview-text" data-id="${escape(asset.id)}">查看</button><button data-action="download-text" data-id="${escape(asset.id)}">TXT ↓</button></div></div>`;}).join('')}</section>`;
   }
   function captureTextRange(){
     if(!contentPanel || $('#dialog').dataset.kind!=='text')return;
@@ -635,7 +938,9 @@
   }
   function catalogTotal(catalog){return Math.max(0,Number(catalog?.total ?? catalog?.catalog_chapters ?? catalog?.chapters?.length) || 0);}
   async function openCatalog(){
+    const epoch=accountEpoch;assertAccount(epoch);
     while(pendingViewMutations>0)await saving.catch(()=>{});
+    assertAccount(epoch);
     const book=snapshot?.books?.find(item=>item.id===view().selected_id);
     if(!book || snapshot.platform!=='fanqie')return;
     const panel={sequence:++contentPanelSequence,snapshot_id:snapshot.id,book_id:book.id,platform:'fanqie',title:book.title,loading:true,catalog:null,error:'',range:{mode:'first',count:3,start:1,end:3},visibleChapters:100,job:null,asset:null};
@@ -678,7 +983,7 @@
     if(asset){
       const missing=Array.isArray(asset.missing)?asset.missing:[], acquired=Array.isArray(asset.chapters)?asset.chapters.length:null;
       const integrity=textIntegrity(asset), chapterLabel=asset.integrity?.status==='partial'?'片段涉及':'实际取得';
-      body+=`<section class="chapter-saved-result"><h3>正文已保存</h3><p class="chapter-saved-scope">${escape(asset.scope || '阅读范围见正文资料')}</p><div class="chapter-saved-meta"><span>${escape(integrity.label)}</span>${acquired!==null?`<span>${chapterLabel} ${acquired} 章</span>`:''}<span>${Number(asset.characters || 0).toLocaleString()} 字符</span>${missing.length?`<span>缺失 ${missing.length} 章</span>`:''}</div>${integrity.detail?`<p class="chapter-integrity" role="note">${escape(integrity.detail)}</p>`:''}${missing.length?`<details class="chapter-missing"><summary>查看未取得的章节</summary><ul>${missing.slice(0,100).map(item=>`<li>${Number.isFinite(item.index)?'第 '+item.index+' 章 · ':''}${escape(item.title || item.chapter || '')} ${escape(item.reason || '未取得正文')}</li>`).join('')}</ul>${missing.length>100?'<p>其余缺章记录已保存在正文资料中。</p>':''}</details>`:''}<div class="chapter-result-actions"><a class="button secondary" href="${textDownloadURL(asset.id)}" download>导出 TXT ↓</a><button class="button secondary" data-action="preview-text" data-id="${escape(asset.id)}">查看已保存正文</button></div><p class="chapter-workbuddy-note">回到 WorkBuddy 可以说：“分析刚才保存的《${escape(panel.title)}》正文。”</p></section>`;
+      body+=`<section class="chapter-saved-result"><h3>正文已保存</h3><p class="chapter-saved-scope">${escape(asset.scope || '阅读范围见正文资料')}</p><div class="chapter-saved-meta"><span>${escape(integrity.label)}</span>${acquired!==null?`<span>${chapterLabel} ${acquired} 章</span>`:''}<span>${Number(asset.characters || 0).toLocaleString()} 字符</span>${missing.length?`<span>缺失 ${missing.length} 章</span>`:''}</div>${integrity.detail?`<p class="chapter-integrity" role="note">${escape(integrity.detail)}</p>`:''}${missing.length?`<details class="chapter-missing"><summary>查看未取得的章节</summary><ul>${missing.slice(0,100).map(item=>`<li>${Number.isFinite(item.index)?'第 '+item.index+' 章 · ':''}${escape(item.title || item.chapter || '')} ${escape(item.reason || '未取得正文')}</li>`).join('')}</ul>${missing.length>100?'<p>其余缺章记录已保存在正文资料中。</p>':''}</details>`:''}<div class="chapter-result-actions"><button class="button secondary" data-action="download-text" data-id="${escape(asset.id)}">导出 TXT ↓</button><button class="button secondary" data-action="preview-text" data-id="${escape(asset.id)}">查看已保存正文</button></div><p class="chapter-workbuddy-note">回到 WorkBuddy 可以说：“分析刚才保存的《${escape(panel.title)}》正文。”</p></section>`;
     }
     const focused=document.activeElement?.id;
     $('#dialog-body').innerHTML=`<div class="dialog-head"><div><h2>${escape(panel.title)}</h2><p>目录与正文</p></div><button class="close-dialog" data-action="close-dialog" aria-label="关闭窗口">×</button></div><div class="dialog-content">${body}</div>`;
@@ -694,6 +999,7 @@
     renderContentDialog();
   }
   async function startTextDownload(){
+    const epoch=accountEpoch;assertAccount(epoch);
     if(!contentPanel || contentPanel.submitting || textJobActive(contentPanel.job))return;
     captureTextRange();const panel=contentPanel, range={...panel.range}, total=catalogTotal(panel.catalog);
     const payload={snapshot_id:panel.snapshot_id,book_id:panel.book_id};
@@ -708,18 +1014,22 @@
     panel.error='';panel.submitting=true;renderContentDialog();
     try{
       const response=await api('/api/fetch-text',payload);
+      assertAccount(epoch);
       const job=response.job || (response.job_id?await api(`/api/jobs/${encodeURIComponent(response.job_id)}`):null);
+      assertAccount(epoch);
       if(contentPanel?.sequence===panel.sequence)panel.job=job;
-      await refresh();toast(`《${panel.title}》的正文任务已开始，结果会保存在这本作品下。`);
+      await refresh();assertAccount(epoch);toast(`《${panel.title}》的正文任务已开始，结果会保存在这本作品下。`);
     } catch(error){if(contentPanel?.sequence===panel.sequence)panel.error=error.message;}
     finally{if(contentPanel?.sequence===panel.sequence){panel.submitting=false;renderContentDialog();}}
   }
   async function pollTextJobs(){
+    const epoch=accountEpoch;assertAccount(epoch);
     const running=(state?.jobs || []).filter(job=>job.kind==='text' && textJobActive(job));
     if(!running.length)return;
     let finished=false;
     for(const previous of running){
       const response=await api(`/api/jobs/${encodeURIComponent(previous.id)}`), job=response.job || response;
+      assertAccount(epoch);
       const index=state.jobs.findIndex(item=>item.id===job.id);if(index>=0)state.jobs[index]=job;
       if(!textJobActive(job)){
         finished=true;
@@ -729,19 +1039,23 @@
     if(finished)await refresh();else syncContentPanel();
   }
   async function previewText(id){
+    const epoch=accountEpoch;
     const text=await api(`/api/texts/${encodeURIComponent(id)}`);
+    assertAccount(epoch);
     const integrity=textIntegrity(text);
-    showDialog(text.title || '已保存正文',`<div class="text-preview-actions"><span>${escape(text.scope || '阅读范围见正文资料')}</span><a class="button secondary small" href="${textDownloadURL(id)}" download>导出 TXT ↓</a></div><p class="chapter-integrity">${escape(integrity.label)}${integrity.detail?' · '+escape(integrity.detail):''}</p><pre class="report-text saved-text-preview">${escape(text.content || '')}</pre>`,'已保存正文 · 不会重新下载');
+    showDialog(text.title || '已保存正文',`<div class="text-preview-actions"><span>${escape(text.scope || '阅读范围见正文资料')}</span><button class="button secondary small" data-action="download-text" data-id="${escape(id)}">导出 TXT ↓</button></div><p class="chapter-integrity">${escape(integrity.label)}${integrity.detail?' · '+escape(integrity.detail):''}</p><pre class="report-text saved-text-preview">${escape(text.content || '')}</pre>`,'已保存正文 · 不会重新下载');
   }
   const statNumber=value=>Number.isFinite(value)?value.toLocaleString('zh-CN',{maximumFractionDigits:2}):'未提供';
   const signedNumber=value=>Number.isFinite(value)?(value>0?'+':'')+statNumber(value):'—';
   async function openInsights(){
+    const epoch=accountEpoch;assertAccount(epoch);
     const sid=snapshot?.id;if(!sid)return;
     const subtitle=[nameOf(snapshot.platform),scopeOf(snapshot),snapshot.data_date || '来源日期未提供'].filter(Boolean).join(' · ');
     showDialog('榜单观察','<div class="chapter-loading" role="status"><span class="spinner"></span>正在整理这份榜单的统计…</div>',subtitle);
     $('#dialog').dataset.kind='insights';$('#dialog').dataset.snapshot=sid;
     try{
       const data=await api('/api/insights',{snapshot_id:sid});
+      assertAccount(epoch);
       if(!$('#dialog').open || $('#dialog').dataset.kind!=='insights' || $('#dialog').dataset.snapshot!==sid)return;
       const sample=data.sample || {}, changes=data.changes || {};
       const bookLink=item=>`<button data-action="insight-book" data-snapshot="${escape(sid)}" data-book="${escape(item.book_id)}">${escape(item.title)}</button>`;
@@ -754,7 +1068,7 @@
       }else body+=`<p class="insights-empty">${escape(changes.reason || '暂无可比较的历史记录，持续保存后可查看真实变化。')}</p>`;
       body+=`</section><details class="insights-methods"><summary>统计口径与数据说明</summary><ul>${(data.methods || []).map(method=>`<li>${escape(method)}</li>`).join('')}</ul></details>`;
       showDialog('榜单观察',body,subtitle);$('#dialog').dataset.kind='insights';$('#dialog').dataset.snapshot=sid;
-    }catch(error){if($('#dialog').open && $('#dialog').dataset.kind==='insights' && $('#dialog').dataset.snapshot===sid){showDialog('榜单观察',`<p role="alert">${escape(error.message)}</p>`,subtitle);$('#dialog').dataset.kind='insights';}}
+    }catch(error){if(epoch===accountEpoch && $('#dialog').open && $('#dialog').dataset.kind==='insights' && $('#dialog').dataset.snapshot===sid){showDialog('榜单观察',`<p role="alert">${escape(error.message)}</p>`,subtitle);$('#dialog').dataset.kind='insights';}}
   }
   function textImport() {
     const b=snapshot?.books?.find(x=>x.id===view().selected_id); if(!b)return;
@@ -762,23 +1076,34 @@
     showDialog('导入作品正文',`<form id="text-import-form"><p>正文将关联到《${escape(b.title)}》。保留实际阅读范围，方便 WorkBuddy 准确分析。</p><button type="button" class="button secondary" data-action="choose-text">选择 TXT / Markdown 文件</button><div class="file-label" id="text-file-label">尚未选择文件</div><div class="field" style="margin-top:18px"><label for="text-scope">这份文本包含哪些内容</label><input id="text-scope" name="scope" placeholder="例如：第 1—3 章，或完整短篇正文" required maxlength="200"></div><label class="checkbox-label"><input type="checkbox" id="text-complete">我确认这份文件包含作品完整正文</label><div class="form-actions"><button type="button" class="button secondary" data-action="close-dialog">取消</button><button type="submit" class="button primary">保存正文</button></div></form>`);
   }
   async function syncNavigationState(){
-    const request=++navigationGeneration;
+    const epoch=accountEpoch,request=++navigationGeneration;assertAccount(epoch);
     while(pendingViewMutations>0)await saving.catch(()=>{});
+    assertAccount(epoch);
     const generation=viewGeneration, next=await api('/api/state');
     if(request!==navigationGeneration || generation!==viewGeneration)return false;
     acceptState(next);return true;
   }
   async function dispatch(el) {
-    const a=el.dataset.action;
+    const a=el.dataset.action,epoch=accountEpoch;
     if(a==='dismiss-notice'){$('#notice').hidden=true;return;}
     if(a==='close-dialog'){$('#dialog').close();return;}
+    if(a==='membership-connect'){await connectMembership();return;}
+    if(a==='membership-refresh'){await checkMembership({force:true,reload:true});return;}
+    if(a==='membership-logout'){await logoutMembership();return;}
+    if(a==='retry'){await checkMembership({force:true,reload:true});return;}
+    if(a==='legacy-claim' || a==='legacy-skip'){await decideLegacy(a==='legacy-claim'?'claim':'skip');return;}
+    if(a==='legacy-retry'){if(await ensureLegacy({force:true}))await refresh();return;}
+    if(!readable())return;
+    if(legacyBlocked()){renderLegacy();return;}
+    if(membership.can_read_history && writeActions.has(a)){notice('当前权益仅支持查看历史资料，取得有效付费会员后恢复更新与新任务。');return;}
     if(a==='mode') {
-      if(!await syncNavigationState())return;section='browse';const target=el.dataset.mode, previous=state.views[target] || {}, id=previous.platform || firstPlatform[target];
+      if(!await syncNavigationState())return;assertAccount(epoch);section='browse';const target=el.dataset.mode, previous=state.views[target] || {}, id=previous.platform || firstPlatform[target];
       const matching=bestSnapshotForScope(id,{...defaultsFor(id),...savedOptions[id]});
       await updateView(previous.snapshot_id?{mode:target}:{mode:target,platform:id,snapshot_id:matching?.id || null,selected_id:null});await maybeAutoCollect();return;
     }
     if(a==='platform') {
       if(!await syncNavigationState())return;
+      assertAccount(epoch);
       section='browse';const id=el.dataset.platform,targetMode=platformMode(id),existing=bestSnapshotForScope(id,optionsFor(id));setHistory(null,targetMode);
       if(id===platformID() && view().snapshot_id){await loadSnapshot();await maybeAutoCollect();return;}
       await updateView({mode:targetMode,platform:id,snapshot_id:existing?.id || null,selected_id:null,page:1,filters:{query:'',sort:'source',favorites:false}});await maybeAutoCollect();return;
@@ -801,7 +1126,7 @@
     if(a==='collect'){await collect(false);return;}
     if(a==='show-latest'){await showLatest(el.dataset.id);return;}
     if(a==='resume-auto'){setHistory(null);render();await maybeAutoCollect();return;}
-    if(a==='cancel-job'){await api('/api/jobs/cancel',{job_id:el.dataset.id});await refresh();toast('已取消本次采集，已有结果保留。');return;}
+    if(a==='cancel-job'){await api('/api/jobs/cancel',{job_id:el.dataset.id});assertAccount(epoch);await refresh();assertAccount(epoch);toast('已取消本次采集，已有结果保留。');return;}
     if(a==='import-snapshot' || a==='import-ranking-html'){
       pendingSnapshotImport={platform:platformID(),htmlOnly:a==='import-ranking-html'};
       const input=$('#snapshot-file');input.accept=pendingSnapshotImport.htmlOnly?'text/html,.html,.htm':platformID()==='scribblehub'?'application/json,.json,text/html,.html,.htm':'application/json,.json';input.click();return;
@@ -812,6 +1137,7 @@
     if(a==='insight-book'){$('#dialog').close();await openRecord(el);return;}
     if(a==='reload-catalog'){await loadCatalog();return;}
     if(a==='preview-text'){await previewText(el.dataset.id);return;}
+    if(a==='download-text'){await downloadText(el.dataset.id);return;}
     if(a==='chapter-preset'){
       if(!contentPanel)return;captureTextRange();contentPanel.range={mode:'first',count:Math.min(Number(el.dataset.count),catalogTotal(contentPanel.catalog)),start:1,end:3};
       const form=$('#chapter-download-form');if(form)form.remove();renderContentDialog();return;
@@ -827,7 +1153,6 @@
     if(a==='choose-text'){$('#text-file').click();return;}
     if(a==='open-record'){await openRecord(el);return;}
     if(a==='report'){await report(el.dataset.id);return;}
-    if(a==='retry'){await refresh();return;}
     if(a==='context'){
       const book=snapshot?.books?.find(item=>item.id===view().selected_id);
       if(!book)return;
@@ -852,7 +1177,10 @@
     dispatch(el).catch(error=>notice(error.message));
   });
   document.addEventListener('change',(event)=>{
+    if(!readable())return;
     const el=event.target;
+    if(el.id==='legacy-confirm'){legacyConfirmed=legacy.can_claim===true && !!el.checked;const button=$('[data-action="legacy-claim"]');if(button)button.disabled=!legacyConfirmed || legacyBusy || legacy.can_claim!==true;return;}
+    if(legacyBlocked())return;
     if(el.id==='chapter-range-mode'){captureTextRange();renderContentDialog();return;}
     if(el.id==='snapshot-select'){setHistory(el.value);updateView({snapshot_id:el.value,selected_id:null,page:1}).catch(e=>notice(e.message));}
     if(el.id==='board-channel'){changeOptions({channel:el.value,...(platformID()==='fanqie'?{category:el.value==='男频'?'玄幻脑洞':'古言脑洞'}:{})}).catch(e=>notice(e.message));}
@@ -864,6 +1192,7 @@
     }
   });
   document.addEventListener('input',(event)=>{
+    if(!readable() || legacyBlocked())return;
     if(event.target.id!=='query')return;
     const value=event.target.value;clearTimeout(searchTimer);
     searchTimer=setTimeout(()=>{
@@ -872,6 +1201,7 @@
     },350);
   });
   document.addEventListener('submit',(event)=>{
+    if(!membership.allowed || legacyBlocked()){event.preventDefault();return;}
     if(event.target.id==='chapter-download-form'){event.preventDefault();startTextDownload().catch(error=>notice(error.message));return;}
     if(event.target.id==='search-form'){event.preventDefault();return;}
     if(event.target.id==='options-form'){
@@ -881,37 +1211,47 @@
     }
     if(event.target.id==='text-import-form'){
       event.preventDefault();
+      const epoch=accountEpoch;
       if(!pendingText?.text){toast('请先选择正文文件。');return;}
       const scope=$('#text-scope').value.trim();if(!scope)return;
       const payload={snapshot_id:pendingText.snapshot_id,book_id:pendingText.book_id,text:pendingText.text,scope,complete:$('#text-complete').checked};
       const submit=event.target.querySelector('[type="submit"]');submit.disabled=true;
-      api('/api/import/text',payload).then(()=>{$('#dialog').close();pendingText=null;toast('正文已保存，可回到 WorkBuddy 继续分析。');return refresh();}).catch(e=>{notice(e.message);submit.disabled=false;});
+      api('/api/import/text',payload).then(()=>{assertAccount(epoch);$('#dialog').close();pendingText=null;toast('正文已保存，可回到 WorkBuddy 继续分析。');return refresh();}).catch(e=>{if(epoch===accountEpoch){notice(e.message);submit.disabled=false;}});
     }
   });
   $('#snapshot-file').addEventListener('change',async(event)=>{
-    const file=event.target.files[0], target=pendingSnapshotImport;event.target.value='';pendingSnapshotImport=null;if(!file)return;
+    const epoch=accountEpoch,file=event.target.files[0], target=pendingSnapshotImport;event.target.value='';pendingSnapshotImport=null;if(!file || !membership.allowed)return;
     try{
       if(file.size>8*1024*1024)throw new Error('书目文件超过 8 MB，请拆分后导入。');
       const html=/\.html?$/i.test(file.name) || file.type==='text/html';
       if(html && target?.platform!=='scribblehub')throw new Error('请从 Scribble Hub 榜单页选择要导入的 HTML。');
       if(!html && target?.htmlOnly)throw new Error('请选择浏览器保存的榜单 HTML 文件。');
       const content=await file.text();
+      assertAccount(epoch);
       const parsed=html?null:JSON.parse(content);
       const result=html?await api('/api/import/overseas-html',{platform:target.platform,html:content}):await api('/api/import/snapshot',{snapshot:parsed.snapshot || parsed});
-      await refresh();section='browse';
+      assertAccount(epoch);await refresh();assertAccount(epoch);section='browse';
       const snap=result.snapshot || result;
       if(snap.id){setHistory(snap.id,snap.mode || mode());await updateView({mode:snap.mode || mode(),platform:snap.platform || platformID(),snapshot_id:snap.id,selected_id:null,page:1});}
-      else render();toast('书目已导入，来源信息与原榜名次会一起保留。');
+      else render();assertAccount(epoch);toast('书目已导入，来源信息与原榜名次会一起保留。');
     }catch(e){notice(e instanceof SyntaxError?'这不是有效的 JSON 书目文件。':e.message);}
   });
   $('#text-file').addEventListener('change',async(event)=>{
-    const file=event.target.files[0];event.target.value='';if(!file || !pendingText)return;
-    try{if(file.size>12*1024*1024)throw new Error('正文文件超过 12 MB，请按卷拆分导入。');const bytes=await file.arrayBuffer();let decoded=new TextDecoder('utf-8').decode(bytes);if(decoded.includes('\uFFFD')){try{decoded=new TextDecoder('gb18030',{fatal:true}).decode(bytes);}catch{}}pendingText.text=decoded;$('#text-file-label').textContent=`${file.name} · ${pendingText.text.length.toLocaleString()} 字符`;}
+    const epoch=accountEpoch,target=pendingText,file=event.target.files[0];event.target.value='';if(!file || !target || !membership.allowed)return;
+    try{if(file.size>12*1024*1024)throw new Error('正文文件超过 12 MB，请按卷拆分导入。');const bytes=await file.arrayBuffer();assertAccount(epoch);if(pendingText!==target)return;let decoded=new TextDecoder('utf-8').decode(bytes);if(decoded.includes('\uFFFD')){try{decoded=new TextDecoder('gb18030',{fatal:true}).decode(bytes);}catch{}}pendingText.text=decoded;$('#text-file-label').textContent=`${file.name} · ${pendingText.text.length.toLocaleString()} 字符`;}
     catch(e){notice(e.message);}
   });
   $('#dialog').addEventListener('click',(event)=>{if(event.target===$('#dialog')){const r=$('#dialog').getBoundingClientRect();if(event.clientX<r.left || event.clientX>r.right || event.clientY<r.top || event.clientY>r.bottom)$('#dialog').close();}});
   window.addEventListener('scroll',()=>{lastListScrollAt=Date.now();const sentinel=$('#list-end');if(sentinel && sentinel.getBoundingClientRect().top<window.innerHeight+240)loadMoreBooks().catch(error=>notice(error.message));},{passive:true});
   document.addEventListener('keydown',event=>{if((event.key==='Enter' || event.key===' ') && event.target.matches?.('.scatter-dot')){event.preventDefault();dispatch(event.target).catch(error=>notice(error.message));}});
-  document.addEventListener('visibilitychange',()=>{if(!document.hidden && state)refresh().catch(e=>notice(e.message));});
-  refresh().catch(error=>{$('#server-label').textContent='本地服务未连接';$('#server-dot').classList.remove('online');$('#content').innerHTML=pageHead('欢迎回来','打开本地工作台后，就可以继续上次的选书。')+'<section class="surface">'+empty('暂时连接不上本地服务','请通过“发糕扫榜”启动入口重新打开，或让 WorkBuddy 帮你启动工作台。','<button class="button primary" data-action="retry">重新连接</button>','↻')+'</section>';notice(error.message);});
+  document.addEventListener('visibilitychange',()=>{if(!document.hidden)checkMembership({reload:true}).catch(()=>{});});
+  window.addEventListener('focus',()=>checkMembership({reload:true}).catch(()=>{}));
+  window.addEventListener('pagehide',()=>{membershipRequest++;clearTimeout(membershipTimer);clearAccountView();membership={allowed:false,reason:'checking',account:null};renderMembership();});
+  window.addEventListener('pageshow',event=>{if(event.persisted)checkMembership({reload:true}).catch(()=>{});});
+  const callbackURL=new URL(window.location.href);
+  if(callbackURL.searchParams.getAll('authorization').length===1 && callbackURL.searchParams.get('authorization')==='cancelled'){
+    callbackNotice='已取消这次官网授权。资料未改变，需要时可重新连接发糕账号。';
+    callbackURL.searchParams.delete('authorization');window.history.replaceState(null,'',callbackURL.pathname+callbackURL.search+callbackURL.hash);
+  }
+  renderMembership();checkMembership().catch(()=>{});
 })();

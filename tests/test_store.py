@@ -107,7 +107,9 @@ class StoreTest(unittest.TestCase):
         old=self.store.prepare_task({'snapshot_id':self.s['id'],'book_id':'b'},'分析这本','chat-a')
         self.store.set_view({'mode':'long','selected_id':'a'})
         self.store.import_text(self.s['id'],'b','这是一段恢复任务用的原始正文。'*10,'前两章')
-        result=subprocess.run([sys.executable,'-m','fagao','--data-dir',self.tmp.name,'resume',old['id']],capture_output=True,text=True,check=True)
+        from cli_fixtures import invoke_store_cli
+        result=invoke_store_cli(self.store,['--data-dir',self.tmp.name,'resume',old['id']])
+        self.assertEqual(result.returncode,0,result.stdout)
         resumed=json.loads(result.stdout)
         self.assertEqual(resumed['book_id'],'b'); self.assertEqual(resumed['snapshot_id'],self.s['id'])
         self.assertEqual(resumed['scope'],'前两章'); self.assertEqual(resumed['session'],'chat-a')
@@ -290,7 +292,9 @@ class StoreTest(unittest.TestCase):
         self.assertEqual(context['analysis_target']['task_id'],task['id'])
         self.assertFalse(next(tx for tx in context['texts'] if tx['id']==saved['id'])['complete'])
         import subprocess,sys
-        result=subprocess.run([sys.executable,'-m','fagao','--data-dir',self.tmp.name,'resume',task['id']],capture_output=True,text=True,check=True)
+        from cli_fixtures import invoke_store_cli
+        result=invoke_store_cli(upgraded,['--data-dir',self.tmp.name,'resume',task['id']])
+        self.assertEqual(result.returncode,0,result.stdout)
         resumed=json.loads(result.stdout)
         self.assertEqual(resumed['text_id'],saved['id']); self.assertEqual(resumed['scope'],saved['scope'])
         self.assertFalse(resumed['text']['complete']); self.assertFalse(resumed['text']['coverage_complete'])

@@ -1,4 +1,4 @@
-"""Loopback-only workbench API, no model API or account credentials required."""
+"""Loopback-only workbench API with account-bound membership authorization."""
 from __future__ import annotations
 import argparse
 import hashlib
@@ -12,7 +12,7 @@ import uuid
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlsplit, quote
+from urllib.parse import urlsplit, quote, parse_qs
 from . import __version__
 from . import network
 from .store import AppError, Store, now, PLATFORMS
@@ -108,13 +108,33 @@ def _age_seconds(timestamp):
 
 
 class JobManager:
-    def __init__(self,store):
+    def __init__(self,store,*,require_access=None):
         self.store=store; self.lock=threading.RLock(); self.active={}
+        self.require_access=require_access
         self.condition=threading.Condition(self.lock)
         self.overview_lock=threading.Lock(); self.overview_cache=None
         self.public_import_lock=threading.Lock()
 
+    def _require(self):
+        if self.require_access is not None:
+            return self.require_access()
+
+    def _run_authorized(self,worker,job):
+        try:
+            with network.authorized_requests(self._require if self.require_access is not None else None):
+                self._require()
+                worker(job)
+        except Exception as exc:
+            with self.lock:
+                current=self.store.job(job['id'])
+                if current['status'] not in ('cancelled','cancelling'):
+                    current.update(status='interrupted',error_code=getattr(exc,'code','operation_failed'),
+                                   message=str(getattr(exc,'message',exc))[:1200],finished_at=now(),waiting_for_more=False)
+                    self.store.save_job(current)
+                if self.active.get(job['scope_key'])==job['id']: self.active.pop(job['scope_key'],None)
+
     def start(self,platform,options,automatic=False,interactive=False,demand_count=10):
+        self._require()
         if not isinstance(automatic,bool): raise AppError('invalid_automatic','automatic 应为布尔值。')
         if not isinstance(interactive,bool): raise AppError('invalid_interactive','interactive 应为布尔值。')
         if isinstance(demand_count,bool) or not isinstance(demand_count,int) or not 1<=demand_count<=10000:
@@ -158,10 +178,11 @@ class JobManager:
             job={'id':uuid.uuid4().hex,'kind':'collect','platform':platform,'status':'pending','message':'正在准备采集','created_at':now(),'options':options,'scope_key':key,'automatic':automatic,
                  'interactive':interactive,'demand_count':demand_count,'waiting_for_more':False}
             self.store.save_job(job); self.active[key]=job['id']
-            threading.Thread(target=self._run,args=(job,),daemon=True).start()
+            threading.Thread(target=self._run_authorized,args=(self._run,job),daemon=True).start()
             return {'status':'started','job_id':job['id'],'job':dict(job)}
 
     def more(self,jid,count=100):
+        self._require()
         if isinstance(count,bool) or not isinstance(count,int) or not 1<=count<=1000:
             raise AppError('invalid_count','每次继续读取的数量应为 1 到 1000。')
         with self.condition:
@@ -178,6 +199,11 @@ class JobManager:
             return {'status':job['status'],'job_id':jid,'job':job}
 
     def overview(self):
+        self._require()
+        return self._overview_data()
+
+    def _overview_data(self):
+        """Saved-data computation; the HTTP caller supplies read authorization."""
         from .overview import build_overview
         revision=self.store.snapshot_revision()
         with self.overview_lock:
@@ -189,6 +215,7 @@ class JobManager:
         return result
 
     def start_overview(self,automatic=False):
+        self._require()
         if not isinstance(automatic,bool): raise AppError('invalid_automatic','automatic 应为布尔值。')
         with self.lock:
             if OVERVIEW_SCOPE in self.active:
@@ -209,7 +236,7 @@ class JobManager:
                  'progress':{'platform':'fanqie','channel':'男频','category':'玄幻脑洞',
                              'completed_categories':0,'failed_categories':0,'skipped_categories':0,'total_categories':4}}
             self.store.save_job(job); self.active[OVERVIEW_SCOPE]=job['id']
-            threading.Thread(target=self._run_overview,args=(job,),daemon=True).start()
+            threading.Thread(target=self._run_authorized,args=(self._run_overview,job),daemon=True).start()
             return {'status':'started','job_id':job['id'],'job':dict(job)}
 
     def _start_public_sync(self,job):
@@ -235,6 +262,10 @@ class JobManager:
             done.set()
 
         def ensure_active(*args,**kwargs):
+            self._require()
+            ensure_storage_active()
+
+        def ensure_storage_active():
             with self.lock:
                 if self.store.job(job['id'])['status']=='cancelled':
                     raise AppError('cancelled','已暂停公开快照同步。')
@@ -243,10 +274,17 @@ class JobManager:
 
         def worker():
             try:
+                self._require()
                 from .public_rankings import sync_public_rankings
                 from .overview import _scope_key
                 raw=sync_public_rankings(progress=ensure_active)
-                ensure_active()
+                interruption=raw.get('interrupted_reason')
+                interruption_message=raw.get('interrupted_message')
+                try: ensure_active()
+                except AppError as exc:
+                    if not exc.code.startswith('membership_'): raise
+                    interruption=exc.code; interruption_message=exc.message
+                ensure_storage_active()
                 imported=0
                 with self.public_import_lock:
                     existing={(item.get('source_id'),_scope_key(item),item.get('data_date'),item.get('source_revision'))
@@ -254,21 +292,28 @@ class JobManager:
                     for snapshot in sorted(raw.get('snapshots',[]),key=lambda item:str(item.get('data_date') or '')):
                         key=(snapshot.get('source_id'),_scope_key({**snapshot,'mode':snapshot.get('mode') or 'long'}),snapshot.get('data_date'),snapshot.get('source_revision'))
                         with self.lock:
-                            ensure_active()
+                            # Persist results already obtained in this account,
+                            # while never issuing more requests after expiry.
+                            ensure_storage_active()
                             if key in existing: continue
                             self.store.save_snapshot(snapshot); existing.add(key); imported+=1
-                finish('completed' if raw.get('snapshots') else 'unavailable',snapshot_count=imported,
-                       coverage=raw.get('coverage',[]),warnings=raw.get('warnings',[]),failures=raw.get('failures',[]))
+                finish('interrupted' if interruption else 'completed' if raw.get('snapshots') else 'unavailable',snapshot_count=imported,
+                       coverage=raw.get('coverage',[]),warnings=raw.get('warnings',[]),failures=raw.get('failures',[]),
+                       **({'error_code':interruption,'message':interruption_message} if interruption else {}))
             except Exception as exc:
                 if getattr(exc,'code',None)!='cancelled':
-                    finish('unavailable',message=str(exc)[:800])
+                    finish('interrupted' if str(getattr(exc,'code','')).startswith('membership_') else 'unavailable',
+                           message=str(exc)[:800],error_code=getattr(exc,'code',None))
                 done.set()
 
         def watchdog():
             if not done.wait(PUBLIC_SYNC_DEADLINE_SECONDS):
                 finish('unavailable',message='公开来源响应超时，已保留直采结果。')
 
-        threading.Thread(target=worker,daemon=True).start()
+        def authorized_worker():
+            with network.authorized_requests(self._require if self.require_access is not None else None):
+                worker()
+        threading.Thread(target=authorized_worker,daemon=True).start()
         threading.Thread(target=watchdog,daemon=True).start()
         return done
 
@@ -280,6 +325,7 @@ class JobManager:
         public_done=self._start_public_sync(job)
 
         def update(message):
+            self._require()
             with self.lock:
                 if self.store.job(job['id'])['status']=='cancelled':
                     raise AppError('cancelled','首页更新已暂停，已取得榜单保留。')
@@ -306,6 +352,7 @@ class JobManager:
                 else:
                     last_message=None
                     while True:
+                        self._require()
                         with self.lock:
                             if self.store.job(job['id'])['status']=='cancelled':
                                 if job.get('owns_child') and not self.store.job(child_id).get('shared'): self.cancel(child_id)
@@ -346,7 +393,7 @@ class JobManager:
                 if period: options['period']=period
                 try: load(platform,options,False)
                 except Exception as exc:
-                    if getattr(exc,'code',None)=='cancelled': raise
+                    if getattr(exc,'code',None)=='cancelled' or str(getattr(exc,'code','')).startswith('membership_'): raise
                     result['warnings'].append(f"{platform}首批暂未取得，将在完整更新时重试。")
             counters['phase']='full'
             for channel in ('男频','女频'):
@@ -367,10 +414,11 @@ class JobManager:
                     if snapshot.get('complete') is not True:
                         result['incomplete_categories'].append({'platform':platform,'channel':channel,'category':'全部'})
                 except Exception as exc:
-                    if getattr(exc,'code',None)=='cancelled': raise
+                    if getattr(exc,'code',None)=='cancelled' or str(getattr(exc,'code','')).startswith('membership_'): raise
                     result['failed_categories'].append({'platform':platform,'channel':channel,'category':'全部',
                                                        'code':getattr(exc,'code','source_failed'),'message':str(exc)[:1200]})
             public_done.wait(PUBLIC_SYNC_FINAL_WAIT_SECONDS)
+            self._require()
             result['complete']=not result['failed_categories'] and not result['incomplete_categories'] and all(b['discovery_complete'] for b in result['channels'])
             with self.lock:
                 if self.store.job(job['id'])['status']=='cancelled': return
@@ -381,13 +429,15 @@ class JobManager:
         except Exception as exc:
             with self.lock:
                 if self.store.job(job['id'])['status']!='cancelled':
-                    job.update(status='failed',partial=True,result=result,message=str(exc)[:1200],finished_at=now())
+                    job.update(status='interrupted' if str(getattr(exc,'code','')).startswith('membership_') else 'failed',
+                               error_code=getattr(exc,'code','overview_failed'),partial=True,result=result,message=str(exc)[:1200],finished_at=now())
                     self.store.save_job(job)
         finally:
             with self.lock:
                 if self.active.get(OVERVIEW_SCOPE)==job['id']: self.active.pop(OVERVIEW_SCOPE,None)
 
     def start_text(self,sid,bid,chapters=3,start_chapter=1,all_chapters=False):
+        self._require()
         if not isinstance(all_chapters,bool): raise AppError('invalid_range','all 应为布尔值。')
         if isinstance(start_chapter,bool) or not isinstance(start_chapter,int) or not 1<=start_chapter<=5000: raise AppError('invalid_range','起始章节应为 1 到 5000 的整数。')
         if not all_chapters and (isinstance(chapters,bool) or not isinstance(chapters,int) or not 1<=chapters<=5000): raise AppError('invalid_range','下载章节数应为 1 到 5000 的整数。')
@@ -403,11 +453,12 @@ class JobManager:
                  'book_id':book['id'],'title':book['title'],'options':options,'scope_key':key,
                  'status':'pending','message':'正在读取章节目录','created_at':now()}
             self.store.save_job(job); self.active[key]=job['id']
-            threading.Thread(target=self._run_text,args=(job,),daemon=True).start()
+            threading.Thread(target=self._run_authorized,args=(self._run_text,job),daemon=True).start()
             return {'status':'started','job_id':job['id'],'job':dict(job)}
 
     def _run_text(self,job):
         def progress(message,*args,**kwargs):
+            self._require()
             with self.lock:
                 if self.store.job(job['id'])['status'] in ('cancelling','cancelled'): raise AppError('cancelled','已暂停本次正文下载。')
                 job.update(status='running',message=str(message),updated_at=now()); self.store.save_job(job)
@@ -417,6 +468,11 @@ class JobManager:
             options=job['options']
             raw=fetch_book_text(job['book_id'],self.store.directory,max_chapters=options['chapters'],start_chapter=options['start_chapter'],progress=progress)
             if not isinstance(raw,dict): raise AppError('invalid_text_result','正文结果格式不正确。')
+            try: self._require()
+            except AppError as exc:
+                if not exc.code.startswith('membership_'): raise
+                raw={**raw,'interrupted':True,'interrupted_reason':exc.code,'interrupted_message':exc.message,
+                     'coverage_complete':False,'complete':False}
             if raw.get('chapters'):
                 if raw.get('requested_start',options['start_chapter'])!=options['start_chapter']: raise AppError('text_range_mismatch','返回的正文起始位置与本次请求不一致。')
                 total=raw.get('catalog_chapters')
@@ -432,8 +488,9 @@ class JobManager:
                 cancelled=self.store.job(job['id'])['status'] in ('cancelling','cancelled') or bool(raw.get('cancelled'))
                 if cancelled:
                     raw={**raw,'cancelled':True,'coverage_complete':False,'complete':False}
-                if not str(raw.get('text') or '').strip() and cancelled:
-                    job.update(status='cancelled',message='正文下载已暂停，尚未取得可保存的章节。',finished_at=now())
+                if not str(raw.get('text') or '').strip() and (cancelled or raw.get('interrupted_reason')):
+                    job.update(status='cancelled' if cancelled else 'interrupted',
+                               error_code=raw.get('interrupted_reason'),message='正文下载已暂停，尚未取得可保存的章节。',finished_at=now())
                 else:
                     text_meta=self.store.save_fetched_text(job['snapshot_id'],job['book_id'],raw)
                     label,detail=text_integrity_summary(text_meta)
@@ -442,6 +499,9 @@ class JobManager:
                     job.update(status='cancelled' if cancelled else 'completed',partial=not text_meta.get('coverage_complete',False),
                                message=message,
                                text_id=text_meta['id'],text=text_meta,download_url=f"/api/texts/{text_meta['id']}/download",finished_at=now())
+                    if raw.get('interrupted_reason'):
+                        job.update(status='interrupted',partial=True,error_code=raw['interrupted_reason'],
+                                   message=str(raw.get('interrupted_message') or '会员验证中断，已取得的正文已保存。')[:1200])
                 self.store.save_job(job)
         except Exception as exc:
             with self.lock:
@@ -449,7 +509,7 @@ class JobManager:
                     job.update(status='cancelled',message='正文下载已暂停，先前保存的正文仍保留。',finished_at=now())
                 else:
                     message=getattr(exc,'message',None) or str(exc)
-                    job.update(status='failed',message=message[:1200] or '未取得有效正文，已有内容保留。',error_code=getattr(exc,'code','text_failed'),finished_at=now())
+                    job.update(status='interrupted' if str(getattr(exc,'code','')).startswith('membership_') else 'failed',message=message[:1200] or '未取得有效正文，已有内容保留。',error_code=getattr(exc,'code','text_failed'),finished_at=now())
                 self.store.save_job(job)
         finally:
             with self.lock:
@@ -472,6 +532,7 @@ class JobManager:
                         raise AppError('partial_scope_mismatch','增量榜单的周期与请求不一致。')
                     snapshot=self.store.save_snapshot({**partial,'complete':False})
                     job.update(partial_snapshot_id=snapshot['id'],partial_count=snapshot['books_count'])
+                self._require()
                 job.update(status='running',message=str(message),updated_at=now()); self.store.save_job(job)
                 # Only a genuine source-page boundary can pause network work.
                 # Polling never renews the idle timer; an abandoned tab releases
@@ -479,6 +540,7 @@ class JobManager:
                 if partial is not None and kwargs.get('has_more') and job.get('interactive'):
                     deadline=time.monotonic()+INTERACTIVE_IDLE_SECONDS
                     while True:
+                        self._require()
                         current=self.store.job(job['id'])
                         if current['status']=='cancelled': raise AppError('cancelled','已取消本次采集。')
                         job.update({key:current[key] for key in ('interactive','demand_count','waiting_for_more','shared') if key in current})
@@ -494,6 +556,10 @@ class JobManager:
             from .collectors import collect
             progress('正在连接平台')
             result=collect(job['platform'],job['options'],self.store.directory,progress)
+            try: self._require()
+            except AppError as exc:
+                if not exc.code.startswith('membership_'): raise
+                result={**result,'complete':False,'interrupted_reason':exc.code,'interrupted_message':exc.message}
             with self.lock:
                 if self.store.job(job['id'])['status']=='cancelled': return
                 snapshot=self.store.save_snapshot(result)
@@ -510,6 +576,9 @@ class JobManager:
                     source_message=str(result.get('source_message') or '来源拒绝继续读取，自动重试已暂停。')[:1000]
                     job.update(status='failed',partial=True,error_code=source_state,
                                message=f"已保存 {snapshot['books_count']} 本有效作品；{source_message}")
+                if result.get('interrupted_reason'):
+                    job.update(status='interrupted',partial=True,error_code=result['interrupted_reason'],
+                               message=str(result.get('interrupted_message') or '会员验证中断，已取得榜单已保存。')[:1200])
                 self.store.save_job(job)
         except Exception as exc:
             with self.lock:
@@ -523,7 +592,7 @@ class JobManager:
                     auth_state=getattr(exc,'state',None)
                     if job['platform']=='heiyan' and auth_state in ('logged_out','expired','forbidden','network_error','unavailable'):
                         self.store.auth_state('heiyan',{'state':auth_state,'message':message[:1200]})
-                    job.update(status='failed',message=message[:1200] or '采集失败，请重试。',error_code=getattr(exc,'code',None) or auth_state or 'collection_failed',finished_at=now(),waiting_for_more=False)
+                    job.update(status='interrupted' if str(getattr(exc,'code','')).startswith('membership_') else 'failed',message=message[:1200] or '采集失败，请重试。',error_code=getattr(exc,'code',None) or auth_state or 'collection_failed',finished_at=now(),waiting_for_more=False)
                     self.store.save_job(job)
         finally:
             with self.lock:
@@ -547,11 +616,26 @@ class JobManager:
 
 class WorkbenchServer(ThreadingHTTPServer):
     daemon_threads=True
-    def __init__(self,address,store):
+    def __init__(self,address,store=None,*,runtime=None):
+        if store is not None and runtime is not None:
+            raise ValueError('Use one application context')
+        if store is None and runtime is None:
+            from .runtime import WorkbenchRuntime
+            runtime=WorkbenchRuntime(recover_jobs=True)
         super().__init__(address,Handler)
-        self.store=store; self.jobs=JobManager(store)
+        # Explicit Store injection remains an internal test harness seam. The
+        # executable entrypoint always constructs the protected runtime.
+        self.runtime=runtime
+        self.store=store
+        self.jobs=JobManager(store) if store is not None else None
+        self.directory=runtime.root_dir if runtime is not None else store.directory
         self.network_probe={'status':'not_checked'}
-        self.store.recover_jobs()
+        if store is not None: self.store.recover_jobs()
+
+    def membership_status(self,refresh=False):
+        if self.runtime is not None: return self.runtime.membership.status(refresh=refresh)
+        return {'allowed':False,'reason':'not_authenticated','account_id':None,'account':None,
+                'generation':None,'membership_expires_at':None,'permit_expires_at':None,'server_time':now()}
 
     def start_network_probe(self, timeout=10):
         self.network_probe={'status':'checking'}
@@ -590,10 +674,19 @@ class Handler(BaseHTTPRequestHandler):
         try: self.wfile.write(payload)
         except (BrokenPipeError,ConnectionResetError): pass
 
-    def _guard(self,write=False):
+    def _guard(self,write=False,callback=False,navigation=False):
         port=self.server.server_address[1]
         if self.headers.get('Host') not in (f'127.0.0.1:{port}',f'localhost:{port}'):
             raise AppError('invalid_host','工作台仅允许通过本机地址访问。',403)
+        if callback:
+            if self.headers.get('Host')!=f'127.0.0.1:{port}':
+                raise AppError('invalid_host','授权回调地址与本次请求不一致。',403)
+            return
+        if navigation:
+            # Browsers preserve cross-site metadata through the authorization
+            # callback's redirect chain. A top-level document may load the
+            # static shell only; all data still uses guarded same-origin APIs.
+            return
         origin=self.headers.get('Origin')
         if origin and origin not in (f'http://127.0.0.1:{port}',f'http://localhost:{port}'):
             raise AppError('invalid_origin','拒绝来自其他网站的请求。',403)
@@ -604,9 +697,17 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self): self._dispatch(True)
 
     def _dispatch(self,write):
+        self._context=None
         try:
-            self._guard(write)
             path=urlsplit(self.path).path
+            callback=(not write and path=='/auth/callback' and self.server.runtime is not None)
+            navigation=(not write and path in ('/','/index.html')
+                        and self.headers.get('Sec-Fetch-Mode')=='navigate'
+                        and self.headers.get('Sec-Fetch-Dest')=='document')
+            self._guard(write,callback=callback,navigation=navigation)
+            if callback:
+                self._authorization_callback()
+                return
             data={}
             if write:
                 if self.headers.get('Content-Type','').split(';')[0]!='application/json': raise AppError('invalid_content_type','需要 JSON 请求。',415)
@@ -616,8 +717,32 @@ class Handler(BaseHTTPRequestHandler):
                 try: data=json.loads(self.rfile.read(length))
                 except (ValueError,UnicodeDecodeError): raise AppError('invalid_json','JSON 格式无效。')
                 if not isinstance(data,dict): raise AppError('invalid_body','请求必须是对象。')
-            result=self._post(path,data) if write else self._get(path)
-            if result is not None: self._send(200,result)
+            if self.server.runtime is not None and (
+                    not write and path=='/api/legacy-data/status' or
+                    write and path in ('/api/legacy-data/claim','/api/legacy-data/skip')):
+                self._legacy_data_action(path,data)
+                return
+            public_get={'/api/health','/api/network','/api/membership/status'}
+            public_post={'/api/membership/connect','/api/membership/refresh','/api/membership/logout'}
+            protected=path.startswith('/api/') and path not in (public_post if write else public_get)
+            cancelling=write and path=='/api/jobs/cancel'
+            operation='read' if not write or path in ('/api/view','/api/insights','/api/resolve') else 'use'
+            if protected and self.server.runtime is not None:
+                expected_account,expected_generation=self._expected_identity(path)
+                if cancelling: self._context=self.server.runtime.cancellation_context(expected_account,expected_generation)
+                else: self._context=self.server.runtime.capture(operation=operation,expected_account=expected_account,expected_generation=expected_generation)
+                if path=='/api/view':
+                    from .legacy_claim import require_legacy_decision
+                    require_legacy_decision(self.server.runtime,expected_account,expected_generation,operation='read')
+            check=self._context.require if self._context is not None and not cancelling else None
+            # Even a history-only request cannot accidentally initiate source
+            # network work. Jobs always retain an active-use authorization.
+            source_check=self._context.jobs._require if self._context is not None and not cancelling else None
+            with network.authorized_requests(source_check):
+                result=self._post(path,data) if write else self._get(path)
+                if result is not None:
+                    if check is not None: check()
+                    self._send(200,result)
         except AppError as e: self._send(e.status,{'error':{'code':e.code,'message':e.message}})
         except Exception as e:
             if hasattr(e,'code') and hasattr(e,'message'):
@@ -626,12 +751,69 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(500,{'error':{'code':'internal_error','message':'处理未完成，请重试或查看诊断。'}})
                 import traceback; traceback.print_exc()
 
+    @property
+    def _store(self):
+        return self._context.store if self._context is not None else self.server.store
+
+    @property
+    def _jobs(self):
+        return self._context.jobs if self._context is not None else self.server.jobs
+
+    def _callback_uri(self):
+        return f'http://127.0.0.1:{self.server.server_address[1]}/auth/callback'
+
+    def _expected_identity(self,path,allow_anonymous=False):
+        account=self.headers.get('X-Fagao-Account')
+        generation=self.headers.get('X-Fagao-Generation')
+        if (not account and not allow_anonymous) or not generation or len(account or '')>512 or len(generation)>512:
+            raise AppError('membership_account_changed','请从当前账号的工作台重新发起操作。',403)
+        if len(self.headers.get_all('X-Fagao-Account',[]))>1 or len(self.headers.get_all('X-Fagao-Generation',[]))>1:
+            raise AppError('membership_account_changed','请求的账号信息不唯一。',403)
+        return account or None,generation
+
+    def _authorization_callback(self):
+        try:
+            params=parse_qs(urlsplit(self.path).query,keep_blank_values=True,strict_parsing=True,max_num_fields=8)
+        except ValueError as exc:
+            raise AppError('membership_invalid_callback','授权回调参数无效，请重新连接。',400) from exc
+        if len(params.get('state',[]))!=1 or not params['state'][0] or len(params['state'][0])>2048:
+            raise AppError('membership_invalid_callback','授权回调缺少唯一有效的参数。',400)
+        if 'error' in params:
+            if params['error']!=['access_denied'] or 'code' in params:
+                raise AppError('membership_invalid_callback','授权回调状态无效，请重新连接。',400)
+            self.server.runtime.membership.cancel_authorization(params['state'][0],self._callback_uri())
+            self._send(303,b'','text/plain; charset=utf-8',{'Location':'/?authorization=cancelled'})
+            return
+        if len(params.get('code',[]))!=1 or not params['code'][0] or len(params['code'][0])>2048:
+            raise AppError('membership_invalid_callback','授权回调缺少唯一有效的参数。',400)
+        self.server.runtime.membership.complete_authorization(params['code'][0],params['state'][0],self._callback_uri())
+        # Never leave the authorization code in the page URL or return it as
+        # JSON. No third-party resources are loaded on this callback response.
+        self._send(303,b'','text/plain; charset=utf-8',{'Location':'/'})
+
+    def _legacy_data_action(self,path,data):
+        from .legacy_claim import legacy_decision,claim_legacy,skip_legacy
+        account,generation=self._expected_identity(path)
+        runtime=self.server.runtime
+        # No account Store is constructed merely to inspect legacy availability.
+        runtime.membership.require(account_id=account,generation=generation,operation='use')
+        options={'expected_account':account,'expected_generation':generation}
+        if path.endswith('/status'):
+            result=legacy_decision(runtime,**options)
+        elif path.endswith('/claim'):
+            result=claim_legacy(runtime,confirmed=data.get('confirmed') is True,**options)
+        else:
+            result=skip_legacy(runtime,confirmed=data.get('confirmed') is True,**options)
+        runtime.membership.require(account_id=account,generation=generation,operation='use')
+        self._send(200,result)
+
     def _get(self,path):
-        store=self.server.store
-        if path=='/api/health': return {'app':'fagao-scan-workbench','version':__version__,'data_dir':str(store.directory),'source_root':str(Path(__file__).resolve().parent.parent),'network':{**network.status(),'probe':self.server.network_probe}}
+        store=self._store
+        if path=='/api/health': return {'app':'fagao-scan-workbench','version':__version__,'data_dir':str(self.server.directory),'source_root':str(Path(__file__).resolve().parent.parent),'network':{**network.status(),'probe':self.server.network_probe}}
         if path=='/api/network': return {**network.status(),'probe':self.server.network_probe}
+        if path=='/api/membership/status': return self.server.membership_status()
         if path=='/api/state': return store.state()
-        if path=='/api/overview': return self.server.jobs.overview()
+        if path=='/api/overview': return self._jobs._overview_data() if self._context is not None else self._jobs.overview()
         if path=='/api/context': return store.context()
         if path.startswith('/api/snapshots/'): return store.snapshot(path.rsplit('/',1)[-1])
         if path.startswith('/api/reports/'): return store.report(path.rsplit('/',1)[-1])
@@ -645,6 +827,7 @@ class Handler(BaseHTTPRequestHandler):
             label,detail=text_integrity_summary(record)
             integrity_header=f'正文状态：{label}\n'+(f'完整性核验：{detail}\n' if detail else '')
             content=f"《{record['title']}》\n阅读范围：{record['scope']}\n{integrity_header}来源：{record['source']}\n作品：{record['platform']} / {record['book_id']}\n\n"+record['content']
+            if self._context is not None: self._context.require()
             self._send(200,content,'text/plain; charset=utf-8',{'Content-Disposition':f"attachment; filename=fagao-{record['id']}.txt; filename*=UTF-8''{quote(filename,safe='')}"})
             return None
         if path.startswith('/api/texts/'): return store.text_record(path.rsplit('/',1)[-1])
@@ -656,7 +839,20 @@ class Handler(BaseHTTPRequestHandler):
         return None
 
     def _post(self,path,data):
-        store=self.server.store
+        if path=='/api/membership/refresh': return self.server.membership_status(refresh=True)
+        if path in ('/api/membership/connect','/api/membership/logout'):
+            if self.server.runtime is None:
+                raise AppError('membership_unavailable','隔离测试服务不提供真实账号连接。',503)
+            account,generation=self._expected_identity(path,allow_anonymous=True)
+            if path.endswith('/connect'):
+                return self.server.runtime.membership.begin_authorization(self._callback_uri(),
+                    expected_account=account,expected_generation=generation)
+            # The core verifies and mutates the captured generation atomically.
+            # A newer account must never be cancelled by this request.
+            result=self.server.runtime.membership.logout(expected_account=account,expected_generation=generation)
+            self.server.runtime.stop_account_jobs(account,generation)
+            return result
+        store=self._store
         if path=='/api/translation-context':
             return store.translation_context(reference=data.get('query','翻译这本'),session=data.get('session','default'),snapshot_id=data.get('snapshot_id'),book_id=data.get('book_id'))
         if path=='/api/catalog':
@@ -668,7 +864,7 @@ class Handler(BaseHTTPRequestHandler):
             except CollectorError as exc: raise AppError('catalog_unavailable',str(exc)[:1200],502) from exc
             if str(result.get('book_id'))!=book['id'] or result.get('platform')!='fanqie': raise AppError('text_identity_mismatch','目录作品身份不一致，未采用。')
             return {**result,'snapshot_id':snapshot['id'],'book_id':book['id'],'total':result.get('catalog_chapters',len(result.get('chapters',[]))),'source_url':result.get('source','')}
-        if path=='/api/fetch-text': return self.server.jobs.start_text(data.get('snapshot_id'),data.get('book_id'),data.get('chapters',3),data.get('start_chapter',1),data.get('all',False))
+        if path=='/api/fetch-text': return self._jobs.start_text(data.get('snapshot_id'),data.get('book_id'),data.get('chapters',3),data.get('start_chapter',1),data.get('all',False))
         if path=='/api/insights':
             from .insights import build_insights
             snapshot=store.snapshot(data.get('snapshot_id'))
@@ -677,11 +873,15 @@ class Handler(BaseHTTPRequestHandler):
         if path=='/api/favorite': return store.toggle_favorite(data.get('snapshot_id'),data.get('book_id'),bool(data.get('enabled')))
         if path=='/api/collect':
             args=(data.get('platform'),data.get('options',{}),data.get('automatic',False))
-            return self.server.jobs.start(*args,interactive=data['interactive']) if 'interactive' in data else self.server.jobs.start(*args)
-        if path=='/api/overview/refresh': return self.server.jobs.start_overview(data.get('automatic',False))
-        if path=='/api/jobs/more': return self.server.jobs.more(data.get('job_id'),data.get('count',100))
-        if path=='/api/jobs/cancel': return self.server.jobs.cancel(data.get('job_id'))
+            return self._jobs.start(*args,interactive=data['interactive']) if 'interactive' in data else self._jobs.start(*args)
+        if path=='/api/overview/refresh': return self._jobs.start_overview(data.get('automatic',False))
+        if path=='/api/jobs/more': return self._jobs.more(data.get('job_id'),data.get('count',100))
+        if path=='/api/jobs/cancel':
+            result=self._jobs.cancel(data.get('job_id'))
+            return {'id':result['id'],'status':result['status']} if self.server.runtime is not None else result
         if path=='/api/auth':
+            if self.server.runtime is not None:
+                raise AppError('external_link','黑岩书单在腾讯文档中打开，请在普通浏览器登录。',400)
             from .collectors import auth
             p=data.get('platform'); action=data.get('action')
             if p!='heiyan' or action not in ('login','check'): raise AppError('invalid_auth','仅支持黑岩登录或连接检查。')
@@ -710,9 +910,10 @@ def main():
     parser=argparse.ArgumentParser(description='发糕扫榜本地服务')
     parser.add_argument('--port',type=int,default=18376); parser.add_argument('--data-dir')
     args=parser.parse_args()
-    store=Store(args.data_dir)
-    network.configure(store.directory)
-    server=WorkbenchServer(('127.0.0.1',args.port),store)
+    from .runtime import WorkbenchRuntime
+    runtime=WorkbenchRuntime(args.data_dir,recover_jobs=True)
+    network.configure(runtime.root_dir)
+    server=WorkbenchServer(('127.0.0.1',args.port),runtime=runtime)
     server.start_network_probe()
     print(f'发糕扫榜已启动：http://127.0.0.1:{server.server_address[1]}',flush=True)
     try: server.serve_forever()

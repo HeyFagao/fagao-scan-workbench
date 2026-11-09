@@ -8,23 +8,36 @@ if (!base) throw new Error('Start tests/run_ui_smoke.py rather than running this
 const errors=[], collections=[], overviewUpdates=[];
 const pause=ms=>new Promise(r=>setTimeout(r,ms));
 async function wait(fn,msg){for(let i=0;i<150;i++){if(await fn())return;await pause(20)}throw new Error(msg)}
-async function api(path,body){const r=await fetch(base+path,body?{method:'POST',headers:{'Content-Type':'application/json','X-Fagao-Request':'1'},body:JSON.stringify(body)}:{});const j=await r.json();assert(!j.error,JSON.stringify(j));return j;}
+function localFetch(path,init){const url=new URL(path,base);assert.equal(url.origin,new URL(base).origin,'DOM smoke attempted an external request');return fetch(url,init);}
+async function member(){const status=await(await localFetch('/api/membership/status')).json();assert.equal(status.allowed,true,'Synthetic test member is not authorized');assert(status.account?.id && status.generation);return status;}
+async function api(path,body){const identity=await member(),headers={'X-Fagao-Account':identity.account.id,'X-Fagao-Generation':identity.generation,...(body?{'Content-Type':'application/json','X-Fagao-Request':'1'}:{})};const r=await localFetch(path,body?{method:'POST',headers,body:JSON.stringify(body)}:{headers});const j=await r.json();assert(!j.error,JSON.stringify(j));return j;}
 async function open({stale=false,freshSnapshot=null,history=false,expiredHeiyan=false,holdCollection=false,forceConnectedHeiyan=false,collectionResponse=null,contentFixture=false,storedOptions=null,startHome=false,collectionFixture=null,lateOverview=false}={}){
   const vc=new VirtualConsole();vc.on('jsdomError',e=>errors.push(String(e)));
-  const dom=new JSDOM(await (await fetch(base+'/')).text(),{url:base+'/',runScripts:'outside-only',pretendToBeVisual:true,virtualConsole:vc});
+  const identity=await member();
+  const dom=new JSDOM(await (await localFetch('/')).text(),{url:base+'/',runScripts:'outside-only',pretendToBeVisual:true,virtualConsole:vc});
   const makeHold=()=>{let release;const promise=new Promise(resolve=>{release=resolve});return {promise,release,captured:false}};
   let mockAuth=null;
   const control={pending:null,viewPending:null,collectionPending:holdCollection?makeHold():null,stateRequests:0,holdNextState(){return this.pending=makeHold()},holdNextView(){return this.viewPending=makeHold()}};dom.control=control;
   control.moreRequests=[];control.collectionJob=null;control.collectionPolls=0;
   control.overviewPolls=0;control.overviewReads=0;control.overviewJob=lateOverview?{id:'qa-overview-late',kind:'overview',status:'completed',message:'直采检查完成',public_source:{status:'running',snapshot_count:0,updated_at:'2026-11-09T12:00:00Z'}}:null;
-  control.catalogRequests=[];control.textRequests=[];control.textAssets=[];control.textJob=null;control.textPolls=0;control.cancelCalls=0;
+  control.catalogRequests=[];control.textRequests=[];control.textAssets=[];control.textJob=null;control.textPolls=0;control.cancelCalls=0;control.downloadRequests=[];control.downloads=[];
+  const blobs=new Map();
+  dom.window.URL.createObjectURL=blob=>{const url='blob:'+base+'/synthetic-'+(blobs.size+1);blobs.set(url,blob);return url;};
+  dom.window.URL.revokeObjectURL=url=>blobs.delete(url);
+  const anchorClick=dom.window.HTMLAnchorElement.prototype.click;
+  dom.window.HTMLAnchorElement.prototype.click=function(){if(this.href.startsWith('blob:')){control.downloads.push({filename:this.download,blob:blobs.get(this.href)});return;}return anchorClick.call(this);};
   control.finishText=({cancelled=false,fragmented=false}={})=>{
     const job=control.textJob, asset={id:'qa-asset-'+control.textRequests.length,snapshot_id:job.snapshot_id,book_id:job.book_id,title:job.title,platform:'fanqie',scope:'第 1—3 章；实际取得第 1、3 章，缺失第 2 章',chapters:[{index:1,title:'第一章'},{index:3,title:'第三章'}],missing:[{index:2,chapter:'第二章',reason:'平台暂未提供正文'}],coverage_complete:false,complete:false,cancelled,characters:66,created_at:'2026-11-09T12:00:00Z',acquisition:'public_download',integrity:{version:1,status:'verified',actual_characters:66,declared_book_word_count:99,reason:'已核对取得章节字数。'}};
     if(fragmented)Object.assign(asset,{scope:'公开片段；目录第 1 项，共 1 章',chapters:[{index:1,title:'第一章',integrity:{version:1,status:'partial',declared_word_count:13325,actual_characters:4439,reason:'章节正文少于标注字数。'}}],missing:[],characters:4439,complete:true,coverage_complete:true,integrity:{version:1,status:'partial',actual_characters:4439,declared_book_word_count:13325,reason:'单章正文少于平台标注字数，已保存公开片段。'}});
     control.textAssets.unshift(asset);control.textJob={...job,status:cancelled?'cancelled':'completed',message:cancelled?'已暂停，已取得内容已保存':fragmented?'公开片段已保存，实际正文 4,439 字符':'正文已保存，缺失 1 章',partial:true,finished_at:'2026-11-09T12:00:00Z',text_id:asset.id,text:asset};
   };
-  dom.window.fetch=async(path,init)=>{
+  dom.window.fetch=async(path,init={})=>{
+    assert.equal(new URL(path,base).origin,new URL(base).origin,'Frontend requested a nonlocal URL');
     const pathname=new URL(path,base).pathname;
+    if(pathname.startsWith('/api/') && !pathname.startsWith('/api/membership/')){
+      assert.equal(init.headers?.['X-Fagao-Account'],identity.account.id,'Protected UI request lacks account binding');
+      assert.equal(init.headers?.['X-Fagao-Generation'],identity.generation,'Protected UI request lacks session binding');
+    }
     if(pathname==='/api/view' && control.viewPending && !control.viewPending.captured){const held=control.viewPending;held.captured=true;await held.promise;}
     if(pathname==='/api/overview/refresh'){overviewUpdates.push(JSON.parse(init.body));return Response.json({status:'fresh',retry_after_seconds:900});}
     if(pathname==='/api/jobs/qa-overview-late'){control.overviewPolls++;return Response.json(control.overviewJob);}
@@ -50,9 +63,12 @@ async function open({stale=false,freshSnapshot=null,history=false,expiredHeiyan=
     }
     if(pathname.startsWith('/api/jobs/qa-text-')){control.textPolls++;return Response.json(control.textJob);}
     if(pathname==='/api/jobs/cancel' && contentFixture){control.cancelCalls++;control.textJob={...control.textJob,status:'cancelling',message:'正在暂停正文下载，已取得内容将保留。'};return Response.json(control.textJob);}
-    if(pathname.startsWith('/api/texts/qa-asset-'))return Response.json({...control.textAssets.find(item=>pathname.endsWith('/'+item.id)),content:'这是实际取得部分正文的测试夹具。<script>unsafe()</script>'});
+    if(pathname.startsWith('/api/texts/qa-asset-')){
+      if(pathname.endsWith('/download')){control.downloadRequests.push({path:pathname,headers:init.headers});return new Response('这是实际取得部分正文的 TXT 测试夹具。',{headers:{'Content-Type':'text/plain; charset=utf-8'}});}
+      return Response.json({...control.textAssets.find(item=>pathname.endsWith('/'+item.id)),content:'这是实际取得部分正文的测试夹具。<script>unsafe()</script>'});
+    }
     if(pathname==='/api/auth')throw new Error('UI smoke must not start a platform login or browser.');
-    const response=await fetch(new URL(path,base),init);
+    const response=await localFetch(path,init);
     if(pathname==='/api/overview' && lateOverview){control.overviewReads++;const data=await response.json();data.update=control.overviewJob;return Response.json(data);}
     if(pathname==='/api/state' || pathname==='/api/view'){
       if(pathname==='/api/state')control.stateRequests++;
@@ -71,8 +87,9 @@ async function open({stale=false,freshSnapshot=null,history=false,expiredHeiyan=
   };
   dom.window.HTMLDialogElement.prototype.showModal=function(){this.open=true};
   dom.window.HTMLDialogElement.prototype.close=function(){this.open=false};
-  if(history){const s=await api('/api/state');dom.window.localStorage.setItem('fagao-history-views',JSON.stringify({long:s.views.long.snapshot_id}));}
-  if(storedOptions){dom.window.localStorage.setItem('fagao-collection-options',JSON.stringify(storedOptions));dom.window.localStorage.setItem('fagao-options-version','2');}
+  const preference=name=>`${name}:${encodeURIComponent(identity.account.id)}`;
+  if(history){const s=await api('/api/state');dom.window.localStorage.setItem(preference('fagao-history-views'),JSON.stringify({long:s.views.long.snapshot_id}));}
+  if(storedOptions){dom.window.localStorage.setItem(preference('fagao-collection-options'),JSON.stringify(storedOptions));dom.window.localStorage.setItem(preference('fagao-options-version'),'2');}
   dom.window.eval(fs.readFileSync('web/app.js','utf8'));
   await wait(()=>dom.window.document.querySelector('.overview-tabs'),'homepage did not render');
   await wait(()=>!dom.window.document.querySelector('.overview-collection-status')?.textContent.includes('正在读取本机'),'homepage did not finish loading');
@@ -182,7 +199,9 @@ async function open({stale=false,freshSnapshot=null,history=false,expiredHeiyan=
  dom.control.finishText();await wait(()=>dom.control.textPolls>0,'background text task was not polled');await pause(120);
  assert.equal(d.querySelector('.detail h2').textContent,'测试作品甲','text completion replaced selected book');assert(!d.querySelector('.saved-text-assets'),'text asset attached to wrong book');
  d.querySelectorAll('.book-row')[1].click();await wait(()=>d.querySelector('.saved-text-assets'),'saved text did not attach to original work');
- assert.match(d.querySelector('.saved-text-assets').textContent,/实际取得/);assert.match(d.querySelector('.saved-text-assets a').href,/\/api\/texts\/qa-asset-1\/download$/);
+ assert.match(d.querySelector('.saved-text-assets').textContent,/实际取得/);
+ const firstDownload=d.querySelector('.saved-text-assets [data-action="download-text"]');assert.equal(firstDownload.dataset.id,'qa-asset-1');firstDownload.click();
+ await wait(()=>dom.control.downloads.length===1,'Saved TXT was not downloaded through the authenticated API');assert.match(dom.control.downloadRequests[0].path,/\/api\/texts\/qa-asset-1\/download$/);assert.match(await dom.control.downloads[0].blob.text(),/实际取得部分正文/);assert.match(dom.control.downloads[0].filename,/qa-asset-1\.txt$/);
  d.querySelector('[data-action="catalog"]').click();await wait(()=>d.querySelector('.chapter-saved-result') && d.querySelector('#chapter-download-form'),'saved result not visible');
  assert.match(d.querySelector('.chapter-saved-meta').textContent,/实际取得 2 章/);assert.match(d.querySelector('.chapter-saved-meta').textContent,/缺失 1 章/);assert(!d.querySelector('.chapter-saved-meta').textContent.includes('完整正文'),'partial result claimed full text');
  d.querySelector('[data-action="chapter-all"]').click();d.querySelector('#chapter-download-form').dispatchEvent(new dom.window.Event('submit',{bubbles:true,cancelable:true}));await wait(()=>dom.control.textRequests.length===2 && d.querySelector('[data-action="cancel-text-job"]'),'explicit full catalog task not started');
@@ -190,7 +209,7 @@ async function open({stale=false,freshSnapshot=null,history=false,expiredHeiyan=
  d.querySelector('[data-action="cancel-text-job"]').click();await wait(()=>dom.control.cancelCalls===1 && d.querySelector('[data-action="cancel-text-job"]')?.disabled,'cancel did not enter finalizing state');
  const textPolls=dom.control.textPolls;await wait(()=>dom.control.textPolls>textPolls,'cancelling task stopped polling before saving content');
  dom.control.finishText({cancelled:true});await wait(()=>d.querySelector('.text-job')?.textContent.includes('已暂停，已取得内容已保存'),'cancelled partial text not displayed');
- assert.match(d.querySelector('.chapter-result-actions a').href,/qa-asset-2\/download$/);
+ const secondDownload=d.querySelector('.chapter-result-actions [data-action="download-text"]');assert.equal(secondDownload.dataset.id,'qa-asset-2');secondDownload.click();await wait(()=>dom.control.downloads.length===2,'Partial TXT result was not downloaded');assert.match(dom.control.downloadRequests[1].path,/qa-asset-2\/download$/);assert.match(await dom.control.downloads[1].blob.text(),/实际取得部分正文/);
  d.querySelector('.chapter-result-actions [data-action="preview-text"]').click();await wait(()=>d.querySelector('.saved-text-preview'),'saved text preview not opened');assert.match(d.querySelector('.saved-text-preview').textContent,/<script>/);assert(!d.querySelector('#dialog script'),'saved text executed HTML');
  // A single returned directory item may contain only its opening. Even stale
  // complete flags must not override the explicit body-length evidence.

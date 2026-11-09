@@ -44,6 +44,7 @@ class CollectorError(RuntimeError):
 
 
 def _fetch(url, mobile=False, opener=None, referer=None, timeout=20, read_body=True):
+    network.check_authorization()
     request = urllib.request.Request(url, headers={
         "User-Agent": MOBILE_AGENT if mobile else USER_AGENT,
         "Accept": "text/html,application/json;q=0.9,*/*;q=0.8",
@@ -427,7 +428,9 @@ def _fanqie(options, progress, data_dir=None):
     with ThreadPoolExecutor(max_workers=4) as pool:
         for start in range(0, len(rows), 4):
             _notify(progress, f"正在整理书名和简介，已处理 {done}/{len(rows)} 本…")
-            futures = {pool.submit(detail, row): row for row in rows[start:start + 4]}
+            network.check_authorization()
+            guarded_detail = network.authorized_callable(detail)
+            futures = {pool.submit(guarded_detail, row): row for row in rows[start:start + 4]}
             for future in as_completed(futures):
                 row = futures[future]
                 try:
@@ -436,13 +439,18 @@ def _fanqie(options, progress, data_dir=None):
                         books.append(book)
                     else:
                         failed_rows.append(row)
-                except Exception:
+                except Exception as exc:
+                    if network.is_authorization_error(exc):
+                        for pending in futures:
+                            pending.cancel()
+                        raise
                     failed_rows.append(row)
                 done += 1
                 _notify(progress, f"正在整理书名和简介，已处理 {done}/{len(rows)} 本…")
     # One bounded, sequential retry only for the failed identities. Keep this exact
     # rank snapshot; do not re-scan or substitute a fresh book at the same rank.
     for retry_index, row in enumerate(failed_rows, 1):
+        network.check_authorization()
         _notify(progress, f"正在补读缺失简介 {retry_index}/{len(failed_rows)}…")
         try:
             book = detail(row)
@@ -450,7 +458,9 @@ def _fanqie(options, progress, data_dir=None):
                 books.append(book)
             else:
                 failures.append(str(row.get("currentPos", "未知")))
-        except Exception:
+        except Exception as exc:
+            if network.is_authorization_error(exc):
+                raise
             failures.append(str(row.get("currentPos", "未知")))
     books.sort(key=lambda book: book["rank"])
     if failures:
@@ -910,6 +920,9 @@ def close_browsers():
 
 def auth(platform, action, data_dir):
     """Open/check the same private session. Never return credentials."""
+    network.check_authorization()
+    if platform == "heiyan" and network.has_authorization():
+        raise CollectorError("黑岩使用腾讯文档书单，请从工作台入口在普通浏览器打开。", "external_link")
     if platform != "heiyan":
         return {"state": "unavailable", "message": "此平台暂未提供账号连接入口。"}
     if action not in ("login", "check"):
@@ -931,6 +944,9 @@ def collect(platform, options, data_dir, progress=None):
     messages still call ``progress(message)``. One-argument callbacks remain
     compatible. The final return is the fully enriched result, not the preview.
     """
+    network.check_authorization()
+    if platform == "heiyan" and network.has_authorization():
+        raise CollectorError("黑岩使用腾讯文档书单，请从工作台入口在普通浏览器打开。", "external_link")
     from .overseas import OVERSEAS_PLATFORMS, collect_overseas
     if platform in {item['id'] for item in OVERSEAS_PLATFORMS}:
         return collect_overseas(platform, options, data_dir, progress)

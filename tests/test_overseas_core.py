@@ -124,10 +124,12 @@ class OverseasCoreTest(unittest.TestCase):
         self.assertEqual(handoff['original']['tags'],['Werewolf','Romance'])
 
     def test_cli_explicit_pair_and_incomplete_pair(self):
-        command=[sys.executable,'-m','fagao','--data-dir',self.tmp.name,'--session','cli-test','translation-context','--snapshot',self.snap['id'],'--book','a']
-        result=subprocess.run(command,capture_output=True,text=True,check=True)
+        from cli_fixtures import invoke_store_cli
+        command=['--data-dir',self.tmp.name,'--session','cli-test','translation-context','--snapshot',self.snap['id'],'--book','a']
+        result=invoke_store_cli(self.store,command)
+        self.assertEqual(result.returncode,0,result.stdout)
         self.assertEqual(json.loads(result.stdout)['book_id'],'a')
-        bad=subprocess.run(command[:-2],capture_output=True,text=True)
+        bad=invoke_store_cli(self.store,command[:-2])
         self.assertEqual(bad.returncode,1)
         self.assertEqual(json.loads(bad.stdout)['error']['code'],'incomplete_selection')
 

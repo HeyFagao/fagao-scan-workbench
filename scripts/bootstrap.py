@@ -29,7 +29,8 @@ MAX_EXPANDED = 200 * 1024 * 1024
 MAX_MEMBERS = 10000
 REQUIRED = ("scripts/launch.py", "fagao/server.py", "fagao/store.py", "fagao/__main__.py", "web/index.html")
 EXCLUDED = {".git", "node_modules", "__pycache__", ".venv", ".DS_Store", ".env", ".data",
-            "browser-profiles", ".fagao-release.json", ".fagao-install.json", ".install.lock"}
+            "browser-profiles", ".fagao-release.json", ".fagao-install.json", ".install.lock",
+            ".membership", "accounts", "legacy-claims", "legacy-claim.json", "legacy-decisions.json", ".legacy-claim.lock", "network.json"}
 RUNTIME_SUFFIXES = (".db", ".sqlite", ".sqlite3", ".sqlite-wal", ".sqlite-shm", ".sqlite3-wal", ".sqlite3-shm", ".log")
 
 
@@ -116,6 +117,8 @@ def extract_archive(archive: Path, destination: Path, expected_root: str) -> Non
             if member.flag_bits & 1:
                 raise InstallError("不接受加密压缩包。")
             relative = PurePosixPath(*path.parts[1:])
+            if any(part in {'.membership','accounts','legacy-claims','legacy-claim.json','legacy-decisions.json','.legacy-claim.lock'} for part in relative.parts):
+                raise InstallError('程序包包含账号凭据或个人资料目录，已拒绝安装。')
             key = str(relative).casefold()
             if key in seen:
                 raise InstallError("压缩包包含重复或大小写冲突路径。")

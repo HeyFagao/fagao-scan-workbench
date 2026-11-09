@@ -1,0 +1,20 @@
+"""Explicit trusted Store injection for pre-membership business unit tests.
+
+This helper is never shipped as a runtime authentication option. The official
+CLI's unauthenticated process and account isolation have separate tests.
+"""
+import contextlib
+import io
+from pathlib import Path
+from subprocess import CompletedProcess
+from types import SimpleNamespace
+
+
+def invoke_store_cli(store, arguments):
+    from fagao.__main__ import main
+    context = SimpleNamespace(store=store, require=lambda: None)
+    runtime = SimpleNamespace(root_dir=Path(store.directory), capture=lambda **kwargs: context)
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        code = main(arguments, runtime_factory=lambda directory: runtime)
+    return CompletedProcess(arguments, code, output.getvalue(), '')

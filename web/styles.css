@@ -415,6 +415,52 @@ dialog[data-kind="text"],dialog[data-kind="insights"]{width:min(850px,calc(100vw
 .dashboard-sources{font-size:11px;color:#738198;border-top:1px solid #edf0f4;padding:7px 0;margin-top:-5px;margin-bottom:8px}.dashboard-sources summary{display:flex;justify-content:space-between;gap:8px 18px;cursor:pointer;flex-wrap:wrap;list-style:none}.dashboard-sources summary>span:last-child{color:#7b899a}.dashboard-sources ul{padding-left:16px;margin:10px 0 5px;line-height:1.9}.dashboard-sources a,.dashboard-sources strong{font-weight:500;color:#4d709e}.dashboard-sources summary:after{content:'⌄';color:#7b899a}.dashboard-sources[open] summary:after{content:'⌃'}.growth-card .radar-table td:last-child{font-size:11px}.growth-card .chart-caption{margin-top:0;border-top:1px solid #edf1f5;padding:10px 0}.growth-card .radar-book small{max-width:290px;white-space:normal}
 
 /* Overseas discovery: the same white reading surface, with original-language text. */
+/* Account connection uses the same white reading surface as the workbench. */
+.membership-account { display: flex; align-items: center; gap: 8px; padding-right: 15px; border-right: 1px solid #e9e9e9; }
+.membership-account-text { min-width: 0; text-align: right; }
+.membership-account-text strong { display: block; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: #404040; font-weight: 500; }
+.membership-account-text small, .membership-unconnected { display: block; font-size: 10px; color: #858585; line-height: 1.7; }
+.membership-account .quiet-button { padding: 5px 4px; font-size: 11px; flex-shrink: 0; }
+.membership-check { font-size: 17px !important; }
+.membership-card { max-width: 650px; margin: 72px auto; padding: 46px 32px; background: #fff; border: 1px solid #e9e9e9; border-radius: 8px; text-align: center; }
+.membership-symbol { width: 44px; height: 44px; display: grid; place-items: center; margin: 0 auto 22px; border: 1px solid #ececec; border-radius: 9px; font-size: 24px; color: #777; }
+.membership-eyebrow { display: block; font-size: 11px; color: #999; letter-spacing: .1em; margin-bottom: 12px; }
+.membership-card h1 { margin: 0 0 15px; font-size: 25px; color: #333; font-weight: 500; }
+.membership-card > p { max-width: 440px; margin: 0 auto; font-size: 13px; line-height: 1.9; color: #777; }
+.membership-current { margin: 20px auto 0; font-size: 12px; color: #555; }
+.membership-current span { display: block; margin-top: 4px; font-size: 11px; color: #999; }
+.membership-actions { display: flex; justify-content: center; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 28px; }
+.membership-card > small { display: block; margin-top: 21px; font-size: 10px; color: #999; line-height: 1.8; }
+.membership-locked .sidebar button { cursor: default; }
+.membership-locked .sidebar, .legacy-pending .sidebar { opacity: .65; }
+.membership-readonly-notice { display: flex; justify-content: space-between; align-items: center; gap: 14px; padding: 16px 18px; margin-bottom: 22px; border: 1px solid #e8dfd4; border-radius: 5px; background: #fff; color: #6d6053; }
+.membership-readonly-notice[hidden] { display: none; }
+.membership-readonly-notice strong { display: block; font-size: 12px; font-weight: 500; }
+.membership-readonly-notice span { display: block; margin-top: 5px; font-size: 11px; line-height: 1.7; color: #8b8178; }
+.membership-readonly-notice .button { flex-shrink: 0; }
+.legacy-claim-card { max-width: 700px; margin-top: 42px; }
+.legacy-claim-card > p strong { color: #444; font-weight: 500; }
+.legacy-counts { display: flex; justify-content: center; gap: 28px; padding: 0; margin: 25px 0; list-style: none; }
+.legacy-counts li strong { display: block; font-size: 22px; font-weight: 500; color: #444; font-variant-numeric: tabular-nums; }
+.legacy-counts li span { display: block; margin-top: 5px; font-size: 11px; color: #888; }
+.legacy-claim-card .legacy-preservation { margin-top: 20px; font-size: 11px; }
+.legacy-confirm { display: flex; justify-content: center; align-items: flex-start; gap: 8px; margin: 23px 0 0; font-size: 12px; color: #555; line-height: 1.7; text-align: left; }
+.legacy-confirm input { margin-top: 4px; flex-shrink: 0; }
+@media(max-width:900px) {
+  .membership-account { border: 0; padding-right: 0; gap: 5px; }
+  .membership-account-text strong { max-width: 140px; }
+  .membership-account-text small { max-width: 170px; }
+  .membership-card { margin: 32px auto; }
+}
+@media(max-width:640px) {
+  .top-links { flex-wrap: wrap; justify-content: flex-end; }
+  .membership-account { order: 3; flex-basis: 100%; justify-content: flex-end; }
+  .membership-account-text small { max-width: none; }
+  .membership-card { margin: 18px auto; padding: 32px 20px; }
+  .membership-card h1 { font-size: 21px; }
+  .membership-card > p { font-size: 12px; }
+  .membership-readonly-notice { flex-direction: column; align-items: flex-start; padding: 13px; }
+}
 .overseas-navigation { padding: 14px 0; border-top: 1px solid #ececec; }
 .overseas-heading { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 41px; padding: 8px; border-radius: 4px; color: #555; font-size: 12px; text-align: left; }
 .overseas-heading:hover, .overseas-heading[aria-current=true] { background: #f6f6f6; color: #242424; }

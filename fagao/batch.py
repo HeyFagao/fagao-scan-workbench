@@ -9,6 +9,7 @@ from copy import deepcopy
 from datetime import datetime, timezone
 
 from .collectors import collect
+from . import network
 from .store import AppError
 
 
@@ -71,6 +72,7 @@ def collect_all_categories(store, options, progress=None, *, load_category=None,
 
     def one(category):
         try:
+            network.check_authorization()
             notify(f"正在采集番茄{channel}／{board}／{category}；每个分类独立保存。")
             requested = {**deepcopy(options), "category": category}
             # A scheduler may reuse an existing/fresh job and return its saved
@@ -88,7 +90,7 @@ def collect_all_categories(store, options, progress=None, *, load_category=None,
         except _ProgressInterrupted as exc:
             raise exc.original
         except Exception as exc:
-            if getattr(exc, "code", None) == "cancelled":
+            if getattr(exc, "code", None) == "cancelled" or network.is_authorization_error(exc):
                 raise
             result["failed_categories"].append({
                 "category": category,

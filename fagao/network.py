@@ -9,6 +9,8 @@ the small handler below deliberately uses only the selected application policy.
 from __future__ import annotations
 
 import copy
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timezone
 import errno
 import ipaddress
@@ -23,6 +25,7 @@ import threading
 import urllib.error
 import urllib.parse
 import urllib.request
+from functools import wraps
 
 
 POLICY = "isolated-system-proxy-v1"
@@ -31,6 +34,71 @@ _LOGGER = logging.getLogger("fagao.network")
 _lock = threading.RLock()
 _directory = None
 _last_request = None
+_authorization_check = ContextVar("fagao_authorization_check", default=None)
+
+
+def check_authorization():
+    """Check the account captured by the current request/task, if any."""
+    check = _authorization_check.get()
+    if check is not None:
+        return check()
+    return None
+
+
+def has_authorization():
+    """Whether this call belongs to an account-bound official app operation."""
+    return _authorization_check.get() is not None
+
+
+@contextmanager
+def authorized_requests(check):
+    """Bind an account check to a request/task without changing other threads."""
+    if check is not None and not callable(check):
+        raise TypeError("authorization check must be callable")
+    token = _authorization_check.set(check)
+    try:
+        yield
+    finally:
+        _authorization_check.reset(token)
+
+
+@contextmanager
+def without_authorization():
+    """Internal escape for the authorization transport itself, avoiding recursion."""
+    with authorized_requests(None):
+        yield
+
+
+def authorized_callable(function):
+    """Capture the caller's account when queueing work on another thread.
+
+    The check happens when the work actually starts, so a pending task cannot
+    start another request after logout, an account switch or permit expiry.
+    """
+    check = _authorization_check.get()
+
+    @wraps(function)
+    def run(*args, **kwargs):
+        with authorized_requests(check):
+            check_authorization()
+            return function(*args, **kwargs)
+    return run
+
+
+def is_authorization_error(error):
+    return str(getattr(error, "code", "")).startswith("membership_")
+
+
+class _AuthorizationHandler(urllib.request.BaseHandler):
+    # urllib calls request processors for redirects too. Checking only the
+    # outer open() would permit a redirected request after the permit ended.
+    handler_order = 90
+
+    def http_request(self, request):
+        check_authorization()
+        return request
+
+    https_request = http_request
 
 
 class NetworkError(urllib.error.URLError):
@@ -257,10 +325,11 @@ class _Opener:
         self.handlers = handlers
 
     def _open(self, request, timeout, proxies, system, route_state):
+        check_authorization()
         # Each opener owns its handlers. A copied CookieProcessor keeps the same
         # CookieJar, preserving the normal anonymous website session across pages.
         handlers = [copy.copy(handler) for handler in self.handlers]
-        opener = urllib.request.build_opener(_ControlledProxyHandler(proxies, system, route_state), *handlers)
+        opener = urllib.request.build_opener(_AuthorizationHandler(), _ControlledProxyHandler(proxies, system, route_state), *handlers)
         return opener.open(_clone_request(request), timeout=timeout)
 
     def open(self, request, timeout=20):
