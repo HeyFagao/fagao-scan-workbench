@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>发糕写作 · 扫榜工作台</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">跳转到作品</a>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="发糕扫榜工作台首页">
+      <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 32 32" fill="none"><path d="M7 14h18v11H7z" fill="currentColor" opacity=".16"/><path d="M6 15c0-2 2-3 4-3s3 2 6 2 4-2 6-2 4 1 4 3v3c-2 2-4 2-6 0-2 2-5 2-7 0-2 2-5 2-7 0v-3Z" fill="currentColor"/><path d="M8 20v6h16v-6M5 27h22M16 12V8" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><path d="M16 3c-3 3-2 5 0 5s3-2 0-5Z" fill="currentColor"/></svg></span>
+      <span><strong>发糕写作</strong><small>扫榜工作台</small></span>
+    </a>
+    <div class="top-links">
+      <span id="points-entry"><button class="soon" disabled>积分站 <span>即将上线</span></button></span>
+      <a id="main-site" class="button secondary main-link" href="https://www.fagaochuangzuo.com/" target="_blank" rel="noopener noreferrer">返回发糕写作 <span aria-hidden="true">↗</span></a>
+    </div>
+  </header>
+  <div class="shell">
+    <aside class="sidebar" aria-label="工作台导航">
+      <div class="sidebar-label">作品发现</div>
+      <div class="mode-switch" aria-label="作品类型">
+        <button data-action="mode" data-mode="long" aria-pressed="true">长篇</button>
+        <button data-action="mode" data-mode="short" aria-pressed="false">短篇</button>
+      </div>
+      <nav id="platforms" class="platforms" aria-label="作品平台"></nav>
+      <nav class="personal-nav" aria-label="我的资料">
+        <button data-action="section" data-section="favorites"><span class="nav-icon" aria-hidden="true">♡</span>我的收藏<span class="count" id="favorite-count">0</span></button>
+        <button data-action="section" data-section="history"><span class="nav-icon" aria-hidden="true">◷</span>最近记录</button>
+        <button data-action="section" data-section="reports"><span class="nav-icon" aria-hidden="true">▤</span>拆书报告<span class="count" id="report-count">0</span></button>
+      </nav>
+      <div class="sidebar-bottom">
+        <button class="quiet-button" data-action="import-snapshot"><span aria-hidden="true">＋</span> 导入书目文件</button>
+        <div class="local-badge"><span class="status-dot" id="server-dot"></span><span id="server-label">连接本地工作台</span></div>
+        <p>作品、收藏与阅读记录<br>自动保存在这台设备</p>
+      </div>
+    </aside>
+    <main id="main" class="main" tabindex="-1">
+      <div id="notice" class="notice" role="alert" hidden></div>
+      <div id="content"><div class="loading"><span class="spinner"></span>正在打开你的工作台…</div></div>
+      <div id="bridge"></div>
+    </main>
+  </div>
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  <input id="snapshot-file" type="file" accept="application/json,.json" hidden>
+  <input id="text-file" type="file" accept="text/plain,.txt,.md" hidden>
+  <dialog id="dialog"><div id="dialog-body"></div></dialog>
+</body>
+</html>
