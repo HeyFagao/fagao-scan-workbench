@@ -1,0 +1,74 @@
+{
+  "version": "0.5.0",
+  "verified_on": "2026-11-09",
+  "public_feed": {
+    "checked_at": "2026-11-09T09:15:08.986313+00:00",
+    "method": "Real sync_public_rankings() via urllib fixed raw.githubusercontent.com endpoints; no mocks",
+    "elapsed_seconds": 12.729,
+    "source_id": "github:scoful/FanqieRankTracker",
+    "current_source_date": "2026-11-09",
+    "history_source_date": "2026-11-02",
+    "current_coverage": [
+      {
+        "channel": "female",
+        "categories": 18,
+        "entries": 360,
+        "per_category_min": 20,
+        "per_category_max": 20
+      },
+      {
+        "channel": "male",
+        "categories": 19,
+        "entries": 380,
+        "per_category_min": 20,
+        "per_category_max": 20
+      }
+    ],
+    "normalized_category_snapshots": 74,
+    "failures": [],
+    "file_revisions": {
+      "male/2026-11-09": "git-blob-sha1:a637d659d88ee53a6182865b81eee62397d79e7f",
+      "female/2026-11-09": "git-blob-sha1:964ea6c6904c4cf81396b401289d7f7590f16ca3",
+      "male/2026-11-02": "git-blob-sha1:906d506deee547bcac14cc6711009b1141a95582",
+      "female/2026-11-02": "git-blob-sha1:afe383e1cbea231cdbcd5674dccb42bae0caf044"
+    },
+    "unit_tests": {
+      "command": "python3 -m unittest discover -s tests -p test_public_rankings.py -v",
+      "passed": 14
+    },
+    "scope_note": "740 current category-list entries, not complete platform coverage; source positions are not verified original ranks; no word counts supplied"
+  },
+  "cached_dashboard": {
+    "real_cached_books": {
+      "fanqie": 297,
+      "qidian": 60,
+      "ciweimao": 30
+    },
+    "fanqie_blackhorse_candidates": 13,
+    "missing_history_scores": null,
+    "max_scatter_points": 240
+  },
+  "client_validation": {
+    "windows": false,
+    "macos": false,
+    "workbuddy": false,
+    "pixel_visual": false
+  },
+  "notes": [
+    "公开源实测为独立adapter真实网络读取；Store到图表的合并另由隔离集成测试验证。",
+    "公开源仅男女频新书榜每分类Top20，字段缺失不补0、不推算字数或原榜名次。",
+    "用户资料、原始快照与小说正文不随源码发布。"
+  ],
+  "python_tests": {
+    "command": "python3 -m unittest discover -s tests -q",
+    "passed": 290,
+    "elapsed_seconds": 4.77
+  },
+  "ui_tests": {
+    "command": "python3 tests/run_ui_smoke.py",
+    "passed": 99,
+    "dashboard_checks": 27,
+    "external_platform_requests": 0,
+    "pixel_visual_verified": false
+  }
+}
