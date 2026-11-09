@@ -1,5 +1,6 @@
 import concurrent.futures
 import copy
+import json
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -135,17 +136,26 @@ class StoreTest(unittest.TestCase):
         t=self.store.prepare_task({'snapshot_id':n['id'],'book_id':'b'},'分析这本')
         self.assertEqual(t['text_id'],tx['id'])
     def fetched(self,**overrides):
-        return dict(platform='fanqie',book_id='b',title='乙书',text='这是从公开页面取得的第一章实际测试正文。'*5,
+        content='这是从公开页面取得的第一章实际测试正文。'*5
+        actual=len(content)
+        return {**dict(platform='fanqie',book_id='b',title='乙书',text=content,
                     scope='第 1 章（共取得 1 章）',complete=False,coverage_complete=True,cancelled=False,
                     source='https://fanqienovel.com/page/b',status='连载中',catalog_chapters=3,catalog_complete=True,requested_start=1,requested_chapters=1,
-                    chapters=[{'id':'chapter-b1','item_id':'chapter-b1','index':1,'title':'第一章','url':'https://fanqienovel.com/reader/chapter-b1','characters':100}],
-                    missing=[],collected_at='2026-11-09T12:00:00+08:00',**overrides)
+                    chapters=[{'id':'chapter-b1','item_id':'chapter-b1','index':1,'title':'第一章','url':'https://fanqienovel.com/reader/chapter-b1','characters':actual,
+                               'integrity':{'version':1,'status':'verified','declared_word_count':actual,'actual_characters':actual,'reason':'已核对来源字数'}}],
+                    integrity={'version':1,'status':'verified','declared_book_word_count':None,'actual_characters':actual,'reason':'所列章节字数核验通过'},
+                    missing=[],collected_at='2026-11-09T12:00:00+08:00'),**overrides}
 
     def test_fetched_text_uses_existing_assets_and_does_not_change_selection(self):
         raw=self.fetched(); meta=self.store.save_fetched_text(self.s['id'],'b',raw)
         self.assertEqual(meta['acquisition'],'public_download')
         self.assertEqual(meta['scope'],raw['scope']); self.assertTrue(meta['coverage_complete']); self.assertFalse(meta['complete'])
         self.assertEqual(meta['chapters'][0]['item_id'],'chapter-b1')
+        self.assertEqual(meta['chapters'][0]['url'],raw['chapters'][0]['url'])
+        self.assertEqual(meta['chapters'][0]['integrity'],raw['chapters'][0]['integrity'])
+        self.assertEqual(meta['integrity'],raw['integrity'])
+        self.assertEqual(meta['source'],raw['source'])
+        self.assertEqual(meta['collected_at'],raw['collected_at'])
         self.assertEqual(self.store.text_record(meta['id'])['content'],raw['text'])
         self.assertEqual(self.store.state()['texts'][0]['id'],meta['id'])
         self.assertNotIn('content',self.store.state()['texts'][0])
@@ -185,6 +195,113 @@ class StoreTest(unittest.TestCase):
             with self.subTest(changed=changed):
                 with self.assertRaises(AppError): self.store.save_fetched_text(self.s['id'],'b',{**self.fetched(),**changed})
         self.assertEqual(self.store.state()['texts'],[])
+
+    def test_download_integrity_rejects_contradictory_counts_and_claims(self):
+        base=self.fetched(complete=True,catalog_chapters=1,status='已完结')
+        variants=[]
+        for key,value in [('version',True),('status','partial'),('actual_characters',100000),('declared_book_word_count',13325)]:
+            raw=copy.deepcopy(base); raw['integrity'][key]=value; variants.append(raw)
+        for key,value in [('version',True),('declared_word_count',13325),('declared_word_count',None),('actual_characters',1),('status','unverified')]:
+            raw=copy.deepcopy(base); raw['chapters'][0]['integrity'][key]=value; variants.append(raw)
+        raw=copy.deepcopy(base); del raw['chapters'][0]['integrity']; variants.append(raw)
+        raw=copy.deepcopy(base); del raw['integrity']; variants.append(raw)
+        for raw in variants:
+            with self.subTest(raw=raw):
+                with self.assertRaises(AppError) as raised: self.store.save_fetched_text(self.s['id'],'b',raw)
+                self.assertEqual(raised.exception.code,'invalid_text_integrity')
+        self.assertEqual(self.store.state()['texts'],[])
+
+    def test_public_fragment_retains_evidence_and_cannot_be_labelled_complete(self):
+        raw=self.fetched(catalog_chapters=1,status='已完结',scope='全书完整',coverage_complete=False)
+        raw['chapters'][0]['integrity'].update(status='partial',declared_word_count=13325,reason='来源字数大于已取得正文')
+        raw['integrity'].update(status='partial',declared_book_word_count=13325,reason='来源字数大于已取得正文')
+        meta=self.store.save_fetched_text(self.s['id'],'b',raw)
+        self.assertFalse(meta['complete']); self.assertFalse(meta['coverage_complete'])
+        self.assertEqual(meta['integrity'],raw['integrity'])
+        self.assertEqual(meta['chapters'][0]['integrity'],raw['chapters'][0]['integrity'])
+        self.assertEqual(self.store.text_record(meta['id'])['content'],raw['text'])
+        self.assertIn('公开片段',meta['scope']); self.assertNotIn('全书完整',meta['scope'])
+        for claims in ({'coverage_complete':True},{'coverage_complete':True,'complete':True}):
+            with self.subTest(claims=claims):
+                with self.assertRaises(AppError): self.store.save_fetched_text(self.s['id'],'b',{**raw,**claims})
+
+    def test_unknown_chapter_word_count_is_saved_only_as_unverified(self):
+        raw=self.fetched(coverage_complete=False)
+        raw['chapters'][0]['integrity'].update(status='unverified',declared_word_count=None,reason='来源未提供章节字数')
+        raw['integrity'].update(status='unverified',reason='来源未提供章节字数')
+        meta=self.store.save_fetched_text(self.s['id'],'b',raw)
+        self.assertIn('完整性未确认',meta['scope'])
+        self.assertFalse(meta['coverage_complete'])
+        with self.assertRaises(AppError): self.store.save_fetched_text(self.s['id'],'b',{**raw,'coverage_complete':True})
+
+    def test_whole_book_total_can_reject_full_claim_when_each_chapter_passes(self):
+        raw=self.fetched(catalog_chapters=1,status='已完结',coverage_complete=False)
+        raw['integrity'].update(status='partial',declared_book_word_count=13325,reason='全书字数未取得完整')
+        meta=self.store.save_fetched_text(self.s['id'],'b',raw)
+        self.assertEqual(meta['chapters'][0]['integrity']['status'],'verified')
+        self.assertEqual(meta['integrity']['status'],'partial')
+        with self.assertRaises(AppError): self.store.save_fetched_text(self.s['id'],'b',{**raw,'complete':True,'coverage_complete':True})
+
+    def test_legacy_download_repair_preserves_content_and_corrects_tasks_and_reports(self):
+        raw=self.fetched(complete=True,catalog_chapters=1,status='已完结',scope='全书完整')
+        downloaded=self.store.save_fetched_text(self.s['id'],'b',raw)
+        task=self.store.prepare_task({'snapshot_id':self.s['id'],'book_id':'b'},'完整分析','legacy-session')
+        report=self.store.save_report(task['id'],'原报告分析正文及当时的完整性结论。'*10)
+        original_report=self.store.report(report['id'])['content']
+        imported=self.store.import_text(self.s['id'],'a','用户确认的完整正文。'*10,'用户提供完整正文',True)
+        legacy=copy.deepcopy(downloaded)
+        del legacy['integrity']
+        del legacy['chapters'][0]['integrity']
+        job={'id':'legacy-text-job','kind':'text','status':'completed','created_at':legacy['created_at'],
+             'text_id':legacy['id'],'text':legacy,'partial':False,'message':'全书完整，已保存正文',
+             'download_url':f"/api/texts/{legacy['id']}/download",'snapshot_id':self.s['id'],'book_id':'b'}
+        self.store.save_job(job)
+        with self.store.connect() as c:
+            c.execute('UPDATE texts SET body=? WHERE id=?',(json.dumps(legacy),downloaded['id']))
+            c.execute("DELETE FROM kv WHERE key='download_integrity_v1'")
+        upgraded=Store(self.tmp.name)
+        saved=upgraded.text_record(downloaded['id'])
+        self.assertEqual(saved['content'],raw['text']); self.assertEqual(saved['source'],raw['source'])
+        self.assertEqual(saved['sha256'],downloaded['sha256']); self.assertEqual(saved['chapters'],legacy['chapters'])
+        self.assertEqual(saved['integrity']['status'],'unverified')
+        self.assertFalse(saved['complete']); self.assertFalse(saved['coverage_complete'])
+        self.assertEqual(saved['previous_scope'],'全书完整')
+        self.assertEqual(saved['integrity']['actual_characters'],sum(not char.isspace() for char in raw['text']))
+        self.assertEqual(upgraded.task(task['id'])['scope'],saved['scope'])
+        self.assertFalse(upgraded.task(task['id'])['text']['complete'])
+        repaired_job=upgraded.job(job['id'])
+        self.assertEqual(repaired_job['status'],'completed'); self.assertTrue(repaired_job['partial'])
+        self.assertEqual(repaired_job['text_id'],saved['id']); self.assertFalse(repaired_job['text']['complete'])
+        self.assertEqual(repaired_job['text']['scope'],saved['scope'])
+        self.assertIn(saved['scope'],repaired_job['message']); self.assertNotIn('全书完整',repaired_job['message'])
+        self.assertEqual(repaired_job['download_url'],job['download_url'])
+        self.assertEqual(repaired_job['snapshot_id'],job['snapshot_id']); self.assertEqual(repaired_job['book_id'],'b')
+        self.assertEqual(upgraded.state()['jobs'][0],repaired_job)
+        new_task=upgraded.prepare_task({'snapshot_id':self.s['id'],'book_id':'b'},'继续')
+        self.assertEqual(new_task['text_id'],saved['id']); self.assertEqual(new_task['scope'],saved['scope'])
+        corrected=upgraded.report(report['id'])
+        self.assertEqual(corrected['scope'],saved['scope']); self.assertTrue(corrected['scope_corrected'])
+        self.assertTrue(corrected['content'].endswith(original_report))
+        self.assertTrue(corrected['content'].startswith('## 阅读范围更正'))
+        self.assertEqual(Store(self.tmp.name).report(report['id'])['content'],corrected['content'])
+        self.assertTrue(upgraded.text_record(imported['id'])['complete'])
+        self.assertEqual(upgraded.text_record(imported['id'])['scope'],'用户提供完整正文')
+        context=upgraded.context('legacy-session')
+        self.assertEqual(context['analysis_target']['task_id'],task['id'])
+        self.assertFalse(next(tx for tx in context['texts'] if tx['id']==saved['id'])['complete'])
+        import subprocess,sys
+        result=subprocess.run([sys.executable,'-m','fagao','--data-dir',self.tmp.name,'resume',task['id']],capture_output=True,text=True,check=True)
+        resumed=json.loads(result.stdout)
+        self.assertEqual(resumed['text_id'],saved['id']); self.assertEqual(resumed['scope'],saved['scope'])
+        self.assertFalse(resumed['text']['complete']); self.assertFalse(resumed['text']['coverage_complete'])
+        # A stale task copy written after migration is refreshed from its same
+        # text asset before the next report is persisted.
+        task['text']=legacy; task['scope']='全书完整'
+        with upgraded.connect() as c:
+            c.execute('UPDATE tasks SET body=? WHERE id=?',(json.dumps(task),task['id']))
+        next_report=upgraded.save_report(task['id'],'按实际取得的片段分析人物冲突。'*10)
+        self.assertEqual(next_report['scope'],saved['scope'])
+        self.assertEqual(next_report['integrity']['status'],'unverified')
 
     def test_text_error_pages_and_empty_rejected(self):
         for body in ('','tiny','<html><body>'+'error'*20,'403 Forbidden'+'error'*20,'<!doctype html>'+'error'*20):

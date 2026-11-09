@@ -18,9 +18,10 @@ async function open({stale=false,freshSnapshot=null,history=false,expiredHeiyan=
   control.moreRequests=[];control.collectionJob=null;control.collectionPolls=0;
   control.overviewPolls=0;control.overviewReads=0;control.overviewJob=lateOverview?{id:'qa-overview-late',kind:'overview',status:'completed',message:'直采检查完成',public_source:{status:'running',snapshot_count:0,updated_at:'2026-11-09T12:00:00Z'}}:null;
   control.catalogRequests=[];control.textRequests=[];control.textAssets=[];control.textJob=null;control.textPolls=0;control.cancelCalls=0;
-  control.finishText=({cancelled=false}={})=>{
-    const job=control.textJob, asset={id:'qa-asset-'+control.textRequests.length,snapshot_id:job.snapshot_id,book_id:job.book_id,title:job.title,platform:'fanqie',scope:'第 1—3 章；实际取得第 1、3 章，缺失第 2 章',chapters:[{index:1,title:'第一章'},{index:3,title:'第三章'}],missing:[{index:2,chapter:'第二章',reason:'平台暂未提供正文'}],coverage_complete:false,complete:false,cancelled,characters:66,created_at:'2026-11-09T12:00:00Z',acquisition:'public_download'};
-    control.textAssets.unshift(asset);control.textJob={...job,status:cancelled?'cancelled':'completed',message:cancelled?'已暂停，已取得内容已保存':'正文已保存，缺失 1 章',partial:true,finished_at:'2026-11-09T12:00:00Z',text_id:asset.id,text:asset};
+  control.finishText=({cancelled=false,fragmented=false}={})=>{
+    const job=control.textJob, asset={id:'qa-asset-'+control.textRequests.length,snapshot_id:job.snapshot_id,book_id:job.book_id,title:job.title,platform:'fanqie',scope:'第 1—3 章；实际取得第 1、3 章，缺失第 2 章',chapters:[{index:1,title:'第一章'},{index:3,title:'第三章'}],missing:[{index:2,chapter:'第二章',reason:'平台暂未提供正文'}],coverage_complete:false,complete:false,cancelled,characters:66,created_at:'2026-11-09T12:00:00Z',acquisition:'public_download',integrity:{version:1,status:'verified',actual_characters:66,declared_book_word_count:99,reason:'已核对取得章节字数。'}};
+    if(fragmented)Object.assign(asset,{scope:'公开片段；目录第 1 项，共 1 章',chapters:[{index:1,title:'第一章',integrity:{version:1,status:'partial',declared_word_count:13325,actual_characters:4439,reason:'章节正文少于标注字数。'}}],missing:[],characters:4439,complete:true,coverage_complete:true,integrity:{version:1,status:'partial',actual_characters:4439,declared_book_word_count:13325,reason:'单章正文少于平台标注字数，已保存公开片段。'}});
+    control.textAssets.unshift(asset);control.textJob={...job,status:cancelled?'cancelled':'completed',message:cancelled?'已暂停，已取得内容已保存':fragmented?'公开片段已保存，实际正文 4,439 字符':'正文已保存，缺失 1 章',partial:true,finished_at:'2026-11-09T12:00:00Z',text_id:asset.id,text:asset};
   };
   dom.window.fetch=async(path,init)=>{
     const pathname=new URL(path,base).pathname;
@@ -190,7 +191,19 @@ async function open({stale=false,freshSnapshot=null,history=false,expiredHeiyan=
  const textPolls=dom.control.textPolls;await wait(()=>dom.control.textPolls>textPolls,'cancelling task stopped polling before saving content');
  dom.control.finishText({cancelled:true});await wait(()=>d.querySelector('.text-job')?.textContent.includes('已暂停，已取得内容已保存'),'cancelled partial text not displayed');
  assert.match(d.querySelector('.chapter-result-actions a').href,/qa-asset-2\/download$/);
- d.querySelector('.chapter-result-actions [data-action="preview-text"]').click();await wait(()=>d.querySelector('.saved-text-preview'),'saved text preview not opened');assert.match(d.querySelector('.saved-text-preview').textContent,/<script>/);assert(!d.querySelector('#dialog script'),'saved text executed HTML');dom.window.close();
+ d.querySelector('.chapter-result-actions [data-action="preview-text"]').click();await wait(()=>d.querySelector('.saved-text-preview'),'saved text preview not opened');assert.match(d.querySelector('.saved-text-preview').textContent,/<script>/);assert(!d.querySelector('#dialog script'),'saved text executed HTML');
+ // A single returned directory item may contain only its opening. Even stale
+ // complete flags must not override the explicit body-length evidence.
+ d.querySelector('[data-action="close-dialog"]').click();d.querySelector('[data-action="catalog"]').click();await wait(()=>d.querySelector('.chapter-row'),'fragment regression catalog missing');
+ d.querySelector('[data-action="choose-chapter"][data-index="1"]').click();d.querySelector('#chapter-download-form').dispatchEvent(new dom.window.Event('submit',{bubbles:true,cancelable:true}));await wait(()=>dom.control.textRequests.length===3 && d.querySelector('.text-job'),'fragment regression task missing');
+ dom.control.finishText({fragmented:true});await wait(()=>d.querySelector('.chapter-integrity')?.textContent.includes('13,325'),'single chapter integrity evidence missing');
+ assert.match(d.querySelector('.chapter-saved-meta').textContent,/公开片段/);assert.match(d.querySelector('.chapter-saved-meta').textContent,/片段涉及 1 章/);assert(!d.querySelector('.chapter-saved-meta').textContent.includes('完整正文'),'single chapter fragment claimed full text');assert.match(d.querySelector('.chapter-integrity').textContent,/实际正文 4,439 字符（不含空白）/);
+ assert.match(d.querySelector('.saved-text-assets').textContent,/公开片段/);assert.match(d.querySelector('.saved-text-assets').textContent,/13,325/);
+ d.querySelector('.chapter-result-actions [data-action="preview-text"]').click();await wait(()=>d.querySelector('.saved-text-preview'),'fragment preview missing');assert.match(d.querySelector('.chapter-integrity').textContent,/公开片段/);assert.match(d.querySelector('.chapter-integrity').textContent,/4,439/);
+ // Migrated assets count their saved headings because the original chapter
+ // bodies cannot be reconstructed. That count must keep its actual basis.
+ Object.assign(dom.control.textAssets[0],{scope:'旧下载文本，完整性待重新核验',complete:false,coverage_complete:false,integrity:{version:1,status:'unverified',actual_characters:4439,actual_characters_basis:'saved_text_including_headings',declared_book_word_count:null,reason:'旧记录未保存章节字数核验信息。'}});
+ d.querySelector('[data-action="close-dialog"]').click();d.querySelector('.saved-text-item [data-action="preview-text"]').click();await wait(()=>d.querySelector('#dialog').open && d.querySelector('.chapter-integrity')?.textContent.includes('含章节标题'),'legacy preview missing');assert.match(d.querySelector('.chapter-integrity').textContent,/已保存文本 4,439 字符（不含空白，含章节标题）/);assert(!d.querySelector('.chapter-integrity').textContent.includes('实际正文'),'legacy stored text count claimed to exclude chapter headings');dom.window.close();
  // A previously customized collection count survives the default expansion.
  const beforeCustom=collections.length;dom=await open({storedOptions:{fanqie:{limit:75,max_pages:25}}});await wait(()=>collections.length>beforeCustom,'custom collection options did not initialize');assert.equal(collections.at(-1).options.limit,75);assert.equal(collections.at(-1).options.max_pages,25);dom.window.close();
  const beforeMigration=collections.length;dom=await open({storedOptions:{fanqie:{limit:1000,max_pages:100}}});await wait(()=>collections.length>beforeMigration,'previous default did not initialize');assert.equal(collections.at(-1).options.limit,10000);dom.window.close();
@@ -308,5 +321,5 @@ async function open({stale=false,freshSnapshot=null,history=false,expiredHeiyan=
  const lateData=(await api('/api/overview')).platforms.find(item=>item.platform==='fanqie').dashboard.views['全部'];
  dashboardCheck(()=>{assert.equal(Number(d.querySelector('[data-kpi="books"] strong').childNodes[0].textContent.replaceAll(',','')),lateData.kpis.books);assert.equal(d.querySelector('[data-action="overview-refresh"]').disabled,false);});
  await pause(80);dom.window.close();
- assert.deepEqual(errors,[]);console.log(JSON.stringify({passed:true,checks:72+dashboardChecks,dashboard_checks:dashboardChecks,layout_verified:false,external_platform_requests:0}));
+ assert.deepEqual(errors,[]);console.log(JSON.stringify({passed:true,checks:82+dashboardChecks,dashboard_checks:dashboardChecks,layout_verified:false,external_platform_requests:0}));
 })().catch(e=>{console.error(e);process.exitCode=1;process.exit(1)});
