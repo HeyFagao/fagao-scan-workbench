@@ -19,6 +19,12 @@ import webbrowser
 APP = "fagao-scan-workbench"
 ROOT = Path(__file__).resolve().parent.parent
 HEIYAN_BOOKLIST_URL = "https://docs.qq.com/sheet/DYVNwaVJZV2ZxTWl3?tab=q1ans7"
+PROXY_ENVIRONMENT_KEYS = frozenset(("http_proxy", "https_proxy", "all_proxy", "no_proxy", "ftp_proxy"))
+
+
+def sanitize_environment(environment: dict) -> dict:
+    """Keep runtime settings, but never inherit a terminal's proxy lifetime."""
+    return {key: value for key, value in environment.items() if key.lower() not in PROXY_ENVIRONMENT_KEYS}
 
 
 def preflight() -> dict:
@@ -40,7 +46,7 @@ def preflight() -> dict:
         modules["ssl"].create_default_context()
     except Exception as exc:
         raise RuntimeError("Python 的数据库或 HTTPS 组件无法正常工作，请让 WorkBuddy 自动修复运行时后重试。") from exc
-    for name in ("fagao/server.py", "fagao/store.py", "fagao/overview.py", "fagao/dashboard.py", "fagao/public_rankings.py", "fagao/overseas.py", "fagao/overseas_readers.py", "web/index.html", "web/app.js", "web/styles.css"):
+    for name in ("fagao/server.py", "fagao/store.py", "fagao/overview.py", "fagao/dashboard.py", "fagao/public_rankings.py", "fagao/network.py", "fagao/overseas.py", "fagao/overseas_readers.py", "web/index.html", "web/app.js", "web/styles.css"):
         path = ROOT / name
         if not path.is_file() or not path.stat().st_size:
             raise RuntimeError(f"安装文件缺失或为空：{name}。请让 WorkBuddy 重新下载同一固定版本；用户资料无需删除。")
@@ -64,6 +70,7 @@ def preflight() -> dict:
             "heiyan": {"status": "external_link", "url": HEIYAN_BOOKLIST_URL, "login": "in_user_browser"},
             "legacy_heiyan_backend": {"status": "not_required"},
         },
+        "network": {"status": "local_ready", "policy": "application_owned", "version": 1, "inherited_proxy_environment": "ignored"},
         "network_verified": False,
     }
 
@@ -109,11 +116,22 @@ def matching_health(result: dict | None, data_dir: Path) -> bool:
         return False
 
 
+def running_result(status: str, url: str, data_dir: Path, service_health: dict) -> dict:
+    """Report the running service's evidence, including when it predates isolation."""
+    network = service_health.get("network")
+    return {
+        "status": status, "url": url, "data_dir": str(data_dir),
+        "network": network if isinstance(network, dict) else {
+            "status": "unknown", "reason": "service_did_not_report_network_policy",
+        },
+    }
+
+
 def ensure_running(data_dir: Path, port: int, timeout: float = 30) -> dict:
     current = health(port)
     url = f"http://127.0.0.1:{port}/"
     if matching_health(current, data_dir):
-        return {"status": "reused", "url": url, "data_dir": str(data_dir)}
+        return running_result("reused", url, data_dir, current)
     if current or listening(port):
         if current and current.get("app") == APP:
             detail = "该端口已由另一份资料目录的发糕工作台使用。"
@@ -135,8 +153,9 @@ def ensure_running(data_dir: Path, port: int, timeout: float = 30) -> dict:
             acquired = True
             break
         except FileExistsError:
-            if matching_health(health(port), data_dir):
-                return {"status": "reused", "url": url, "data_dir": str(data_dir)}
+            current = health(port)
+            if matching_health(current, data_dir):
+                return running_result("reused", url, data_dir, current)
             try:
                 if time.time() - lock_path.stat().st_mtime > 120:
                     lock_path.unlink(missing_ok=True)
@@ -149,12 +168,13 @@ def ensure_running(data_dir: Path, port: int, timeout: float = 30) -> dict:
     process = None
     try:
         # A concurrent launcher may have finished while we acquired the lock.
-        if matching_health(health(port), data_dir):
-            return {"status": "reused", "url": url, "data_dir": str(data_dir)}
+        current = health(port)
+        if matching_health(current, data_dir):
+            return running_result("reused", url, data_dir, current)
         if listening(port):
             raise RuntimeError("端口在启动前被其他程序占用，请稍后重试或换一个端口。")
         log_path = logs_dir / "workbench.log"
-        environment = os.environ.copy()
+        environment = sanitize_environment(os.environ)
         environment["FAGAO_DATA_DIR"] = str(data_dir)
         environment["PYTHONUNBUFFERED"] = "1"
         options = {"cwd": str(ROOT), "env": environment, "stdin": subprocess.DEVNULL}
@@ -171,10 +191,11 @@ def ensure_running(data_dir: Path, port: int, timeout: float = 30) -> dict:
             )
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            if matching_health(health(port), data_dir):
+            current = health(port)
+            if matching_health(current, data_dir):
                 (data_dir / "server.pid").write_text(str(process.pid), encoding="ascii")
                 return {
-                    "status": "started", "url": url, "data_dir": str(data_dir),
+                    **running_result("started", url, data_dir, current),
                     "pid": process.pid, "log_path": str(log_path),
                 }
             if process.poll() is not None:
@@ -211,6 +232,7 @@ def main() -> int:
             print(json.dumps({"status": "checked", "readiness": readiness}, ensure_ascii=False))
             return 0
         result = ensure_running(args.data_dir.expanduser().resolve(), args.port)
+        readiness["network"] = result["network"]
         result["readiness"] = readiness
         result["browser_opened"] = False if args.no_browser else bool(webbrowser.open(result["url"], new=2))
         print(json.dumps(result, ensure_ascii=False))

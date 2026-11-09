@@ -8,7 +8,8 @@ from __future__ import annotations
 from html.parser import HTMLParser
 import re
 from urllib.parse import urlencode, urljoin
-from urllib.request import BaseHandler, build_opener
+from urllib.request import BaseHandler
+from .network import build_opener
 
 from .collectors import (CollectorError, _cover_url, _fetch, _notify,
                          _notify_snapshot, _page_options)

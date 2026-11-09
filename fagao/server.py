@@ -14,6 +14,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit, quote
 from . import __version__
+from . import network
 from .store import AppError, Store, now, PLATFORMS
 
 WEB = Path(__file__).resolve().parent.parent / 'web'
@@ -540,7 +541,26 @@ class WorkbenchServer(ThreadingHTTPServer):
     def __init__(self,address,store):
         super().__init__(address,Handler)
         self.store=store; self.jobs=JobManager(store)
+        self.network_probe={'status':'not_checked'}
         self.store.recover_jobs()
+
+    def start_network_probe(self, timeout=10):
+        self.network_probe={'status':'checking'}
+        lock=threading.Lock()
+        def finish(result):
+            with lock:
+                if self.network_probe['status']=='checking': self.network_probe=result
+        timer=threading.Timer(timeout,lambda:finish({'status':'failed','code':'probe_timeout','message':'启动网络探测超时；工作台已打开，实际连通以当前采集结果为准。'}))
+        timer.daemon=True
+        def check():
+            from .collectors import probe_network
+            try: result=probe_network()
+            except Exception:
+                result={'status':'failed','code':'diagnostic_error','message':'网络自检未完成，请查看当前采集结果。'}
+            finish(result)
+            timer.cancel()
+        timer.start()
+        threading.Thread(target=check,name='fagao-network-check',daemon=True).start()
 
 class Handler(BaseHTTPRequestHandler):
     server_version='FagaoWorkbench/0.1'
@@ -599,7 +619,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def _get(self,path):
         store=self.server.store
-        if path=='/api/health': return {'app':'fagao-scan-workbench','version':__version__,'data_dir':str(store.directory),'source_root':str(Path(__file__).resolve().parent.parent)}
+        if path=='/api/health': return {'app':'fagao-scan-workbench','version':__version__,'data_dir':str(store.directory),'source_root':str(Path(__file__).resolve().parent.parent),'network':{**network.status(),'probe':self.server.network_probe}}
+        if path=='/api/network': return {**network.status(),'probe':self.server.network_probe}
         if path=='/api/state': return store.state()
         if path=='/api/overview': return self.server.jobs.overview()
         if path=='/api/context': return store.context()
@@ -672,7 +693,10 @@ def main():
     parser=argparse.ArgumentParser(description='发糕扫榜本地服务')
     parser.add_argument('--port',type=int,default=18376); parser.add_argument('--data-dir')
     args=parser.parse_args()
-    server=WorkbenchServer(('127.0.0.1',args.port),Store(args.data_dir))
+    store=Store(args.data_dir)
+    network.configure(store.directory)
+    server=WorkbenchServer(('127.0.0.1',args.port),store)
+    server.start_network_probe()
     print(f'发糕扫榜已启动：http://127.0.0.1:{server.server_address[1]}',flush=True)
     try: server.serve_forever()
     except KeyboardInterrupt: pass

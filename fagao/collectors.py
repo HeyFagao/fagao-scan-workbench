@@ -27,6 +27,7 @@ import urllib.parse
 import urllib.request
 
 from .fanqie_codec import decode_text, has_unmapped_pua
+from . import network
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -42,7 +43,7 @@ class CollectorError(RuntimeError):
         self.state = state
 
 
-def _fetch(url, mobile=False, opener=None, referer=None):
+def _fetch(url, mobile=False, opener=None, referer=None, timeout=20, read_body=True):
     request = urllib.request.Request(url, headers={
         "User-Agent": MOBILE_AGENT if mobile else USER_AGENT,
         "Accept": "text/html,application/json;q=0.9,*/*;q=0.8",
@@ -51,8 +52,10 @@ def _fetch(url, mobile=False, opener=None, referer=None):
     if referer:
         request.add_header("Referer", referer)
     try:
-        open_url = opener.open if opener is not None else urllib.request.urlopen
-        with open_url(request, timeout=20) as response:
+        open_url = (opener or network.build_opener()).open
+        with open_url(request, timeout=timeout) as response:
+            if not read_body:
+                return ""
             data = response.read(8 * 1024 * 1024 + 1)
             if len(data) > 8 * 1024 * 1024:
                 raise CollectorError("平台响应过大，已停止读取。")
@@ -60,8 +63,23 @@ def _fetch(url, mobile=False, opener=None, referer=None):
     except urllib.error.HTTPError as e:
         state = "forbidden" if e.code in (401, 403) else "network_error"
         raise CollectorError(f"平台返回 HTTP {e.code}，请稍后重试。", state) from e
+    except network.NetworkError as e:
+        raise CollectorError(str(e), "network_error") from e
     except (urllib.error.URLError, TimeoutError, OSError, UnicodeError) as e:
         raise CollectorError("平台暂时无法连接，请检查网络后重试；上次结果仍保留。", "network_error") from e
+
+
+def probe_network():
+    """Check response headers through the real transport, without reading a book."""
+    result = {"target": FANQIE + "/rank/0_1_253", "checked_at": datetime.now(timezone.utc).isoformat()}
+    started = time.monotonic()
+    try:
+        _fetch(result["target"], timeout=5, read_body=False)
+        result.update(status="reachable", message="番茄榜单页面连接成功；其他来源以各自采集结果为准。")
+    except CollectorError as exc:
+        result.update(status="failed", code=exc.state, message=str(exc))
+    result["elapsed_ms"] = round((time.monotonic() - started) * 1000)
+    return result
 
 
 def _state(html):
@@ -534,7 +552,7 @@ def _qidian(options, progress):
     # Normal anonymous website session. Keep the CSRF cookie server-side and use
     # only the token issued by this exact page session; no signature generation.
     cookies = CookieJar()
-    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookies))
+    opener = network.build_opener(urllib.request.HTTPCookieProcessor(cookies))
     html = _fetch(source, mobile=True, opener=opener)
     data = _qidian_data(html)
     books, total = parse_qidian(html, board)

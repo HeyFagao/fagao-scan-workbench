@@ -4,6 +4,7 @@ import json
 import sys
 from pathlib import Path
 from .store import Store, AppError
+from . import network
 
 def emit(value): print(json.dumps(value,ensure_ascii=False,indent=2))
 
@@ -29,9 +30,12 @@ def main():
     p=sub.add_parser('catalog'); p.add_argument('--task',required=True)
     p=sub.add_parser('insights'); p.add_argument('--snapshot',required=True)
     p=sub.add_parser('config'); p.add_argument('--points-site',required=True)
+    p=sub.add_parser('network-config'); p.add_argument('--mode',choices=['system','direct','proxy'],required=True); p.add_argument('--proxy-url')
+    sub.add_parser('network-check')
     p=sub.add_parser('fetch-text'); p.add_argument('--task',required=True); p.add_argument('--start',type=int,default=1)
     group=p.add_mutually_exclusive_group(); group.add_argument('--chapters',type=int,default=3); group.add_argument('--all',action='store_true')
     args=parser.parse_args(); store=Store(args.data_dir)
+    network.configure(store.directory)
     try:
         if args.command=='context': result=store.context(args.session)
         elif args.command=='state': result=store.state()
@@ -51,6 +55,10 @@ def main():
             previous=store.task(args.id)
             result=store.prepare_task(previous,previous['request'],args.session or previous.get('session'))
         elif args.command=='config': result=store.update_config({'points_site':args.points_site})
+        elif args.command=='network-config': result=network.save_settings(store.directory,args.mode,args.proxy_url)
+        elif args.command=='network-check':
+            from .collectors import probe_network
+            result={'probe':probe_network(),'network':network.status()}
         elif args.command=='fetch-text':
             from .collectors import fetch_text
             t=store.task(args.task)

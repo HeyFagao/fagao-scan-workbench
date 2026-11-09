@@ -80,6 +80,8 @@ PYTHON_ABSOLUTE_PATH bootstrap.py --repo OWNER/REPO --commit FULL_SHA
 
 ## 6. 重复启动与更新
 
+v0.6.1 起，长驻服务与采集 CLI 自动隔离父进程的临时代理，默认使用系统手动代理/直连。不要为服务复制 WorkBuddy 终端的 `HTTP_PROXY` 等变量。固定代理由应用自己的 `network-config` 配置，诊断方式见 [网络维护](docs/network.md)。升级后核对真实服务版本为 `0.6.1` 及 `network.policy=isolated-system-proxy-v1`，不要用旧进程的健康响应判定修复完成。后台网络探测失败不阻止打开已有资料。
+
 “打开”优先运行固定入口，不每次下载新版本。“更新”才重新解析目标版本并执行安装器。同版本会复用服务；原快照、收藏、正文、报告、账号会话保持在原 `data_dir`。
 
 若返回 `restart_required`，表示新代码已备好但未切换。先核对现有服务身份、PID、源码路径和资料目录；只停止明确属于本工作台的旧进程，再执行同一安装命令。不能仅凭过期的 PID 文件结束进程。旧实例退出前不要宣称更新完成。
