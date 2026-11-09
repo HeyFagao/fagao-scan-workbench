@@ -14,6 +14,10 @@
 
 采集响应保留 `warnings`、`complete`、`requested_count`、`pagination` 与可得的 `available_count`。`pagination.pages_fetched` 为实际页数，`max_pages` 是上限，不能当作已获取页数；`stop_reason` 解释停止原因。番茄接口名义 `total_num=100` 之后仍返回第 101 名等真实数据，所以不据此提前截断。这里 `complete` 表示本次请求范围是否完整，不代表平台全榜。`data_date` 与本次采集时间分开：番茄可从真实 `rankVersion` 得到带时区的数据时间；没有真实日期的来源留空。
 
+## 海外网文
+
+v0.6.0 新增 GoodNovel 长篇/短篇、Dreame、MegaNovel、Webnovel、Royal Road、Scribble Hub。七个入口均用真实公开页面采集，来源、分类、榜型、名次与英文词数口径见 [海外接入说明](overseas.md)。
+
 ## 支持的选项
 
 - 番茄：`channel` 为 `男频` 或 `女频`；`board` 为 `新书榜` 或 `阅读榜`；`category` 由对应频道的真实导航校验。默认 `女频／古言脑洞／新书榜`。

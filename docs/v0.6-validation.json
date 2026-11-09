@@ -1,0 +1,57 @@
+{
+  "version": "0.6.0",
+  "verified_on": "2026-11-09",
+  "python_tests": 351,
+  "dom_checks": 109,
+  "dashboard_checks": 27,
+  "overseas_dom_passed": true,
+  "live_sources": [
+    {
+      "platform": "goodnovel",
+      "count": 20,
+      "covers": 20,
+      "english_synopses": 20
+    },
+    {
+      "platform": "goodnovel_short",
+      "count": 40,
+      "covers": 40,
+      "english_synopses": 40
+    },
+    {
+      "platform": "meganovel",
+      "count": 15,
+      "covers": 15,
+      "english_synopses": 15
+    },
+    {
+      "platform": "dreame",
+      "count": 20,
+      "covers": 20,
+      "english_synopses": 20
+    },
+    {
+      "platform": "webnovel",
+      "count": 40,
+      "covers": 40,
+      "english_synopses": 40
+    },
+    {
+      "platform": "royalroad",
+      "count": 50,
+      "covers": 50,
+      "english_synopses": 50
+    },
+    {
+      "platform": "scribblehub",
+      "count": 50,
+      "covers": 50,
+      "english_synopses": 50
+    }
+  ],
+  "webnovel_female_count": 20,
+  "translation": "deterministic_pinned_context_only",
+  "visual_qa": "actual_app_with_fresh_public_import_snapshot",
+  "workbuddy_client_verified": false,
+  "local_install_reuse_and_data_preservation": true
+}
