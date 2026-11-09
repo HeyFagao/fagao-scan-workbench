@@ -41,14 +41,15 @@ PYTHON_ABSOLUTE_PATH bootstrap.py --repo OWNER/REPO --commit FULL_SHA
 
 - 限制下载与解压大小，校验归档目录；拒绝路径穿越、链接和特殊文件。
 - 将固定版本放进 `app/releases/版本号`，保留已有资料；不执行包安装钩子。
+- 先检查 Python 标准库、SQLite 读写、HTTPS 环境、页面文件与番茄字表；任何必需项失败都不打开浏览器，并返回维护助手可处理的原因。
 - 运行项目启动器，核对健康响应中的应用身份、资料目录、源码版本目录。
 - 通过健康检查后写入 `current.json`、固定启动入口和供 WorkBuddy 使用的固定项目目录。
 
-读取安装器的 JSON 返回值。只有 `status=ready` 才表示该版本服务已就绪。记录 `url`、`data_dir`、`release_dir`、`project_dir`、`interpreter`、`shortcut`。
+读取安装器的 JSON 返回值。只有 `status=ready` 且 `readiness.status=ready` 才表示该版本的本地环境和服务已就绪。`readiness.features` 分别标明三家榜单与番茄正文的 `local_ready`，以及黑岩的 `external_link`。`network_verified=false` 表示这里没有替用户登录或验证外站网络，不把依赖自检当成全部平台可用。记录 `url`、`data_dir`、`release_dir`、`project_dir`、`interpreter`、`shortcut`。
 
 `browser_opened=true` 只表示系统接受了打开请求；若助手拥有浏览器能力，还要检查窗口是否实际出现、页面是否是工作台。`browser_opened=false` 时，用宿主的打开网页能力访问返回的本机 URL。不要把远程服务器上的 localhost 地址当成用户电脑的工作台。
 
-用户应直接看到长篇/短篇工作台；首次没有真实数据时显示明确的空状态。不要自动加载虚构榜单，不要强迫用户每次选择“本次任务类型”。初次完成后给用户固定启动入口；后续只说“打开发糕工作台”即可复用该入口。
+用户应直接看到三家平台的汇总首页，也能进入长篇/短篇列表。番茄汇总只含男女频新书榜，阅读榜保留单独浏览；首次没有真实数据时显示真实读取状态。不要自动加载虚构榜单，不要强迫用户每次选择“本次任务类型”。初次完成后给用户固定启动入口；后续只说“打开发糕工作台”即可复用该入口。
 
 ## 4. 保留后续对话入口
 
@@ -58,15 +59,24 @@ PYTHON_ABSOLUTE_PATH bootstrap.py --repo OWNER/REPO --commit FULL_SHA
 
 在当前对话及后续该项目的对话中，执行 `docs/workbuddy.md`：解析当前选中/显示序号/原榜名次 → 固定作品任务 → 读取可用正文 → 由当前对话模型分析 → 保存报告。网页不需要直接调用 WorkBuddy 的模型 API。
 
-## 5. 黑岩浏览器依赖
+## 5. 安装时完成依赖检查，不让用户点到功能后报缺项
 
-主界面和三家长篇的已接入书目路径只需 Python 标准库。先把工作台打开，再准备黑岩所需浏览器环境，避免额外下载阻塞整个首屏。
+当前日常功能包括三家长篇榜单、番茄公开正文和黑岩腾讯文档入口。它们不需要 Node 或 Playwright：前三者使用 Python 标准库，黑岩直接打开用户平时使用的浏览器。
 
-检查 Node 满足 `package.json` 的版本要求，缺少时使用 Node.js 官方发行及校验信息准备用户目录运行时，不改变系统 Node。在当前 `release_dir` 执行 `npm ci --omit=dev --ignore-scripts`，再执行 `npm run browser:install`。这会使用锁文件版本，不安装测试依赖。
+在启动失败时读取具体原因，由 WorkBuddy 完成修复并重试：
 
-Node 必须能被工作台的服务进程找到；不能只在助手的某条命令中临时可用。若为私有 Node，在核心安装完成后，将其绝对路径写入 `app/runtime.json` 的 `node_executable` 字段，例如 `{"node_executable":"实际的 node 可执行文件绝对路径"}`。安装器与固定入口会仅为工作台子进程补充该目录的 PATH，不改全局环境，不覆盖这个本机配置。核对并重启已有工作台服务后，再检查 worker 是否可启动；不要复用其他工具的临时运行时路径，也不要修改生成的固定入口。
+- Python 缺少 `sqlite3` 或 `ssl` 等组件，按第 2 节准备完整的用户目录 Python，不尝试用 pip 安装同名替代包。
+- 页面、番茄字表缺失或损坏，重新取得同一固定 SHA 的完整版本。保留资料目录；不能把缺少文件的安装标为完成。
+- 需要单独诊断时执行 `PYTHON_ABSOLUTE_PATH scripts/launch.py --check`。此命令只进行本地自检，不启动服务、不联网、不打开浏览器。
+- 打开浏览器失败时使用宿主浏览器打开安装器返回的 URL，再核对实际页面；不要把用户留在终端。
 
-依赖完成后，让用户点击短篇黑岩卡片的登录入口，在平台窗口本人登录。仅取得真实书库响应后才显示可用；不能预设共享账号或把普通读者账号当成有书库访问权。依赖或账号步骤失败时保留可用的工作台，其余平台继续使用。
+黑岩故事会使用这个固定书单：
+
+<https://docs.qq.com/sheet/DYVNwaVJZV2ZxTWl3?tab=q1ans7>
+
+点击“打开黑岩书单”后，由用户在腾讯文档页面登录或申请访问。工作台不显示未经核验的“已登录”，也不扫描普通浏览器 Cookie。不要改成 `manage.zhangwenpindu.cn` 后台；它是另一个来源。腾讯文档的登录与访问资格不能由安装器代为完成。
+
+旧版留下的 Node 路径和专用浏览器资料仍保留；失效的可选 Node 路径不阻断当前功能。仅当用户明确要求维护旧掌文后台适配时，才另行准备 Node 20+、在该 `release_dir` 执行 `npm ci --omit=dev --ignore-scripts` 和 `npm run browser:install`，实测 worker 能启动及账号有权限后再宣称该旧功能可用。私有 Node 的绝对路径保存在 `app/runtime.json` 的 `node_executable`；需要强制检查此旧功能时同时写 `enable_legacy_heiyan_backend: true`。这些是本机配置，不提交到 GitHub，不是普通书单用户的安装步骤。
 
 ## 6. 重复启动与更新
 
