@@ -121,6 +121,8 @@ python3 -m fagao save-report --task TASK_ID --file /absolute/path/report.md
 
 ## 维护
 
+v0.6.1 的代理隔离、持久网络配置与服务诊断见 [网络维护](network.md)。遇到平台断连，读取正在运行服务的 `/api/network` 和本机脱敏日志，区分连接失败、HTTP 拒绝和本地运行就绪。不要把 CLI 单独成功当作服务已经恢复；不要在有哈希校验的 release 内直接打补丁。
+
 日常只需启动器。故障时先看实际报错和资料目录中的日志，保留已有结果。调试导出前清除凭据；不要把正文、会话或个人数据库提交 Git。更新代码后运行测试，并在 `docs/acceptance.md` 写明实测范围。
 
 ## 批量扫榜与本机检索
