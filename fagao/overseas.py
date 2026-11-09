@@ -45,6 +45,12 @@ _webnovel['channels'] = ['男频','女频']
 _webnovel['default_options'].update(channel='男频',period='周榜')
 for _identifier, _period in (('royalroad','当前'),('scribblehub','周榜')):
     next(item for item in OVERSEAS_PLATFORMS if item['id']==_identifier)['default_options']['period'] = _period
+for _item in OVERSEAS_PLATFORMS:
+    if _item['id'] == 'royalroad':
+        _item.update(source_url='https://www.royalroad.com/fictions/rising-stars',
+                     alternate_source_url='https://rst.doomlabs.net/')
+    elif _item['id'] == 'scribblehub':
+        _item['source_url'] = 'https://www.scribblehub.com/series-ranking/?order=2&sort=2'
 
 # A vocabulary, not an AI-generated synopsis. Unknown tags are not relabelled.
 TAG_ZH = {

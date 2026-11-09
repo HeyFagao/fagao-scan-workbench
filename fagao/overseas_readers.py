@@ -246,6 +246,7 @@ def collect_readers(platform, options, data_dir=None, progress=None):
     max_pages, limit = _page_options(options, page_size)
     books, warnings = [], []
     pages, stop, more = 0, "source_end", False
+    source_failure = None
     source_scope = {"webnovel": f"{channel} · 30 天内发布的签约原创 · 本周能量石",
                     "royalroad": "官网新星榜当前列表 · 按来源列表顺序展示",
                     "scribblehub": "官网周收藏榜 · 单项指标沿用来源显示精度"}[platform]
@@ -262,7 +263,9 @@ def collect_readers(platform, options, data_dir=None, progress=None):
                 "source_id": "direct", "provenance": {"source_id": "direct", "source_url": base,
                     "source_name": {"webnovel": "Webnovel 官网", "royalroad": "Royal Road 官网", "scribblehub": "Scribble Hub 官网"}[platform],
                     "scope": source_scope, "metric_precision": "source_display_rounded",
-                    "rank_semantics": "source_list_position" if platform == "royalroad" else "original_rank"}}
+                    "rank_semantics": "source_list_position" if platform == "royalroad" else "original_rank"},
+                **({"source_state": source_failure.state, "source_message": str(source_failure)}
+                   if source_failure else {})}
 
     seen, ranks = {}, {}
     for page in range(1, max_pages + 1):
@@ -271,9 +274,23 @@ def collect_readers(platform, options, data_dir=None, progress=None):
         try:
             raw, more = parse(_fetch(url, opener=_ENGLISH_OPENER))
         except CollectorError as error:
+            denied = None
+            if platform == 'scribblehub' and error.state == 'forbidden':
+                denied = CollectorError(
+                    'Scribble Hub 拒绝了工作台的读取请求（HTTP 403/401）。'
+                    '可打开官网榜单，或导入浏览器保存的榜单 HTML；已有记录仍保留。',
+                    'source_access_denied')
             if not books:
+                if platform == 'royalroad' and error.state in ('forbidden', 'network_error'):
+                    from .royalroad_fallback import collect_royalroad_fallback
+                    return collect_royalroad_fallback(options, progress=progress, reason=error)
+                if denied:
+                    raise denied from error
                 raise
-            warnings.append(str(error))
+            # Publish the retained page while preserving the access refusal so
+            # the job does not become a fresh success that restarts automatically.
+            source_failure = denied
+            warnings.append(str(denied or error))
             stop = "page_error"
             break
         pages += 1
