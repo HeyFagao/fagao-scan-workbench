@@ -293,6 +293,99 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(result['pagination']['stop_reason'],'max_pages')
         self.assertFalse(result['complete'])
 
+    def test_fanqie_first_page_is_published_before_network_or_detail_wait(self):
+        rows = [{'bookId': '123456', 'currentPos': 14, 'bookName': '\ue521的书',
+                 'author': '甲', 'abstract': '简介', 'read_count': 700,
+                 'thumbUri': 'https://example.com/real-cover.jpg'},
+                {'bookId': '123457', 'currentPos': 15, 'bookName': '第二本',
+                 'author': '乙', 'abstract': '简介'}]
+        rank = '<a href="/rank/0_1_253">古言脑洞</a><script>__INITIAL_STATE__=' + json.dumps(
+            {'rank': {'book_list': rows[:1], 'rankVersion': '1234567890'}}) + '</script>'
+        second = json.dumps({'code': 0, 'data': {'book_list': rows[1:], 'rankVersion': '1234567890'}})
+        events = []
+        def progress(message, **kwargs):
+            if 'snapshot' in kwargs:
+                events.append((fetch.call_count, kwargs['snapshot'], kwargs['has_more']))
+        with patch('fagao.collectors._fetch', side_effect=[rank, second, CollectorError('暂时断线')]) as fetch, patch('fagao.collectors.time.sleep'):
+            result = _fanqie({}, progress)
+        self.assertEqual([event[0] for event in events], [1, 2])
+        self.assertEqual([len(event[1]['books']) for event in events], [1, 2])
+        self.assertEqual(events[0][1]['books'][0]['rank'], 14)
+        self.assertEqual(events[0][1]['books'][0]['title'], '我的书')
+        self.assertEqual(events[0][1]['books'][0]['cover_url'], 'https://example.com/real-cover.jpg')
+        self.assertEqual(events[0][1]['rank_version'], '1234567890')
+        self.assertEqual(events[0][1]['data_date'], result['data_date'])
+        self.assertFalse(events[0][1]['complete'])
+        self.assertEqual(events[0][1]['pagination']['stop_reason'], 'loading')
+        self.assertTrue(events[0][2])
+        self.assertEqual(result['pagination']['stop_reason'], 'request_failed')
+
+    def test_fanqie_preview_does_not_emit_unreadable_or_reassigned_identity(self):
+        row = {'bookId': '123456', 'currentPos': 14, 'bookName': '实际书名', 'author': '甲', 'abstract': '简介'}
+        rank = '<a href="/rank/0_1_253">古言脑洞</a><script>__INITIAL_STATE__=' + json.dumps(
+            {'rank': {'book_list': [row], 'rankVersion': 'old'}}) + '</script>'
+        changed = json.dumps({'code': 0, 'data': {'book_list': [{'bookId': '999999', 'currentPos': 15,
+            'bookName': '其他时点的作品'}], 'rankVersion': 'new'}})
+        events = []
+        def progress(message, **kwargs):
+            if 'snapshot' in kwargs: events.append(kwargs['snapshot'])
+        with patch('fagao.collectors._fetch', side_effect=[rank, changed]), patch('fagao.collectors.time.sleep'):
+            result = _fanqie({}, progress)
+        self.assertEqual(len(events), 1)
+        self.assertEqual([book['id'] for book in events[0]['books']], ['123456'])
+        self.assertEqual(result['pagination']['stop_reason'], 'version_changed')
+
+    def test_partial_callback_cancellation_stops_before_second_source_request(self):
+        row = {'bookId': '123456', 'currentPos': 1, 'bookName': '真实书名', 'author': '甲', 'abstract': '简介'}
+        rank = '<a href="/rank/0_1_253">古言脑洞</a><script>__INITIAL_STATE__=' + json.dumps(
+            {'rank': {'book_list': [row]}}) + '</script>'
+        def progress(message, **kwargs):
+            if 'snapshot' in kwargs: raise CollectorError('用户取消')
+        with patch('fagao.collectors._fetch', return_value=rank) as fetch:
+            with self.assertRaisesRegex(CollectorError, '用户取消'):
+                _fanqie({}, progress)
+        self.assertEqual(fetch.call_count, 1)
+
+    def test_qidian_first_page_precedes_pagination_and_uses_issued_session(self):
+        from types import SimpleNamespace
+        first = {'gender': 'male', 'total': 2, 'isLast': 0, 'records': [
+            {'bid': '999991', 'rankNum': 1, 'bName': '首批书目'}]}
+        second = {'gender': 'male', 'pageNum': 2, 'isLast': 1, 'records': [
+            {'bid': '999992', 'rankNum': 2, 'bName': '后续书目'}]}
+        html = '<script id="vite-plugin-ssr_pageContext">' + json.dumps(
+            {'pageContext': {'pageProps': {'pageData': first}}}) + '</script>'
+        events = []
+        def progress(message, **kwargs):
+            if 'snapshot' in kwargs: events.append((fetch.call_count, kwargs))
+        cookie = SimpleNamespace(name='_csrfToken', value='issued-only-test', domain='m.qidian.com')
+        with patch('fagao.collectors.CookieJar', return_value=[cookie]), patch('fagao.collectors._fetch',
+                side_effect=[html, json.dumps({'code': 0, 'data': second})]) as fetch, patch('fagao.collectors.time.sleep'):
+            result = _qidian({}, progress)
+        self.assertEqual([event[0] for event in events], [1, 2])
+        self.assertTrue(events[0][1]['has_more'])
+        self.assertFalse(events[1][1]['has_more'])
+        self.assertEqual(events[0][1]['snapshot']['books'][0]['rank'], 1)
+        self.assertNotIn('issued-only-test', json.dumps(events))
+        self.assertEqual(len(result['books']), 2)
+
+    def test_ciweimao_first_page_is_visible_before_following_verified_link(self):
+        def html(rank, next_page=None):
+            bid = str(123450 + rank)
+            return ('<title>小说月票榜 - 刺猬猫</title><ol class="rank-book-list"><li data-book-id="' + bid +
+                    '"><i>' + str(rank) + '</i><h3 class="tit"><a href="https://www.ciweimao.com/book/' + bid +
+                    '">真实作品</a></h3></li></ol>' + ('<a rel="next" href="https://www.ciweimao.com/rank-index/yp-month/' +
+                    str(next_page) + '">下一页</a>' if next_page else ''))
+        events = []
+        def progress(message, **kwargs):
+            if 'snapshot' in kwargs: events.append((fetch.call_count, kwargs))
+        with patch('fagao.collectors._fetch', side_effect=[html(1, 2), html(2)]) as fetch, patch('fagao.collectors.time.sleep'):
+            result = _ciweimao({}, progress)
+        self.assertEqual([event[0] for event in events], [1, 2])
+        self.assertEqual([event[1]['has_more'] for event in events], [True, False])
+        self.assertEqual(len(events[0][1]['snapshot']['books']), 1)
+        self.assertEqual(events[0][1]['snapshot']['period'], '月榜')
+        self.assertEqual(result['pagination']['stop_reason'], 'last_page')
+
 
 if __name__ == '__main__':
     unittest.main()

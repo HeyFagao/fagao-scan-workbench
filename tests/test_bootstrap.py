@@ -75,7 +75,7 @@ class InstallationTests(unittest.TestCase):
     def mock_run(self,command,**kwargs):
         self.calls.append(command)
         self.service={'app':bootstrap.APP,'data_dir':str(self.data),'source_root':str(Path(command[1]).parent.parent)}
-        class Result: returncode=0;stdout=json.dumps({'status':'started','browser_opened':False,'pid':12345});stderr=''
+        class Result: returncode=0;stdout=json.dumps({'status':'started','browser_opened':False,'pid':12345,'readiness':{'status':'ready'}});stderr=''
         return Result()
     def install(self,**kwargs):
         return bootstrap.install(source_dir=self.source,install_root=self.root,data_dir=self.data,no_browser=True,**kwargs)
@@ -86,6 +86,7 @@ class InstallationTests(unittest.TestCase):
         self.assertEqual(self.sentinel.read_bytes(),b'user data must survive')
         self.assertEqual(json.loads((self.root/'current.json').read_text())['release_id'],first['release_id'])
         self.assertTrue(Path(first['shortcut']).is_file())
+        self.assertEqual(first['readiness']['status'],'ready')
     def test_upgrade_stages_but_does_not_switch_running_old_service(self):
         first=self.install();before=(self.root/'current.json').read_bytes()
         (self.source/'web/index.html').write_text('new version')
@@ -192,13 +193,38 @@ class InstallationTests(unittest.TestCase):
         self.assertEqual(exit_result.exception.code,0)
         self.assertEqual(calls[0][1]['env']['PATH'].split(os.pathsep)[0],str(node.parent))
         self.assertEqual(calls[0][0][0],sys.executable)
-    def test_invalid_node_configuration_stops_before_launch(self):
+    def test_obsolete_optional_node_does_not_block_current_features(self):
         self.install(); self.service=None
         for node in ['relative/node',str(self.base/'missing'/'node'),['node']]:
             with self.subTest(node=node):
                 (self.root/'runtime.json').write_text(json.dumps({'node_executable':node}))
+                self.assertEqual(self.install()['status'],'ready')
+        self.assertEqual(len(self.calls),4)
+    def test_explicit_legacy_backend_invalid_node_stops_before_launch(self):
+        self.install(); self.service=None
+        for node in ['relative/node',str(self.base/'missing'/'node'),['node']]:
+            with self.subTest(node=node):
+                (self.root/'runtime.json').write_text(json.dumps({'node_executable':node,'enable_legacy_heiyan_backend':True}))
                 with self.assertRaises(bootstrap.InstallError): self.install()
         self.assertEqual(len(self.calls),1)
+    def test_missing_readiness_does_not_switch_current(self):
+        def unchecked_run(command,**kwargs):
+            result=self.mock_run(command,**kwargs)
+            result.stdout=json.dumps({'status':'started','browser_opened':False})
+            return result
+        with patch.object(bootstrap.subprocess,'run',side_effect=unchecked_run):
+            with self.assertRaises(bootstrap.InstallError): self.install()
+        self.assertFalse((self.root/'current.json').exists())
+    def test_fixed_entry_ignores_missing_optional_node(self):
+        self.install()
+        runtime=self.root/'runtime.json'
+        runtime.write_text(json.dumps({'node_executable':str(self.base/'gone'/'node')}))
+        calls=[]
+        with patch('urllib.request.build_opener',side_effect=OSError('no live service')), patch('subprocess.call',side_effect=lambda command,**kwargs: calls.append(command) or 0):
+            with self.assertRaises(SystemExit) as result:
+                exec(compile(bootstrap.OPEN_SCRIPT,str(self.root/'open-workbench.py'),'exec'),{'__file__':str(self.root/'open-workbench.py')})
+        self.assertEqual(result.exception.code,0)
+        self.assertEqual(len(calls),1)
     def test_fixed_launcher_reads_current_not_initial_release(self):
         first=self.install();entry=(self.root/'open-workbench.py').read_text()
         self.assertIn('current.json',entry);self.assertNotIn(first['release_id'],entry)
