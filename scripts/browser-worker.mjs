@@ -112,41 +112,73 @@ async function check() {
 async function collect(options) {
   const auth = await check();
   if (auth.state !== 'connected') return {state: auth.state, message: auth.message};
-  const limit = Math.max(1, Math.min(200, Number(options.limit) || 30));
+  const maxPages = Math.max(1, Math.min(100, Math.trunc(Number(options.max_pages) || 100)));
+  const limit = Math.max(1, Math.trunc(Number(options.limit) || maxPages * 20));
   const channel = ({male: '男频', female: '女频', all: '全部'})[options.channel] || options.channel || '全部';
   if (!['全部', '男频', '女频'].includes(channel)) throw new Error('黑岩频道请选择全部、男频或女频。');
-  const books = [], seen = new Set(), warnings = [];
-  let complete = true;
-  const deadline = Date.now() + 115000;
-  // At most 10 source pages. Filtering does not silently imply a whole-library census.
-  for (let p = 1; p <= 10 && books.length < limit; p++) {
+  const books = [], seen = new Set(), sourceSeen = new Set(), warnings = [];
+  let stopReason = 'max_pages', pagesFetched = 0, finalAuth = {state: 'connected', message: auth.message};
+  const sourceTotal = auth.firstPage.body?.data?.total ?? null;
+  const deadline = Date.now() + Math.max(60, Math.min(1800, Number(options.timeout_seconds) || 1200)) * 1000;
+  const metadataDir = path.join(root, 'cache', 'metadata', 'heiyan');
+  fs.mkdirSync(metadataDir, {recursive: true, mode: 0o700});
+  const progress = message => process.stdout.write(JSON.stringify({event: 'progress', message}) + '\n');
+  const safeCover = value => {
+    if (typeof value !== 'string') return '';
+    try { const url = new URL(value.startsWith('//') ? 'https:' + value : value); return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password ? url.href : ''; } catch { return ''; }
+  };
+  for (let p = 1; p <= maxPages && books.length < limit; p++) {
+    progress(`正在读取黑岩第 ${p} 页，已取得 ${books.length} 本…`);
     let result;
     try { result = p === 1 ? auth.firstPage : await requestList(auth.token, p); }
     catch {
       if (!books.length) return {state: 'network_error', message: '黑岩读取失败，请稍后重试。'};
-      warnings.push(`第 ${p} 页连接失败，已保留此前有效书目。`); complete = false; break;
+      finalAuth = {state: 'network_error', message: '黑岩后续分页连接失败，请稍后重试。'};
+      warnings.push(`第 ${p} 页连接失败，已保留此前有效书目。`); stopReason = 'request_failed'; break;
     }
     const status = resultState(result);
     if (status.state !== 'connected') {
       if (!books.length) return status;
-      warnings.push(status.message); complete = false; break;
+      finalAuth = status;
+      warnings.push(status.message); stopReason = 'session_failed'; break;
     }
     const rows = result.body.data.rows;
-    if (!rows.length) break;
+    pagesFetched++;
+    if (!rows.length) { stopReason = 'empty_page'; break; }
+    const sourceIds = rows.map(row => String(row.id ?? '')).filter(Boolean);
+    if (sourceIds.length && sourceIds.every(id => sourceSeen.has(id))) {
+      stopReason = 'repeated_page'; warnings.push('书库分页重复返回已取得的书目，已停止。'); break;
+    }
+    sourceIds.forEach(id => sourceSeen.add(id));
     for (const row of rows) {
-      if (Date.now() > deadline) { warnings.push('本次读取已达到时间上限，保留已取得的书目。'); complete = false; break; }
+      if (Date.now() > deadline) { warnings.push('本次读取已达到时间上限，保留已取得的书目。'); stopReason = 'time_budget'; break; }
       if (channel !== '全部' && row.classifyStr !== channel) continue;
       const id = row.id == null ? '' : String(row.id);
       if (!/^[a-zA-Z0-9_-]{1,100}$/.test(id) || !row.name || seen.has(id)) continue;
       seen.add(id);
       let detail = {};
+      let cached = false;
+      const cacheFile = path.join(metadataDir, id + '.json');
       try {
+        const value = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
+        if (value.id === id && String(value.source_update || '') === String(row.updateTime || '') && Date.now() - value.cached_at >= 0 && Date.now() - value.cached_at < 86400000) {
+          detail = value.detail || {}; cached = true;
+        }
+      } catch {}
+      try {
+        if (!cached) {
         const response = await context.request.get(apiUrl + '/manage/book/' + encodeURIComponent(id), {
           headers: {Authorization: 'Bearer ' + auth.token}, timeout: 15000,
         });
         if (response.ok()) {
           const data = await response.json();
-          if (data.data && (data.data.id == null || String(data.data.id) === id)) detail = data.data;
+          if (data.data && (data.data.id == null || String(data.data.id) === id)) {
+            detail = {tags: data.data.tags, description: data.data.description, cover: data.data.cover, coverUrl: data.data.coverUrl, coverImg: data.data.coverImg};
+            const temporary = cacheFile + '.' + process.pid + '.tmp';
+            fs.writeFileSync(temporary, JSON.stringify({id, cached_at: Date.now(), source_update: String(row.updateTime || ''), detail}), {mode: 0o600});
+            fs.renameSync(temporary, cacheFile);
+          }
+        }
         }
       } catch {}
       const tags = Array.isArray(detail.tags) ? detail.tags.filter(t => typeof t === 'string') : [];
@@ -154,18 +186,22 @@ async function collect(options) {
       if (/^\d+$/.test(String(row.words))) metrics.push({name: '字数', value: Number(row.words), unit: '字'});
       books.push({id, title: String(row.name), author: String(row.userName || ''),
         summary: String(detail.description || row.description || ''), rank: null,
-        url: pageUrl, tags: [...new Set([row.classifyStr, row.typeDesc, ...tags].filter(Boolean))], metrics});
+        url: pageUrl, cover_url: safeCover(row.coverUrl || row.cover || row.coverImg || detail.coverUrl || detail.cover || detail.coverImg),
+        tags: [...new Set([row.classifyStr, row.typeDesc, ...tags].filter(Boolean))], metrics});
+      if (books.length % 10 === 0) progress(`正在整理黑岩书目，已取得 ${books.length} 本…`);
       if (books.length >= limit) break;
     }
     if (Date.now() > deadline) break;
-    if (p === 10 && books.length < limit) {
-      warnings.push('本次最多读取 10 页，筛选后的数量不足目标数。'); complete = false;
-    }
-    if (p < 10 && books.length < limit) await new Promise(resolve => setTimeout(resolve, 400));
+    if (p < maxPages && books.length < limit) await new Promise(resolve => setTimeout(resolve, 400));
   }
   if (!books.length) return {state: 'unavailable', message: '已连接书库，但没有取得符合条件的有效书目。'};
   warnings.push('书库列表不包含阅读热度，列表位置不是爆款名次。');
-  return {state: 'connected', channel, books, complete, warnings};
+  if (books.length >= limit && options.limit) stopReason = 'requested_limit';
+  const complete = ['empty_page', 'requested_limit'].includes(stopReason);
+  if (stopReason === 'max_pages') warnings.push(`已达到本次 ${maxPages} 页的读取上限。`);
+  return {state: 'connected', auth_state: finalAuth.state, auth_message: finalAuth.message,
+    channel, books, complete, warnings, requested_count: limit, source_total: sourceTotal,
+    pagination: {pages_fetched: pagesFetched, max_pages: maxPages, stop_reason: stopReason, source_total: sourceTotal, page_size: 20}};
 }
 
 const input = readline.createInterface({input: process.stdin});

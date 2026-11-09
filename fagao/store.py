@@ -1,6 +1,7 @@
 """Transactional local records. Snapshots and analysis targets are immutable."""
 from __future__ import annotations
 import hashlib
+import ipaddress
 import json
 import os
 import re
@@ -14,7 +15,7 @@ from urllib.parse import urlparse
 PLATFORMS = [
     {'id':'fanqie','name':'番茄小说','mode':'long','status':'available','message':'公开榜单；以实际采集结果为准'},
     {'id':'qidian','name':'起点中文网','mode':'long','status':'available','message':'公开移动榜单；以实际采集结果为准'},
-    {'id':'ciweimao','name':'刺猬猫','mode':'long','status':'available','message':'月票月榜前 10 名；其他榜型待验证'},
+    {'id':'ciweimao','name':'刺猬猫','mode':'long','status':'available','message':'公开榜单分页采集；实际覆盖以采集结果为准'},
     {'id':'heiyan','name':'黑岩故事会','mode':'short','status':'login_required','message':'登录管理后台并验证书库权限'},
     {'id':'fanqie_short','name':'番茄短故事','mode':'short','status':'unavailable','message':'热门故事入口待实机验证；可导入来源明确的书目'},
 ]
@@ -40,6 +41,46 @@ def dumps(value):
 def safe_url(value):
     value = str(value or '').strip()
     return value if urlparse(value).scheme in ('http','https') and urlparse(value).hostname else ''
+
+def safe_cover_url(value):
+    """Accept public HTTP(S) image locations without fetching or proxying them."""
+    if not isinstance(value,str) or len(value)>4096: return ''
+    value=value.strip()
+    if not value or re.search(r'[\s\\\x00-\x1f\x7f]',value): return ''
+    try:
+        parsed=urlparse(value)
+        host=(parsed.hostname or '').rstrip('.').lower()
+        if parsed.scheme not in ('http','https') or not host or parsed.username is not None or parsed.password is not None: return ''
+        if parsed.port is not None and not 1<=parsed.port<=65535: return ''
+        if '%' in host or host=='localhost' or host.endswith(('.localhost','.local','.localdomain','.internal','.lan','.home')): return ''
+        try:
+            address=ipaddress.ip_address(host)
+        except ValueError:
+            # Single-label, numeric, hexadecimal and octal-style local host aliases
+            # are not public CDN names. Do not resolve DNS from this process.
+            if '.' not in host or re.fullmatch(r'[0-9.]+',host) or re.fullmatch(r'(?:[0-9]+|0x[0-9a-f]+)',host.rsplit('.',1)[-1]): return ''
+            ascii_host=host.encode('idna').decode('ascii')
+            if any(not part or len(part)>63 or not re.fullmatch(r'[a-z0-9](?:[a-z0-9-]*[a-z0-9])?',part) for part in ascii_host.split('.')): return ''
+        else:
+            if not address.is_global: return ''
+    except (ValueError,UnicodeError): return ''
+    return value
+
+
+def clean_pagination(value):
+    if value is None: return None
+    if not isinstance(value,dict): raise AppError('invalid_pagination','分页采集信息必须是对象。')
+    result={}
+    for key in ('pages_fetched','max_pages','source_total'):
+        item=value.get(key)
+        if item is None:
+            if key=='source_total': result[key]=None
+            continue
+        if isinstance(item,bool) or not isinstance(item,int) or item<0:
+            raise AppError('invalid_pagination','分页数量必须是非负整数。')
+        result[key]=item
+    if 'stop_reason' in value: result['stop_reason']=str(value.get('stop_reason') or '')[:300]
+    return result
 
 def text(value, maximum=20000):
     return str(value or '')[:maximum]
@@ -103,6 +144,10 @@ class Store:
         if b is None: raise AppError('book_missing','这本作品不在指定榜单记录中。',404)
         return s,b
 
+    def book(self,sid,bid):
+        """Resolve an explicitly pinned source book without changing selection."""
+        with self.connect() as c: return self._book(c,sid,bid)
+
     def save_snapshot(self, data, imported=False):
         if not isinstance(data,dict): raise AppError('invalid_snapshot','书目文件应为一个 JSON 对象。')
         platform=data.get('platform')
@@ -129,7 +174,7 @@ class Store:
             if not isinstance(tags,list): tags=[]
             metrics=b.get('metrics',[])
             if not isinstance(metrics,list): metrics=[]
-            valid.append({'id':bid,'title':text(b['title'],500),'author':text(b.get('author'),500),'summary':text(b.get('summary')),'rank':rank,'url':safe_url(b.get('url')),'tags':[text(t,100) for t in tags[:30]],'metrics':[{'name':text(m.get('name'),100),'value':text(m.get('value'),100),'unit':text(m.get('unit'),30)} for m in metrics[:10] if isinstance(m,dict)]})
+            valid.append({'id':bid,'title':text(b['title'],500),'author':text(b.get('author'),500),'status':text(b.get('status'),60) if isinstance(b.get('status'),str) else '','summary':text(b.get('summary')),'rank':rank,'url':safe_url(b.get('url')),'cover_url':safe_cover_url(b.get('cover_url')),'tags':[text(t,100) for t in tags[:30]],'metrics':[{'name':text(m.get('name'),100),'value':text(m.get('value'),100),'unit':text(m.get('unit'),30)} for m in metrics[:10] if isinstance(m,dict)]})
         warnings=data.get('warnings') or []
         if not isinstance(warnings,list): raise AppError('invalid_warnings','warnings 必须是字符串数组。')
         collected=data.get('collected_at')
@@ -140,10 +185,18 @@ class Store:
         snap={'id':uuid.uuid4().hex,'platform':platform,'mode':p['mode'],'channel':text(data.get('channel'),100),'category':text(data.get('category'),100),'board':text(data.get('board') or ('书库' if platform=='heiyan' else '未注明榜型'),100),'source_url':safe_url(data.get('source_url')),'data_date':text(data.get('data_date'),100) or None,'collected_at':data.get('collected_at') or timestamp,'created_at':timestamp,'imported':imported,'books':valid,'books_count':len(valid),'warnings':[text(x,1000) for x in warnings[:20]]}
         for key in ('requested_count','available_count','source_total'):
             if key in data and isinstance(data[key],int) and not isinstance(data[key],bool) and data[key]>=0: snap[key]=data[key]
+        pagination=clean_pagination(data.get('pagination'))
+        if pagination is not None: snap['pagination']=pagination
         snap['complete']=data.get('complete') if isinstance(data.get('complete'),bool) else None
         snap['rank_version']=text(data.get('rank_version'),100) or None
         snap['period']=text(data.get('period'),100) or None
-        snap['categories']=[text(v,100) for v in (data.get('categories') or [])[:100]] if isinstance(data.get('categories',[]),list) else []
+        snap['categories']=[]
+        raw_categories=data.get('categories')
+        for value in raw_categories if isinstance(raw_categories,list) else []:
+            if not isinstance(value,str): continue
+            value=value.strip()[:80]
+            if value and value not in snap['categories']: snap['categories'].append(value)
+            if len(snap['categories'])>=100: break
         with self.connect() as c:
             c.execute('INSERT INTO snapshots VALUES (?,?,?)',(snap['id'],timestamp,dumps(snap)))
         return snap
@@ -219,7 +272,7 @@ class Store:
         for row in c.execute('SELECT * FROM history ORDER BY id DESC LIMIT 2000'):
             s=lookup.get(row['snapshot_id']); b=next((b for b in s['books'] if b['id']==row['book_id']),{}) if s else {}
             history.append({**dict(row),'title':b.get('title',''),'platform':s['platform'] if s else '', 'mode':s['mode'] if s else '', 'book':b})
-        return {'config':self._kv(c,'config',{}),'platforms':PLATFORMS,'snapshots':snapshots if full else [{k:v for k,v in s.items() if k!='books'} for s in snapshots],'views':views,'active_mode':self._kv(c,'active_mode','long'),'favorites':fav,'history':history,'reports':[json.loads(r[0]) for r in c.execute('SELECT body FROM reports ORDER BY created_at DESC')],'jobs':[json.loads(r[0]) for r in c.execute('SELECT body FROM jobs ORDER BY created_at DESC LIMIT 30')],'auth':self._kv(c,'auth',{}),'analysis_target':self._kv(c,'analysis_target')}
+        return {'config':self._kv(c,'config',{}),'platforms':PLATFORMS,'snapshots':snapshots if full else [{k:v for k,v in s.items() if k not in ('books','categories')} for s in snapshots],'views':views,'active_mode':self._kv(c,'active_mode','long'),'favorites':fav,'history':history,'reports':[json.loads(r[0]) for r in c.execute('SELECT body FROM reports ORDER BY created_at DESC')],'texts':[json.loads(r[0]) for r in c.execute('SELECT body FROM texts ORDER BY created_at DESC')],'jobs':[json.loads(r[0]) for r in c.execute('SELECT body FROM jobs ORDER BY created_at DESC LIMIT 30')],'auth':self._kv(c,'auth',{}),'analysis_target':self._kv(c,'analysis_target')}
 
     def state(self,full=False):
         with self.connect() as c: return self._state(c,full)
@@ -246,7 +299,7 @@ class Store:
             self._set(c,'config',config)
         return config
 
-    def import_text(self,sid,bid,content,scope,complete=False,source='用户导入'):
+    def import_text(self,sid,bid,content,scope,complete=False,source='用户导入',details=None):
         if not isinstance(content,str) or len(content.strip())<30: raise AppError('empty_text','正文不足 30 字，未保存为有效文本。')
         if len(content)>8_000_000: raise AppError('text_too_large','单次正文最多 800 万字符。')
         if re.search(r'<(?:!doctype|html|script|body)\b',content[:2000],re.I): raise AppError('html_not_text','这看起来是网页或错误页面，请导入实际正文。')
@@ -258,10 +311,69 @@ class Store:
             existing=c.execute('SELECT body FROM texts WHERE snapshot_id=? AND book_id=? ORDER BY created_at DESC',(sid,bid)).fetchall()
             for row in existing:
                 m=json.loads(row[0])
-                if m['sha256']==digest and m['scope']==scope and m['complete']==bool(complete): return m
+                if m['sha256']==digest and m['scope']==scope and m['complete']==bool(complete) and m.get('acquisition','user_import')==('public_download' if details else 'user_import') and all(m.get(k)==v for k,v in (details or {}).items()): return m
             meta={'id':uuid.uuid4().hex,'snapshot_id':sid,'book_id':bid,'platform':s['platform'],'title':b['title'],'created_at':now(),'scope':text(scope,500),'complete':bool(complete),'completeness_basis':'用户声明' if complete else '部分文本或未核实完整性','source':text(source,1000),'characters':len(content),'sha256':digest}
+            if details: meta.update(details)
             c.execute('INSERT INTO texts VALUES(?,?,?,?,?,?)',(meta['id'],sid,bid,meta['created_at'],dumps(meta),content))
         return meta
+
+    def save_fetched_text(self,sid,bid,raw):
+        """Store a verified downloaded range as the same asset used by WorkBuddy."""
+        snapshot,book=self.book(sid,bid)
+        if not isinstance(raw,dict) or raw.get('platform')!=snapshot['platform'] or str(raw.get('book_id') or '')!=book['id']:
+            raise AppError('text_identity_mismatch','取得的正文与选定作品身份不一致，未保存。')
+        for key in ('complete','coverage_complete','cancelled'):
+            if not isinstance(raw.get(key,False),bool): raise AppError('invalid_text_metadata','正文完整度标记不正确。')
+        chapter_rows=raw.get('chapters')
+        if not isinstance(chapter_rows,list) or not chapter_rows or len(chapter_rows)>50000:
+            raise AppError('invalid_text_range','没有有效的已取得章节记录，未保存正文。')
+        chapters=[]; chapter_ids=set(); indices=set()
+        for item in chapter_rows:
+            if not isinstance(item,dict): raise AppError('invalid_text_range','章节范围格式不正确。')
+            index=item.get('index'); item_id=item.get('item_id') or item.get('id')
+            if isinstance(index,bool) or not isinstance(index,int) or index<1 or not isinstance(item_id,(str,int)) or isinstance(item_id,bool) or not str(item_id).strip() or len(str(item_id))>250:
+                raise AppError('invalid_text_range','章节必须包含正确的序号与稳定标识。')
+            item_id=str(item_id)
+            if index in indices or item_id in chapter_ids: raise AppError('invalid_text_range','取得的章节重复，未保存正文。')
+            if item.get('id') is not None and item.get('item_id') is not None and str(item['id'])!=str(item['item_id']): raise AppError('invalid_text_range','章节身份不一致。')
+            characters=item.get('characters')
+            if isinstance(characters,bool) or not isinstance(characters,int) or characters<1: raise AppError('invalid_text_range','存在空章节，不能标记正文下载成功。')
+            indices.add(index); chapter_ids.add(item_id)
+            chapters.append({'id':item_id,'item_id':item_id,'index':index,'title':text(item.get('title'),500),'url':safe_url(item.get('url')),'characters':characters})
+        if [c['index'] for c in chapters]!=sorted(indices): raise AppError('invalid_text_range','正文中的章节顺序不正确。')
+        missing=[]
+        missing_rows=raw.get('missing',[])
+        if not isinstance(missing_rows,list): raise AppError('invalid_text_range','缺失章节记录不正确。')
+        for item in missing_rows[:50000]:
+            if not isinstance(item,dict): raise AppError('invalid_text_range','缺失章节记录不正确。')
+            index=item.get('index')
+            if index is not None and (isinstance(index,bool) or not isinstance(index,int) or index<1 or index in indices): raise AppError('invalid_text_range','已取得与缺失章节范围冲突。')
+            missing.append({'index':index,'id':text(item.get('id') or item.get('item_id'),250),'chapter':text(item.get('chapter') or item.get('title'),500),'reason':text(item.get('reason'),1000)})
+        counts={}
+        for key in ('catalog_chapters','requested_chapters'):
+            value=raw.get(key)
+            if isinstance(value,bool) or not isinstance(value,int) or value<1 or value>50000 or value<len(chapters): raise AppError('invalid_text_range','章节总数或请求范围不正确。')
+            counts[key]=value
+        if counts['requested_chapters']>counts['catalog_chapters'] or max(indices)>counts['catalog_chapters']:
+            raise AppError('invalid_text_range','取得的章节超出目录范围。')
+        requested_start=raw.get('requested_start',min(indices))
+        if isinstance(requested_start,bool) or not isinstance(requested_start,int) or requested_start<1: raise AppError('invalid_text_range','请求起始章节不正确。')
+        wanted=set(range(requested_start,requested_start+counts['requested_chapters']))
+        if max(wanted)>counts['catalog_chapters'] or not indices.issubset(wanted) or any(item['index'] is not None and item['index'] not in wanted for item in missing): raise AppError('invalid_text_range','正文或缺失章节超出本次请求范围。')
+        catalog_complete=raw.get('catalog_complete',False)
+        if not isinstance(catalog_complete,bool): raise AppError('invalid_text_metadata','目录完整性标记不正确。')
+        coverage=raw.get('coverage_complete',False); cancelled=raw.get('cancelled',False)
+        if coverage and (missing or cancelled or indices!=wanted): raise AppError('invalid_text_range','部分或中断的正文不能标记请求范围完整。')
+        complete=raw.get('complete',False)
+        if complete and (not catalog_complete or not coverage or (isinstance(raw.get('status'),bool) or raw.get('status') not in ('已完结','完结','finished','completed','0',0)) or len(chapters)!=counts['catalog_chapters'] or indices!=set(range(1,counts['catalog_chapters']+1))):
+            raise AppError('invalid_text_range','只有已完结作品的全部目录正文取齐后才能标记全书完整。')
+        scope=text(raw.get('scope'),500).strip()
+        if not scope: raise AppError('scope_required','下载结果没有说明实际阅读范围。')
+        details={'acquisition':'public_download','chapters':chapters,'missing':missing,**counts,
+                 'coverage_complete':coverage,'catalog_complete':catalog_complete,'requested_start':requested_start,'cancelled':cancelled,'status':text(raw.get('status'),60),
+                 'collected_at':text(raw.get('collected_at'),100),
+                 'completeness_basis':'已完结作品的当前公开目录全部取得' if complete else '仅所列已取得章节，不代表全书完整'}
+        return self.import_text(sid,book['id'],raw.get('text'),scope,complete,text(raw.get('source'),1000) or '公开章节页面',details)
 
     def text_record(self,tid):
         with self.connect() as c:
@@ -312,10 +424,16 @@ class Store:
             if not r: raise AppError('job_missing','找不到采集任务。',404)
             return json.loads(r[0])
 
+    def scope_jobs(self,scope_key):
+        """Read persisted attempts for one exact collection scope, newest first."""
+        with self.connect() as c:
+            jobs=[json.loads(r[0]) for r in c.execute('SELECT body FROM jobs ORDER BY created_at DESC')]
+        return [j for j in jobs if j.get('scope_key')==scope_key]
+
     def recover_jobs(self):
         with self.connect() as c:
             for r in c.execute('SELECT id,body FROM jobs').fetchall():
                 j=json.loads(r['body'])
-                if j.get('status') in ('running','pending'):
-                    j.update(status='interrupted',message='上次采集因程序退出而中断，可重试；已有榜单仍保留。')
+                if j.get('status') in ('running','pending','cancelling'):
+                    j.update(status='interrupted',message='上次采集因程序退出而中断，可重试；已有榜单仍保留。',finished_at=now())
                     c.execute('UPDATE jobs SET body=? WHERE id=?',(dumps(j),r['id']))

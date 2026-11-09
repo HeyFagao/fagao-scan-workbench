@@ -43,7 +43,17 @@ python3 -m fagao text TEXT_ID
 python3 -m fagao fetch-text --task ORIGINAL_TASK_ID --chapters 3
 ```
 
-该入口调用对应平台的取文模块，取得的内容保存到原任务的快照和作品下。**入口已实现不代表自动下载已通过真实验收。** 本轮番茄首章请求遇到 PUA 字体编码，程序明确失败，没有把编码文本保存成可读正文。其他平台也应按返回状态处理，不能把任务启动或收到网页当成取文成功。
+该入口调用对应平台的取文模块，取得的内容保存到原任务的快照和作品下。v0.3 已接入用户提供的字体映射：番茄真实前 3 章取得 9,600 字符、无残留乱码。这个样本不代表所有作品、全部章节或其他平台均可读取；以每次返回的实际范围和缺章状态为准。
+
+先查看目录，或按用户明确要求读取章节区间与全部已发布章节：
+
+```sh
+python3 -m fagao catalog --task ORIGINAL_TASK_ID
+python3 -m fagao fetch-text --task ORIGINAL_TASK_ID --start 4 --chapters 10
+python3 -m fagao fetch-text --task ORIGINAL_TASK_ID --all
+```
+
+普通“分析这本”仍默认先取得前 3 章；用户要求全书或指定范围时用相应参数。`coverage_complete` 只表示本次请求范围取得完整；连载作品即使取齐当时目录，也不能称全书完结。全书完整仅在来源已完结且全目录取得时成立。来源权限受限、身份不一致、未知字符和访问失败会停止继续读取；已有有效章节保留。
 
 取文成功后，执行下面的 `resume ORIGINAL_TASK_ID`，拿到绑定新文本的新任务。取文失败则保留原任务，说明具体原因并继续使用本机已有文本或导入文件；确实缺少文件时再请用户提供有权限使用的文本。不得绕过付费、验证码或访问资格，也不能把空页、错误页、简介当成完整正文。
 
@@ -86,3 +96,21 @@ python3 -m fagao save-report --task TASK_ID --file /absolute/path/report.md
 ## 维护
 
 日常只需启动器。故障时先看实际报错和资料目录中的日志，保留已有结果。调试导出前清除凭据；不要把正文、会话或个人数据库提交 Git。更新代码后运行测试，并在 `docs/acceptance.md` 写明实测范围。
+
+## 批量扫榜与本机检索
+
+用户说“更新女频新书榜所有分类”时，可以直接调用：
+
+```sh
+python3 -m fagao collect-all fanqie --options '{"channel":"女频","board":"新书榜","max_pages":100}'
+```
+
+上例 shell 引号适用于 POSIX；Windows 使用宿主支持的参数数组传递同一 JSON，不复制错误的转义。批量程序按官方当前频道导航逐个分类采集，每类独立保存；返回成功、失败及不完整分类。不要将分类内名次拼成全站排名，也不要把一个类别失败说成整次成功。
+
+```sh
+python3 -m fagao search "养崽" --limit 30
+python3 -m fagao --session SESSION_ID prepare-book --snapshot EXACT_SNAPSHOT_ID --book EXACT_BOOK_ID --request "分析检索选定的作品"
+python3 -m fagao insights --snapshot EXACT_SNAPSHOT_ID
+```
+
+检索只搜索本机已经取得的快照，保留每本作品的所有榜单出处。确认用户指向哪一本后，用返回的 `selection.snapshot_id` 与 `selection.book_id` 固定任务；不要把搜索列表序号当作原榜名次。`insights` 是规则统计及可核对历史差值，不能代替阅读正文后的分析。

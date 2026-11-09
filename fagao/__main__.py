@@ -14,6 +14,7 @@ def main():
     sub.add_parser('context'); sub.add_parser('state')
     for name in ('resolve','prepare'):
         p=sub.add_parser(name); p.add_argument('query')
+    p=sub.add_parser('prepare-book'); p.add_argument('--snapshot',required=True); p.add_argument('--book',required=True); p.add_argument('--request',default='分析已定位作品')
     p=sub.add_parser('import-snapshot'); p.add_argument('file')
     p=sub.add_parser('import-text'); p.add_argument('--snapshot',required=True); p.add_argument('--book',required=True); p.add_argument('--file',required=True); p.add_argument('--scope',required=True); p.add_argument('--complete',action='store_true')
     p=sub.add_parser('save-report'); p.add_argument('--task',required=True); p.add_argument('--file',required=True)
@@ -22,8 +23,13 @@ def main():
     p=sub.add_parser('task'); p.add_argument('id')
     p=sub.add_parser('resume'); p.add_argument('id')
     p=sub.add_parser('collect'); p.add_argument('platform'); p.add_argument('--options',default='{}')
+    p=sub.add_parser('collect-all'); p.add_argument('platform',choices=['fanqie']); p.add_argument('--options',default='{}')
+    p=sub.add_parser('search'); p.add_argument('query'); p.add_argument('--limit',type=int,default=100)
+    p=sub.add_parser('catalog'); p.add_argument('--task',required=True)
+    p=sub.add_parser('insights'); p.add_argument('--snapshot',required=True)
     p=sub.add_parser('config'); p.add_argument('--points-site',required=True)
-    p=sub.add_parser('fetch-text'); p.add_argument('--task',required=True); p.add_argument('--chapters',type=int,default=3)
+    p=sub.add_parser('fetch-text'); p.add_argument('--task',required=True); p.add_argument('--start',type=int,default=1)
+    group=p.add_mutually_exclusive_group(); group.add_argument('--chapters',type=int,default=3); group.add_argument('--all',action='store_true')
     args=parser.parse_args(); store=Store(args.data_dir)
     try:
         if args.command=='context': result=store.context(args.session)
@@ -32,6 +38,7 @@ def main():
             from .resolver import resolve_reference
             result=resolve_reference(args.query,store.context(args.session))
             if args.command=='prepare': result=store.prepare_task(result,args.query,args.session)
+        elif args.command=='prepare-book': result=store.prepare_task({'snapshot_id':args.snapshot,'book_id':args.book},args.request,args.session)
         elif args.command=='import-snapshot': result=store.save_snapshot(json.loads(Path(args.file).read_text(encoding='utf-8-sig')),imported=True)
         elif args.command=='import-text': result=store.import_text(args.snapshot,args.book,Path(args.file).read_text(encoding='utf-8-sig'),args.scope,args.complete)
         elif args.command=='save-report': result=store.save_report(args.task,Path(args.file).read_text(encoding='utf-8-sig'))
@@ -45,8 +52,22 @@ def main():
         elif args.command=='fetch-text':
             from .collectors import fetch_text
             t=store.task(args.task)
-            raw=fetch_text(t['platform'],t['book_id'],store.directory,max_chapters=args.chapters)
-            result=store.import_text(t['snapshot_id'],t['book_id'],raw['text'],raw['scope'],raw.get('complete',False),raw.get('source','公开网页'))
+            raw=fetch_text(t['platform'],t['book_id'],store.directory,max_chapters=None if args.all else args.chapters,start_chapter=args.start,progress=lambda m,*a,**k:print(m,file=sys.stderr))
+            result=store.save_fetched_text(t['snapshot_id'],t['book_id'],raw)
+        elif args.command=='catalog':
+            from .fanqie_content import catalog
+            t=store.task(args.task)
+            if t['platform']!='fanqie': raise AppError('unsupported_platform','此平台尚未接入章节目录。')
+            result=catalog(t['book_id'],store.directory)
+        elif args.command=='insights':
+            from .insights import build_insights
+            result=build_insights(store.snapshot(args.snapshot),store.state(full=True)['snapshots'])
+        elif args.command=='search':
+            from .batch import search_snapshots
+            result=search_snapshots(store.state(full=True)['snapshots'],args.query,args.limit)
+        elif args.command=='collect-all':
+            from .batch import collect_all_categories
+            result=collect_all_categories(store,json.loads(args.options),lambda m,*a,**k:print(m,file=sys.stderr))
         elif args.command=='collect':
             from .collectors import collect
             result=store.save_snapshot(collect(args.platform,json.loads(args.options),store.directory,lambda m,*a,**k:print(m,file=sys.stderr)))

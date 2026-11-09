@@ -104,6 +104,58 @@ class StoreTest(unittest.TestCase):
         n=self.store.save_snapshot(snapshot())
         t=self.store.prepare_task({'snapshot_id':n['id'],'book_id':'b'},'分析这本')
         self.assertEqual(t['text_id'],tx['id'])
+    def fetched(self,**overrides):
+        return dict(platform='fanqie',book_id='b',title='乙书',text='这是从公开页面取得的第一章实际测试正文。'*5,
+                    scope='第 1 章（共取得 1 章）',complete=False,coverage_complete=True,cancelled=False,
+                    source='https://fanqienovel.com/page/b',status='连载中',catalog_chapters=3,catalog_complete=True,requested_start=1,requested_chapters=1,
+                    chapters=[{'id':'chapter-b1','item_id':'chapter-b1','index':1,'title':'第一章','url':'https://fanqienovel.com/reader/chapter-b1','characters':100}],
+                    missing=[],collected_at='2026-11-09T12:00:00+08:00',**overrides)
+
+    def test_fetched_text_uses_existing_assets_and_does_not_change_selection(self):
+        raw=self.fetched(); meta=self.store.save_fetched_text(self.s['id'],'b',raw)
+        self.assertEqual(meta['acquisition'],'public_download')
+        self.assertEqual(meta['scope'],raw['scope']); self.assertTrue(meta['coverage_complete']); self.assertFalse(meta['complete'])
+        self.assertEqual(meta['chapters'][0]['item_id'],'chapter-b1')
+        self.assertEqual(self.store.text_record(meta['id'])['content'],raw['text'])
+        self.assertEqual(self.store.state()['texts'][0]['id'],meta['id'])
+        self.assertNotIn('content',self.store.state()['texts'][0])
+        self.assertNotIn('text',self.store.state()['texts'][0])
+        task=self.store.prepare_task({'snapshot_id':self.s['id'],'book_id':'b'},'分析第一章')
+        self.assertEqual(task['text_id'],meta['id'])
+        self.assertEqual(self.store.state()['views']['long']['selected_id'],'b')
+        duplicate=self.store.save_fetched_text(self.s['id'],'b',raw)
+        self.assertEqual(duplicate['id'],meta['id'])
+
+    def test_partial_or_cancelled_text_retains_actual_missing_range(self):
+        raw=self.fetched(); raw.update(coverage_complete=False,cancelled=True,requested_chapters=3,
+            missing=[{'index':2,'id':'chapter-b2','chapter':'第二章','reason':'下载暂停'}])
+        meta=self.store.save_fetched_text(self.s['id'],'b',raw)
+        self.assertTrue(meta['cancelled']); self.assertFalse(meta['complete']); self.assertFalse(meta['coverage_complete'])
+        self.assertEqual(meta['missing'][0]['reason'],'下载暂停')
+        self.assertEqual(len(meta['chapters']),1)
+
+    def test_downloaded_complete_book_requires_finished_status_and_whole_catalog(self):
+        raw=self.fetched(); raw.update(complete=True,catalog_chapters=1,status='已完结')
+        meta=self.store.save_fetched_text(self.s['id'],'b',raw)
+        self.assertTrue(meta['complete'])
+        self.assertIn('已完结',meta['completeness_basis'])
+        for changed in ({'status':'连载中'},{'catalog_chapters':2},{'coverage_complete':False},{'status':False}):
+            wrong={**raw,**changed}
+            with self.subTest(changed=changed):
+                with self.assertRaises(AppError): self.store.save_fetched_text(self.s['id'],'b',wrong)
+
+    def test_download_identity_empty_error_and_range_mismatches_are_rejected(self):
+        bad=[{'book_id':'a'},{'platform':'qidian'},{'text':''},{'text':'403 Forbidden'+'wrong'*20},
+             {'chapters':[]},{'catalog_chapters':0},{'requested_chapters':False},
+             {'missing':[{'index':1,'id':'chapter-b1','reason':'not actually missing'}]},
+             {'missing':[{'index':2,'id':'chapter-b2','reason':'locked'}]},
+             {'chapters':[{'id':'x','item_id':'y','index':1,'characters':100}]},
+             {'chapters':[{'id':'x','item_id':'x','index':1,'characters':0}]}]
+        for changed in bad:
+            with self.subTest(changed=changed):
+                with self.assertRaises(AppError): self.store.save_fetched_text(self.s['id'],'b',{**self.fetched(),**changed})
+        self.assertEqual(self.store.state()['texts'],[])
+
     def test_text_error_pages_and_empty_rejected(self):
         for body in ('','tiny','<html><body>'+'error'*20,'403 Forbidden'+'error'*20,'<!doctype html>'+'error'*20):
             with self.assertRaises(AppError): self.store.import_text(self.s['id'],'b',body,'全文',True)
@@ -132,6 +184,76 @@ class StoreTest(unittest.TestCase):
         self.store.recover_jobs()
         self.assertEqual(self.store.job('one')['status'],'interrupted')
         self.assertEqual(self.store.job('two')['status'],'completed')
+    def test_public_cover_url_and_pagination_are_preserved(self):
+        value=snapshot()
+        value['books'][0]['cover_url']='https://cdn.example.com/books/a.jpg?size=240'
+        value['pagination']={'pages_fetched':8,'max_pages':100,'stop_reason':'source_end','source_total':77,'untrusted':'ignored'}
+        saved=self.store.save_snapshot(value)
+        self.assertEqual(saved['books'][0]['cover_url'],value['books'][0]['cover_url'])
+        self.assertEqual(saved['pagination'],{'pages_fetched':8,'max_pages':100,'stop_reason':'source_end','source_total':77})
+        self.assertEqual(self.store.snapshot(saved['id'])['pagination'],saved['pagination'])
+        metadata=next(s for s in self.store.state()['snapshots'] if s['id']==saved['id'])
+        self.assertEqual(metadata['pagination']['pages_fetched'],8)
+        # Inserting newer metadata must not move the selected snapshot or book.
+        self.assertEqual(self.store.state()['views']['long']['snapshot_id'],self.s['id'])
+        self.assertEqual(self.store.state()['views']['long']['selected_id'],'b')
+
+    def test_official_categories_keep_order_with_bounded_clean_strings(self):
+        value=snapshot()
+        value['categories']=[' 古言脑洞 ','现代言情','古言脑洞',None,42,{},'', '分'*100]+[f'分类{i}' for i in range(150)]
+        saved=self.store.save_snapshot(value)
+        self.assertEqual(saved['categories'][:3],['古言脑洞','现代言情','分'*80])
+        self.assertEqual(len(saved['categories']),100)
+        self.assertTrue(all(isinstance(category,str) and 0<len(category)<=80 for category in saved['categories']))
+        self.assertEqual(self.store.snapshot(saved['id'])['categories'],saved['categories'])
+        metadata=next(s for s in self.store.state()['snapshots'] if s['id']==saved['id'])
+        self.assertNotIn('categories',metadata)
+        context=next(s for s in self.store.context()['snapshots'] if s['id']==saved['id'])
+        self.assertEqual(context['categories'],saved['categories'])
+
+    def test_book_publication_status_is_preserved_and_bounded(self):
+        value=snapshot()
+        value['books'][0]['status']='连载中'
+        value['books'][1]['status']='已完结'
+        value['books'][2]['status']='状态说明'*50
+        saved=self.store.save_snapshot(value)
+        stored=self.store.snapshot(saved['id'])['books']
+        self.assertEqual(stored[0]['status'],'连载中')
+        self.assertEqual(stored[1]['status'],'已完结')
+        self.assertEqual(len(stored[2]['status']),60)
+        value['books'][0]['status']={'untrusted':'not a status string'}
+        self.assertEqual(self.store.save_snapshot(value)['books'][0]['status'],'')
+
+    def test_unsafe_cover_urls_are_removed_without_discarding_books(self):
+        urls=['javascript:alert(1)','data:image/svg+xml;base64,abc','file:///a.png',
+              '//cdn.example.com/a.jpg','https://user:secret@cdn.example.com/a.jpg',
+              'https://localhost/a.jpg','https://demo.localhost/a.jpg','http://127.0.0.1/a.jpg',
+              'http://10.2.3.4/a.jpg','http://192.168.1.1/a.jpg','http://172.16.3.4/a.jpg',
+              'http://169.254.169.254/a.jpg','http://[::1]/a.jpg','http://[fc00::1]/a.jpg',
+              'http://[::ffff:127.0.0.1]/a.jpg','http://2130706433/a.jpg','http://0x7f000001/a.jpg',
+              'http://0x7f.0.0.1/a.jpg','http://0177.0.0.1/a.jpg','https://router.local/a.jpg',
+              'http://singlehost/a.jpg','https://cdn.example.com:999999/a.jpg',
+              'https://cdn.example.com\\@localhost/a.jpg','https://cdn.example.com/\nimage.jpg']
+        for url in urls:
+            with self.subTest(url=url):
+                value=snapshot(); value['books'][0]['cover_url']=url
+                saved=self.store.save_snapshot(value)
+                self.assertEqual(saved['books'][0]['cover_url'],'')
+                self.assertEqual(len(saved['books']),3)
+
+    def test_invalid_pagination_is_rejected_transactionally(self):
+        for pagination in ([],{'pages_fetched':-1},{'max_pages':True},{'source_total':'100'}):
+            with self.subTest(pagination=pagination):
+                value=snapshot(); value['pagination']=pagination
+                with self.assertRaises(AppError): self.store.save_snapshot(value)
+        self.assertEqual(len(self.store.state()['snapshots']),1)
+
+    def test_jobs_are_read_by_exact_collection_scope(self):
+        for jid,scope in [('a','scope-one'),('b','scope-two'),('c','scope-one')]:
+            self.store.save_job({'id':jid,'scope_key':scope,'created_at':f'2026-11-09T00:00:0{ord(jid)-97}Z','status':'failed'})
+        self.assertEqual([j['id'] for j in self.store.scope_jobs('scope-one')],['c','a'])
+        self.assertEqual(self.store.scope_jobs('unknown'),[])
+
     def test_non_http_links_removed(self):
         s=snapshot(); s['books'][0]['url']='javascript:alert(1)'
         self.assertEqual(self.store.save_snapshot(s)['books'][0]['url'],'')
