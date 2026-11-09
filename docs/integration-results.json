@@ -1,0 +1,54 @@
+{
+  "checked_at": "2026-11-09T05:21:38.084372+00:00",
+  "sources": [
+    {
+      "platform": "qidian",
+      "books_count": 20,
+      "source_url": "https://m.qidian.com/rank/yuepiao/",
+      "data_date": null,
+      "warnings": [
+        "当前读取首屏 20 本；不代表完整榜单。"
+      ]
+    },
+    {
+      "platform": "fanqie",
+      "books_count": 29,
+      "source_url": "https://fanqienovel.com/rank/0_1_253",
+      "data_date": "2026-11-09T05:10:00+00:00",
+      "warnings": [
+        "以下原榜名次的详情读取失败：23"
+      ]
+    },
+    {
+      "platform": "ciweimao",
+      "books_count": 10,
+      "source_url": "https://www.ciweimao.com/rank-index/yp-month",
+      "period": "月榜",
+      "data_date": null,
+      "warnings": [
+        "月票榜采用月榜周期，本次只读取首屏前 10 本；源页面未提供票数。"
+      ]
+    }
+  ],
+  "checks": {
+    "original_rank_14_matches_selection": true,
+    "sorted_list_second_is_distinct": true,
+    "report_pins_book_and_scope": true,
+    "scope": "仅简介（未取得正文）",
+    "reopen_preserves_selection": true,
+    "new_snapshot_preserves_previous_selection": true
+  },
+  "workbuddy_client_verified": false,
+  "browser_layout_verified": false,
+  "latest_capture": {
+    "platform": "fanqie",
+    "source_url": "https://fanqienovel.com/rank/0_1_253",
+    "data_date": "2026-11-09T05:10:00+00:00",
+    "books_count": 30,
+    "warnings": [],
+    "complete": true,
+    "rank_version": "1794201000"
+  },
+  "automated_tests": 71,
+  "dom_integration_checks": 12
+}

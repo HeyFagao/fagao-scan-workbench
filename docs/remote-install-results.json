@@ -1,0 +1,29 @@
+{
+  "repo": "hanyyyou/fagao-scan-workbench",
+  "commit": "2c7d214c4bd6eb9262a4000882e50912798f02c8",
+  "timestamp": "2026-11-09T06:19:14.197363+00:00",
+  "mode": "remote-pinned-sha",
+  "no_browser": true,
+  "checks": {
+    "raw_fixed_sha_download": true,
+    "first_ready": true,
+    "exact_release": true,
+    "health_app": true,
+    "health_data_dir": true,
+    "health_source_root": true,
+    "no_fake_samples": true,
+    "repeat_reused": true,
+    "repeat_same_release": true,
+    "data_preserved": true,
+    "shortcut_exists": true,
+    "single_release": true,
+    "current_points_to_release": true
+  },
+  "status": "passed",
+  "installer_url": "https://raw.githubusercontent.com/hanyyyou/fagao-scan-workbench/2c7d214c4bd6eb9262a4000882e50912798f02c8/scripts/bootstrap.py",
+  "installer_sha256": "f1bb947af77dd6ceeb398e74865b04428cb48f05f935fca065659a05dba8e27c",
+  "installer_bytes": 26079,
+  "first_exit": 0,
+  "second_exit": 0,
+  "cleanup": "no remaining child created by this run"
+}
