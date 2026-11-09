@@ -43,3 +43,8 @@ SOFTWARE.
 `fagao/assets/fanqie-charmap.json` 保留源包 `02-抓取工具/fanqie_tool/assets/charmap.json` 的 362 条字符映射，文件 SHA-256：`6f607ae25910ca912104d97cf2a90c7b5a5f867712bcf5a6eb5bf4f8122ae533`。源包抓取模块的项目元数据声明 MIT，未提供独立的版权人署名或 LICENSE 文件；本说明保留该来源与许可声明，不据此扩大其他内容的许可范围。
 
 官方公开目录／阅读页访问方式及分类采集思路参考源包；本工程重新实现与本地快照、任务、缓存和权限状态的连接。未引入其复刻网页的 HTML、JS、CSS、Chart.js、部署脚本、服务端地址、数据样本或小说正文。榜单统计由本工程独立实现，不接入源包的外部分析服务。
+
+
+## FanqieRankTracker 公开榜单数据
+
+v0.5 独立编写 JSON 适配器，读取 [scoful/FanqieRankTracker](https://github.com/scoful/FanqieRankTracker) 主动公布的静态新书榜接口与历史快照。该仓库 README 声明 MIT，核查时未见独立 LICENSE 文件。本项目不复制该仓库程序、样式、AI 摘要或小说正文；记录来源仓库、实际文件日期、每分类样本范围和缺失字段。公开榜单元数据不意味着取得小说正文权利。详细记录见 `docs/public-data-sources.md`。
