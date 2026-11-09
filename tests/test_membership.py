@@ -48,6 +48,13 @@ def decision(clock, account_id="account-a", allowed=True, reason=None, member_se
             "server_time": iso(clock.time()), "policy_version": "synthetic-unapproved-v1"}
 
 
+def experimental_decision(clock, membership_end=None, permit_seconds=900):
+    return {**decision(clock), "access_basis": "experimental_account",
+            "membership_expires_at": membership_end,
+            "permit_expires_at": iso(clock.time() + permit_seconds),
+            "identity_expires_at": iso(clock.time() + 3600)}
+
+
 class Transport:
     def __init__(self, clock):
         self.clock = clock
@@ -311,6 +318,175 @@ class MembershipTests(unittest.TestCase):
         self.clock.advance(1)
         self.transport.override = decision(self.clock, allowed=False, reason="expired", member_seconds=0)
         self.assert_denied("expired")
+
+    def test_server_account_experiment_keeps_real_missing_or_past_membership_date(self):
+        for membership_end in (None, iso(self.clock.time() - 86400), iso(self.clock.time() + 1)):
+            with self.subTest(membership_end=membership_end):
+                self.transport.override = experimental_decision(self.clock, membership_end)
+                result = self.authorize()
+                self.assertTrue(result['allowed'])
+                self.assertEqual(result['access_mode'], 'active')
+                self.assertEqual(result['access_basis'], 'experimental_account')
+                self.assertEqual(result['membership_expires_at'], membership_end)
+                self.assertEqual(result['permit_expires_at'], iso(self.clock.time() + 900))
+                self.assertNotIn('access_basis', self.read_session())
+                self.assertNotIn('permit_expires_at', self.read_session())
+        self.clock.advance(2)
+        self.assertTrue(self.client.require()['allowed'])
+
+    def test_paid_and_experimental_memberships_still_require_real_member_deadline(self):
+        for basis in ('paid_membership', 'experimental_membership'):
+            for membership_end in (None, iso(self.clock.time() - 1), iso(self.clock.time() + 1)):
+                with self.subTest(basis=basis, membership_end=membership_end):
+                    self.transport.override = {**experimental_decision(self.clock, membership_end), 'access_basis': basis}
+                    with self.assertRaises(AppError): self.authorize()
+                    self.assertIsNone(self.read_session()['device_token'])
+            self.transport.override = {**decision(self.clock, member_seconds=30), 'access_basis': basis}
+            status = self.authorize()
+            self.assertTrue(status['allowed'])
+            self.assertEqual(status['access_basis'], basis)
+            self.assertEqual(status['permit_expires_at'], status['membership_expires_at'])
+            self.client.logout()
+
+    def test_legacy_response_defaults_to_paid_and_unknown_basis_clears_cached_grant(self):
+        self.assertEqual(self.authorize()['access_basis'], 'paid_membership')
+        for basis in ('membership', 'admin_override', '', None, True, {}, 1):
+            with self.subTest(basis=basis):
+                self.transport.override = experimental_decision(self.clock)
+                self.assertTrue(self.client.status(refresh=True)['allowed'])
+                self.transport.override = {**experimental_decision(self.clock), 'access_basis': basis}
+                result = self.client.status(refresh=True)
+                self.assertFalse(result['allowed'])
+                self.assertIsNone(result['access_basis'])
+                self.assert_denied('verification_unavailable')
+
+    def test_all_access_bases_reject_permits_longer_than_fifteen_minutes(self):
+        for basis in ('paid_membership', 'experimental_membership', 'experimental_account'):
+            for seconds in (0, -1, 900.001, 901, 86400):
+                with self.subTest(basis=basis, seconds=seconds):
+                    self.transport.override = {**decision(self.clock), 'access_basis': basis,
+                                               'permit_expires_at': iso(self.clock.time() + seconds)}
+                    with self.assertRaises(AppError): self.authorize()
+                    self.assertIsNone(self.read_session()['device_token'])
+
+    def test_account_experiment_never_turns_identity_lease_into_extra_use_or_history(self):
+        self.transport.override = experimental_decision(self.clock, iso(self.clock.time() - 3600))
+        first = self.authorize()
+        self.transport.failure = OSError('offline')
+        self.clock.advance(899)
+        self.assertEqual(self.client.require()['permit_expires_at'], first['permit_expires_at'])
+        self.clock.advance(1)
+        self.assert_denied('verification_unavailable')
+        self.assert_denied('verification_unavailable', operation='history')
+
+    def test_account_experiment_cannot_survive_new_process_without_server_proof(self):
+        self.transport.override = experimental_decision(self.clock)
+        self.authorize()
+        self.transport.failure = OSError('offline')
+        fresh = MembershipClient(self.root, transport=self.transport, clock=self.clock)
+        self.assert_denied('verification_unavailable', fresh)
+        self.assertIsNone(fresh.status()['access_basis'])
+
+    def test_explicit_experiment_close_or_device_revoke_clears_remaining_permit(self):
+        self.transport.override = experimental_decision(self.clock)
+        self.authorize()
+        for reason in ('not_eligible', 'suspended', 'device_revoked'):
+            with self.subTest(reason=reason):
+                self.transport.override = experimental_decision(self.clock)
+                self.assertTrue(self.client.status(refresh=True)['allowed'])
+                self.transport.override = {**decision(self.clock, allowed=False, reason=reason),
+                                           'access_basis': 'experimental_account', 'membership_expires_at': None}
+                self.assertFalse(self.client.status(refresh=True)['allowed'])
+                self.assert_denied(reason)
+                self.assert_denied(reason, operation='history')
+
+    def test_experiment_unavailable_cannot_extend_previously_verified_permit(self):
+        self.transport.override = experimental_decision(self.clock)
+        first = self.authorize()
+        self.transport.failure = membership._Unavailable()
+        self.clock.advance(899)
+        status = self.client.status(refresh=True)
+        self.assertTrue(status['allowed'])
+        self.assertTrue(status['verification_pending'])
+        self.assertEqual(status['permit_expires_at'], first['permit_expires_at'])
+        self.clock.advance(1)
+        self.assert_denied('verification_unavailable')
+
+    def test_experiment_switch_back_to_membership_reapplies_real_deadline(self):
+        self.transport.override = experimental_decision(self.clock)
+        self.authorize()
+        self.transport.override = {**decision(self.clock, member_seconds=3), 'access_basis': 'paid_membership'}
+        result = self.client.status(refresh=True)
+        self.assertEqual(result['access_basis'], 'paid_membership')
+        self.assertEqual(result['permit_expires_at'], result['membership_expires_at'])
+        self.transport.failure = OSError('offline')
+        self.clock.advance(3)
+        self.assert_denied('verification_unavailable')
+
+    def test_experiment_cannot_remove_account_or_send_malformed_real_membership_date(self):
+        self.transport.override = experimental_decision(self.clock)
+        self.authorize()
+        for changes in ({'account': None}, {'account': {'id': 'someone-else', 'display_name': 'other'}},
+                        {'membership_expires_at': 'unknown'}, {'permit_expires_at': None}):
+            with self.subTest(changes=changes):
+                self.transport.override = {**experimental_decision(self.clock), **changes}
+                result = self.client.status(refresh=True)
+                self.assertFalse(result['allowed'])
+                self.assert_denied('verification_unavailable')
+
+    def test_sleep_during_experiment_exchange_consumes_permit_with_frozen_monotonic(self):
+        def delayed(*args):
+            response = {'device_token': self.transport.token, 'scope': 'workbench',
+                        'status': experimental_decision(self.clock)}
+            self.clock.wall += 3600
+            return response
+        self.transport.token_hook = delayed
+        status = self.authorize()
+        self.assertFalse(status['allowed'])
+        self.assertEqual(status['reason'], 'verification_unavailable')
+        self.assertFalse(status['can_read_history'])
+
+    def test_sleep_during_experiment_refresh_consumes_permit_with_frozen_monotonic(self):
+        self.transport.override = experimental_decision(self.clock)
+        self.authorize()
+        def delayed(*args):
+            response = experimental_decision(self.clock)
+            self.clock.wall += 900
+            return response
+        self.transport.permit_hook = delayed
+        status = self.client.status(refresh=True)
+        self.assertFalse(status['allowed'])
+        self.assertEqual(status['reason'], 'verification_unavailable')
+
+    def test_clock_rollback_during_experiment_response_cannot_create_new_permit(self):
+        self.transport.override = experimental_decision(self.clock)
+        self.authorize()
+        def delayed(*args):
+            response = experimental_decision(self.clock)
+            self.clock.wall -= 60
+            return response
+        self.transport.permit_hook = delayed
+        status = self.client.status(refresh=True)
+        self.assertFalse(status['allowed'])
+        self.assertEqual(status['reason'], 'verification_unavailable')
+
+    def test_invalid_request_clock_observation_fails_closed(self):
+        for field, value in (('mono', -1), ('mono', float('nan')), ('mono', float('inf')),
+                             ('wall', float('nan')), ('wall', float('inf'))):
+            with self.subTest(field=field, value=value), tempfile.TemporaryDirectory() as directory:
+                clock = Clock()
+                transport = Transport(clock)
+                client = MembershipClient(directory, transport=transport, clock=clock)
+                def delayed(*args):
+                    response = {'device_token': transport.token, 'scope': 'workbench',
+                                'status': experimental_decision(clock)}
+                    setattr(clock, field, value)
+                    return response
+                transport.token_hook = delayed
+                status = self.authorize(client)
+                self.assertFalse(status['allowed'])
+                self.assertFalse(status['can_read_history'])
+                self.assertEqual(status['reason'], 'verification_unavailable')
 
     def test_expired_and_refunded_status_overrides_previous_valid_cache(self):
         self.authorize()
@@ -750,6 +926,10 @@ class MembershipTests(unittest.TestCase):
             self.authorize()
         self.assertIsNone(self.read_session()["device_token"])
         success = {"device_token": self.transport.token, "scope": "workbench", "status": self.historical_paid_decision()}
+        with patch.object(network, "build_opener", return_value=Opener()), self.assertRaises(AppError):
+            self.authorize()
+        self.assertIsNone(self.read_session()["device_token"])
+        success = {"device_token": self.transport.token, "scope": "workbench", "status": experimental_decision(self.clock)}
         with patch.object(network, "build_opener", return_value=Opener()), self.assertRaises(AppError):
             self.authorize()
         self.assertIsNone(self.read_session()["device_token"])

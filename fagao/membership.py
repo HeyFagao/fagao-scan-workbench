@@ -43,6 +43,8 @@ DEFAULT_ENDPOINTS = {
 MAX_RESPONSE_BYTES = 64 * 1024
 REQUEST_TIMEOUT = 8
 AUTHORIZATION_TTL = 300
+MAX_PERMIT_SECONDS = 900
+_ACCESS_BASES = {"paid_membership", "experimental_membership", "experimental_account"}
 _REASONS = {
     "active", "not_authenticated", "not_eligible", "expired", "suspended",
     "device_revoked", "device_limit", "verification_unavailable",
@@ -322,6 +324,7 @@ class MembershipClient:
                 "display_name": account["display_name"] if account else None,
                 "generation": state["generation"], "membership_expires_at": None,
                 "permit_expires_at": None, "identity_expires_at": None,
+                "access_basis": None,
                 "server_time": None, "policy_version": None,
                 "history_eligible": False, "history_membership_expires_at": None,
                 "can_read_history": False, "access_mode": "locked"}
@@ -348,6 +351,13 @@ class MembershipClient:
         allowed = raw["allowed"]
         if allowed != (raw["reason"] == "active"):
             raise _InvalidResponse()
+        # Only a known basis in a verified server response can detach an
+        # account-specific experiment from the real membership deadline.
+        # Older servers omitted this field and retain the paid-member rules.
+        access_basis = raw.get("access_basis", "paid_membership")
+        if not isinstance(access_basis, str) or access_basis not in _ACCESS_BASES:
+            raise _InvalidResponse()
+        account_experiment = access_basis == "experimental_account"
         server = _timestamp(raw.get("server_time"))
         policy = _text(raw.get("policy_version"), 100)
         account = _account(raw["account"]) if raw.get("account") is not None else None
@@ -370,12 +380,15 @@ class MembershipClient:
             raise _InvalidResponse()
         if identity is not None and identity <= server:
             raise _InvalidResponse()
-        if permit is not None and membership is not None and permit > membership:
+        if permit is not None and not server < permit <= server + MAX_PERMIT_SECONDS:
             raise _InvalidResponse()
-        if allowed and (not account or membership is None or permit is None
-                        or not server < permit <= membership):
+        if not account_experiment and permit is not None and membership is not None and permit > membership:
+            raise _InvalidResponse()
+        if allowed and (not account or permit is None
+                        or (not account_experiment and (membership is None or permit > membership))):
             raise _InvalidResponse()
         return {"allowed": allowed, "reason": raw["reason"], "account": account,
+                "access_basis": access_basis,
                 "account_id": account["id"] if account else None,
                 "display_name": account["display_name"] if account else None,
                 "membership_expires_at": _iso(membership) if membership is not None else None,
@@ -459,7 +472,9 @@ class MembershipClient:
         current = self._estimated_time(state)
         if current is None:
             return None
-        deadline = min(_timestamp(self._cache["permit_expires_at"]), _timestamp(self._cache["membership_expires_at"]))
+        deadline = _timestamp(self._cache["permit_expires_at"])
+        if self._cache["access_basis"] != "experimental_account":
+            deadline = min(deadline, _timestamp(self._cache["membership_expires_at"]))
         if current >= deadline:
             return None
         result = deepcopy(self._cache)
@@ -471,6 +486,10 @@ class MembershipClient:
             return None
         current = self._estimated_time(state)
         proof = self._identity_cache
+        if proof["allowed"] and proof.get("access_basis") == "experimental_account":
+            # An experiment is not evidence of a paid-membership history grant.
+            # After its short permit expires, obtain a new server decision.
+            return None
         prior_paid = proof["reason"] == "not_eligible" and proof.get("history_eligible") is True
         history_boundary = proof["history_membership_expires_at"] if prior_paid else proof["membership_expires_at"]
         if (current is None or current >= _timestamp(proof["identity_expires_at"])
@@ -487,11 +506,22 @@ class MembershipClient:
         self._cache = None
         self._identity_cache = None
         if result["can_read_history"]:
-            elapsed = max(0, self.clock.monotonic() - started)
+            elapsed_mono = self.clock.monotonic() - started[0]
+            elapsed_wall = self.clock.time() - started[1]
+            if (not math.isfinite(elapsed_mono) or not math.isfinite(elapsed_wall)
+                    or elapsed_mono < 0 or elapsed_wall < -5):
+                result = self._base_status(state, "verification_unavailable")
+                self._last_result, self._last_checked, self._last_generation = deepcopy(result), self.clock.monotonic(), state["generation"]
+                return result
+            # Wall time covers a laptop sleeping during the HTTPS request on
+            # systems whose monotonic clock pauses. Never restart a stale lease
+            # from the moment the delayed response finally reaches the client.
+            elapsed = max(0, elapsed_mono, elapsed_wall)
             self._server_epoch = _timestamp(result["server_time"]) + elapsed
             self._observed_mono, self._observed_wall = self.clock.monotonic(), self.clock.time()
             self._cache_generation, self._cache_pid = state["generation"], os.getpid()
             if (result.get("identity_expires_at") is not None
+                    and not (result["allowed"] and result.get("access_basis") == "experimental_account")
                     and _timestamp(result["identity_expires_at"]) > self._server_epoch):
                 self._identity_cache = deepcopy(result)
             if result["allowed"]:
@@ -499,7 +529,11 @@ class MembershipClient:
                 current = self._cached(state)
                 if current is None:
                     self._cache = None
-                    result = self._history_cached(state) or self._base_status(state, "expired")
+                    # A slow exchange may consume the entire short permit. It
+                    # does not establish that an account experiment has ended
+                    # or that the user's real membership has expired.
+                    fallback = "verification_unavailable" if result.get("access_basis") == "experimental_account" else "expired"
+                    result = self._history_cached(state) or self._base_status(state, fallback)
                 else:
                     result = current
             else:
@@ -534,7 +568,7 @@ class MembershipClient:
                     if not state.get("device_token"):
                         self._clear_cache()
                         return self._base_status(state, "not_authenticated")
-                    started = self.clock.monotonic()
+                    started = (self.clock.monotonic(), self.clock.time())
                     malformed = False
                     try:
                         raw = self._request("permit", {"device_id": state["device_id"], "client_version": __version__}, state["device_token"])
@@ -645,7 +679,7 @@ class MembershipClient:
             current["pending"] = None
             exchange_id = current["exchange_id"] = secrets.token_hex(32)
             self._save(current)
-        started = self.clock.monotonic()
+        started = (self.clock.monotonic(), self.clock.time())
         try:
             raw = self._request("token", {"grant_type": "authorization_code", "code": code,
                                           "code_verifier": pending["verifier"], "redirect_uri": redirect_uri,

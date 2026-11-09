@@ -144,7 +144,11 @@ async function open(initialMembership = denied(), options = {}) {
       if (override instanceof Error) throw override;
       return response(override.body, override.status);
     }
-    if (url === '/api/membership/status' || url === '/api/membership/refresh') return response(control.membership);
+    if (url === '/api/membership/status' || url === '/api/membership/refresh') {
+      const payload = clone(control.membership), pending = control.held.get(url);
+      if (pending && !pending.captured) {pending.captured = true; await pending.promise;}
+      return response(payload);
+    }
     if (url === '/api/membership/connect') return response({authorization_url: 'https://www.fagaochuangzuo.com/workbench/authorize?state=synthetic'});
     if (url === '/api/membership/logout') {
       control.logoutCalls++;
@@ -242,6 +246,127 @@ async function locked(dom) {
         try {await locked(dom); assert.equal(dom.control.protectedCalls().length, 0);}
         finally {dom.window.close();}
       }
+    }],
+    ['explicit experimental account grants are revocable and do not use membership expiry', async () => {
+      const expiries = [null, new Date(Date.now() - 86400000).toISOString(), new Date(Date.now() + 86400000).toISOString()];
+      for (const [index, expiry] of expiries.entries()) {
+        const account = index === 1 ? 'account-b' : 'account-a';
+        const dom = await open(member(account, {access_basis: 'experimental_account', membership_expires_at: expiry}));
+        try {
+          await unlocked(dom);
+          const label = dom.window.document.querySelector('#membership-account').textContent;
+          assert.match(label, /实验授权 · 管理员关闭后停用/);
+          assert.doesNotMatch(label, /会员有效|到期|永久|\d{4}[\/年-]/, 'Account exemption displayed a membership expiry or permanence promise.');
+          assert.equal(dom.control.calls.some(call => call.url === '/api/state'), true);
+        } finally {dom.window.close();}
+      }
+    }],
+    ['experimental membership displays its actual finite membership expiry', async () => {
+      const grant = member('account-b', {access_basis: 'experimental_membership'});
+      const dom = await open(grant);
+      try {
+        await unlocked(dom);
+        const label = dom.window.document.querySelector('#membership-account').textContent;
+        assert.match(label, /实验会员/);
+        assert.match(label, /到期/);
+        assert(label.includes(String(new Date(grant.membership_expires_at).getFullYear())), 'Experimental membership omitted its actual expiry.');
+        assert.doesNotMatch(label, /实验授权 · 管理员关闭后停用|永久/);
+      } finally {dom.window.close();}
+    }],
+    ['active grants reject unknown bases and permits outside their finite policy bounds', async () => {
+      const base = member();
+      const server = Date.parse(base.server_time);
+      const iso = delta => new Date(server + delta).toISOString();
+      const invalid = [
+        {...base, access_basis: 'unknown_admin_grant'}, {...base, access_basis: null}, {...base, access_basis: ''},
+        {...base, access_basis: 'paid_membership', membership_expires_at: null},
+        {...base, access_basis: 'experimental_membership', membership_expires_at: null},
+        {...base, access_basis: 'experimental_membership', membership_expires_at: iso(-1000)},
+        {...base, access_basis: 'experimental_membership', membership_expires_at: iso(10000), permit_expires_at: iso(20000)},
+        {...base, access_basis: 'paid_membership', membership_expires_at: iso(10000), permit_expires_at: iso(20000)},
+        ...['paid_membership', 'experimental_membership', 'experimental_account'].map(access_basis =>
+          ({...base, access_basis, permit_expires_at: iso(900001)})),
+        {...base, access_basis: 'experimental_account', membership_expires_at: null, permit_expires_at: iso(0)},
+        {...base, access_basis: 'experimental_account', membership_expires_at: null, permit_expires_at: 'invalid'},
+        {...base, access_basis: 'experimental_account', membership_expires_at: 'invalid'},
+      ];
+      for (const grant of invalid) {
+        const dom = await open(grant);
+        try {await locked(dom); assert.equal(dom.control.protectedCalls().length, 0);}
+        finally {dom.window.close();}
+      }
+    }],
+    ['experimental account permits still lock at their deadline while offline', async () => {
+      const dom = await open(member('account-a', {access_basis: 'experimental_account', membership_expires_at: null}));
+      try {
+        await unlocked(dom);
+        dom.window.document.querySelector('[data-action="mode"][data-mode="long"]').click();
+        await wait(() => dom.window.document.querySelector('.detail h2')?.textContent === '甲私有作品', 'Experimental fixture selection missing.');
+        dom.control.overrides.set('/api/membership/refresh', new Error('Synthetic offline verification'));
+        const count = dom.control.protectedCalls().length;
+        await dom.control.runTimers(timer => timer.delay > 60000);
+        await locked(dom);
+        assert.doesNotMatch(dom.window.document.querySelector('#main').textContent, /甲私有作品/);
+        assert.equal(dom.control.protectedCalls().length, count);
+      } finally {dom.window.close();}
+    }],
+    ['closing an experiment prevents a late protected response from restoring data', async () => {
+      const dom = await open(member('account-a', {access_basis: 'experimental_account', membership_expires_at: null}));
+      let pending;
+      try {
+        await unlocked(dom);
+        pending = dom.control.holdNext('/api/state');
+        await recheck(dom);
+        await wait(() => pending.captured, 'Experimental state response was not held.');
+        dom.control.membership = {...dom.control.membership, allowed: false, reason: 'suspended', permit_expires_at: null};
+        await recheck(dom); await locked(dom);
+        pending.release(); await pause(20);
+        assert.equal(dom.window.document.querySelector('.overview-tabs'), null, 'Closed experiment was reopened by an old response.');
+        assert.doesNotMatch(dom.window.document.querySelector('#main').textContent, /甲私有作品/);
+        const count = dom.control.protectedCalls().length;
+        await dom.control.runTimers(timer => timer.delay <= 20000);
+        assert.equal(dom.control.protectedCalls().length, count);
+      } finally {pending?.release(); dom.window.close();}
+    }],
+    ['an old membership refresh cannot reopen an experiment after a newer protected denial', async () => {
+      const dom = await open(member('account-a', {access_basis: 'experimental_account', membership_expires_at: null}));
+      let pending;
+      try {
+        await unlocked(dom);
+        dom.window.document.querySelector('[data-action="mode"][data-mode="long"]').click();
+        await wait(() => dom.window.document.querySelector('[data-action="select-book"]'), 'Experimental book selection missing.');
+        pending = dom.control.holdNext('/api/membership/refresh');
+        await recheck(dom);
+        await wait(() => pending.captured, 'Old allowed membership response was not captured.');
+        dom.control.overrides.set('/api/view', {status: 403, body: {error: {
+          code: 'membership_not_eligible', message: '实验授权已关闭，当前账号暂无工作台权益。',
+        }}});
+        click(dom, 'select-book');
+        await locked(dom);
+        dom.control.membership = {...dom.control.membership, allowed: false, reason: 'not_eligible',
+          can_read_history: false, access_mode: 'none', permit_expires_at: null};
+        const count = dom.control.protectedCalls().length;
+        pending.release(); await pause(30);
+        assert(dom.window.document.querySelector('#membership-card'), 'Old allowed status reopened a newly denied experiment.');
+        assert.equal(dom.window.document.querySelector('.overview-tabs'), null);
+        assert.doesNotMatch(dom.window.document.querySelector('#main').textContent, /甲私有作品/);
+        assert.doesNotMatch(dom.window.document.querySelector('#membership-account').textContent, /实验授权 · 管理员关闭后停用/);
+        assert.equal(dom.control.protectedCalls().length, count, 'Old allowed status restarted protected data requests.');
+      } finally {pending?.release(); dom.window.close();}
+    }],
+    ['experimental membership cannot continue after its true membership cutoff', async () => {
+      const grant = member('account-a', {access_basis: 'experimental_membership'});
+      grant.membership_expires_at = grant.permit_expires_at = new Date(Date.parse(grant.server_time) + 10000).toISOString();
+      const dom = await open(grant);
+      try {
+        await unlocked(dom);
+        dom.control.overrides.set('/api/membership/refresh', new Error('Synthetic offline verification'));
+        const count = dom.control.protectedCalls().length;
+        await dom.control.runTimers(timer => timer.delay >= 9000 && timer.delay <= 11000);
+        await locked(dom);
+        assert.equal(dom.window.document.querySelector('.overview-tabs'), null);
+        assert.equal(dom.control.protectedCalls().length, count);
+      } finally {dom.window.close();}
     }],
     ['legacy data is inspected before any active-account data request', async () => {
       const dom = await open(member());
