@@ -14,7 +14,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit, quote
 from . import __version__
-from .store import AppError, Store, now
+from .store import AppError, Store, now, PLATFORMS
 
 WEB = Path(__file__).resolve().parent.parent / 'web'
 MAX_BODY = 30 * 1024 * 1024
@@ -56,20 +56,30 @@ def collection_scope(platform, options):
     """Use effective collector defaults so equivalent requests share one job."""
     if not isinstance(options,dict): raise AppError('invalid_options','采集条件不正确。')
     options=dict(options)
-    modes={'fanqie':'long','qidian':'long','ciweimao':'long','heiyan':'short','fanqie_short':'short'}
+    modes={item['id']:item['mode'] for item in PLATFORMS}
     if not isinstance(platform,str) or platform not in modes: raise AppError('invalid_platform','平台不正确。')
     mode=modes[platform]
     if options.get('mode') not in (None,mode): raise AppError('invalid_mode','作品类型与采集平台不一致。')
     options['mode']=mode
+    overseas=next((item for item in PLATFORMS if item['id']==platform and item['mode']=='overseas'),None)
+    if overseas:
+        defaults=overseas['default_options']
+        if not options.get('period') and defaults.get('period'):
+            options['period']=defaults['period']
+        for key, choices in (('channel','channels'),('category','categories'),('board','boards')):
+            value=options.get(key) or defaults[key]
+            if not isinstance(value,str) or value not in overseas[choices]:
+                raise AppError('invalid_options','请选择该海外平台提供的频道、分类和榜型。')
+            options[key]=value
     for key in ('channel','category','board','period'):
         if options.get(key) is not None and (not isinstance(options[key],str) or len(options[key])>200): raise AppError('invalid_options','频道、分类、榜型和周期必须是简短文字。')
-    channel=options.get('channel') or {'fanqie':'女频','qidian':'男频','ciweimao':'综合','heiyan':'全部','fanqie_short':'全部'}[platform]
+    channel=options.get('channel') or {'fanqie':'女频','qidian':'男频','ciweimao':'综合','heiyan':'全部','fanqie_short':'全部'}.get(platform,'全部')
     options['channel']={'female':'女频','male':'男频','all':'全部'}.get(channel,channel)
     if platform=='fanqie': options['channel']={'0':'女频','1':'男频'}.get(options['channel'],options['channel'])
     if platform=='ciweimao' and options['channel']=='全部': options['channel']='综合'
     default_category=('古言脑洞' if options['channel']=='女频' else '玄幻脑洞') if platform=='fanqie' else ('书库' if platform=='heiyan' else '全部')
     options['category']=options.get('category') or default_category
-    board=options.get('board') or {'fanqie':'新书榜','qidian':'月票榜','ciweimao':'月票榜','heiyan':'书库','fanqie_short':'热门故事'}[platform]
+    board=options.get('board') or {'fanqie':'新书榜','qidian':'月票榜','ciweimao':'月票榜','heiyan':'书库','fanqie_short':'热门故事'}.get(platform,'分类榜')
     options['board']={'new':'新书榜','read':'阅读榜','reading':'阅读榜','monthly':'月票榜','yuepiao':'月票榜','library':'书库','sales':'畅销榜'}.get(board,board)
     for key in ('channel','category','board'):
         if not isinstance(options[key],str) or len(options[key])>200: raise AppError('invalid_options','频道、分类和榜型必须是简短文字。')
@@ -617,6 +627,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def _post(self,path,data):
         store=self.server.store
+        if path=='/api/translation-context':
+            return store.translation_context(reference=data.get('query','翻译这本'),session=data.get('session','default'),snapshot_id=data.get('snapshot_id'),book_id=data.get('book_id'))
         if path=='/api/catalog':
             snapshot,book=store.book(data.get('snapshot_id'),data.get('book_id'))
             if snapshot['platform']!='fanqie': raise AppError('unsupported_text_source','此平台暂未接入在线目录，可导入原文。')

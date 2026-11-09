@@ -28,13 +28,20 @@ class ResolutionError(ValueError):
 PLATFORM_NAMES = {
     "fanqie": "番茄", "qidian": "起点", "ciweimao": "刺猬猫",
     "heiyan": "黑岩故事会", "fanqie_short": "番茄短故事",
+    "goodnovel":"GoodNovel", "goodnovel_short":"GoodNovel 短篇", "meganovel":"MegaNovel",
+    "dreame":"Dreame", "webnovel":"Webnovel", "royalroad":"Royal Road", "scribblehub":"Scribble Hub",
 }
 PLATFORM_ALIASES = {
+    "goodnovel_short": ("goodnovel_short", "goodnovel短篇", "goodnovel 短篇", "goodnovel短故事", "goodnovel short"),
+    "goodnovel": ("goodnovel", "good novel"), "meganovel": ("meganovel", "mega novel"),
+    "dreame": ("dreame",), "webnovel": ("webnovel", "web novel"),
+    "royalroad": ("royalroad", "royal road"), "scribblehub": ("scribblehub", "scribble hub"),
     "fanqie_short": ("番茄短故事", "番茄短篇", "fanqie_short"),
     "fanqie": ("番茄", "fanqie"), "qidian": ("起点", "qidian"),
     "ciweimao": ("刺猬猫", "ciweimao"),
     "heiyan": ("黑岩", "heiyan"),
 }
+OVERSEAS_IDS = {"goodnovel","goodnovel_short","meganovel","dreame","webnovel","royalroad","scribblehub"}
 CHANNEL_ALIASES = {
     "female": ("女频", "女生", "female", "women", "girl"),
     "male": ("男频", "男生", "male", "men", "boy"),
@@ -129,7 +136,7 @@ def _clock(context: dict):
 def _scope(snapshot: dict) -> str:
     return " · ".join(str(x) for x in (
         PLATFORM_NAMES.get(snapshot.get("platform"), snapshot.get("platform")),
-        "长篇" if snapshot.get("mode") == "long" else "短篇",
+        {"long":"长篇","short":"短篇","overseas":"海外网文"}.get(snapshot.get("mode"), snapshot.get("mode")),
         snapshot.get("channel"), snapshot.get("category"), snapshot.get("board"), snapshot.get("period"),
         snapshot.get("data_date") or snapshot.get("collected_at"),
     ) if x)
@@ -166,11 +173,22 @@ def _constraints(query: str, snapshots: list[dict]) -> dict:
         constraints["mode"] = "short"
     for key, aliases in PLATFORM_ALIASES.items():
         if any(_contains(query, alias) for alias in aliases):
-            if constraints.get("platform") == "fanqie_short" and key == "fanqie":
+            if (constraints.get("platform"),key) in (("fanqie_short","fanqie"),("goodnovel_short","goodnovel")):
                 continue
             if "platform" in constraints and constraints["platform"] != key:
                 raise ResolutionError("ambiguous_platform", "请指定这次分析的平台。")
             constraints["platform"] = key
+    overseas_explicit=bool(re.search(r"海外|(?<![a-z])overseas(?![a-z])",query))
+    if constraints.get("platform") in OVERSEAS_IDS or overseas_explicit:
+        if overseas_explicit and constraints.get("platform") and constraints["platform"] not in OVERSEAS_IDS:
+            raise ResolutionError("incompatible_scope","指定的平台不在海外网文板块中。")
+        content_type=constraints.pop("mode",None)
+        if constraints.get("platform")=="goodnovel" and content_type=="short":
+            constraints["platform"]="goodnovel_short"
+        if constraints.get("platform")=="goodnovel_short" and content_type=="long":
+            raise ResolutionError("incompatible_scope","该来源是 GoodNovel 短篇，请指定对应短篇作品。")
+        if content_type: constraints["content_type"]=content_type
+        constraints["mode"]="overseas"
     if constraints.get("platform") == "fanqie" and constraints.get("mode") == "short":
         constraints["platform"] = "fanqie_short"
     if constraints.get("platform") in ("fanqie", "qidian", "ciweimao") and "mode" not in constraints:
@@ -187,6 +205,13 @@ def _constraints(query: str, snapshots: list[dict]) -> dict:
             raise ResolutionError("ambiguous_" + field, "请指定一个频道或榜型。")
         if detected:
             constraints[field] = detected[0]
+    source_boards={_normalize(s.get("board")) for s in snapshots if s.get("board") and s.get("mode")=="overseas"}
+    detected_boards=[b for b in source_boards if _contains(query,b)]
+    detected_boards=[b for b in detected_boards if not any(b!=other and b in other for other in detected_boards)]
+    if len(detected_boards)>1:
+        raise ResolutionError("ambiguous_board","请指定一个海外榜型。")
+    if detected_boards:
+        constraints["board"]=_canonical(detected_boards[0],BOARD_ALIASES)
     categories = {_normalize(s.get("category")) for s in snapshots if s.get("category")}
     categories = {c for c in categories if not c.isdigit() and c not in ("全部", "all", "不限")}
     detected = [c for c in categories if _contains(query, c)]
@@ -202,7 +227,9 @@ def _constraints(query: str, snapshots: list[dict]) -> dict:
 def _matches(snapshot: dict, constraints: dict) -> bool:
     for field, value in constraints.items():
         found = snapshot.get(field)
-        if field == "channel":
+        if field == "content_type":
+            found = snapshot.get("content_type") or ("short" if snapshot.get("platform")=="goodnovel_short" else "long")
+        elif field == "channel":
             found = _canonical(found, CHANNEL_ALIASES)
         elif field == "board":
             found = _canonical(found, BOARD_ALIASES)
@@ -248,7 +275,10 @@ def resolve_reference(query: str, context: dict) -> dict:
     if not snapshots:
         raise ResolutionError("no_snapshots", "还没有保存的榜单或书库，请先在工作台采集或导入。")
     by_id = {s.get("id"): s for s in snapshots if s.get("id")}
-    constraints = _constraints(text, snapshots)
+    # English titles commonly contain words such as Long, New and Girl;
+    # a quoted title is an identity, not a channel or ranking instruction.
+    constraint_text=re.sub(r"《[^》]*》", "", text)
+    constraints = _constraints(constraint_text, snapshots)
     mode = constraints.get("mode", context.get("active_mode", "long"))
     views = context.get("views", {})
     view = views.get(mode) or {}

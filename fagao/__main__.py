@@ -14,6 +14,7 @@ def main():
     sub.add_parser('context'); sub.add_parser('state')
     for name in ('resolve','prepare'):
         p=sub.add_parser(name); p.add_argument('query')
+    p=sub.add_parser('translation-context'); p.add_argument('query',nargs='?',default='翻译这本'); p.add_argument('--snapshot'); p.add_argument('--book')
     p=sub.add_parser('prepare-book'); p.add_argument('--snapshot',required=True); p.add_argument('--book',required=True); p.add_argument('--request',default='分析已定位作品')
     p=sub.add_parser('import-snapshot'); p.add_argument('file')
     p=sub.add_parser('import-text'); p.add_argument('--snapshot',required=True); p.add_argument('--book',required=True); p.add_argument('--file',required=True); p.add_argument('--scope',required=True); p.add_argument('--complete',action='store_true')
@@ -38,6 +39,7 @@ def main():
             from .resolver import resolve_reference
             result=resolve_reference(args.query,store.context(args.session))
             if args.command=='prepare': result=store.prepare_task(result,args.query,args.session)
+        elif args.command=='translation-context': result=store.translation_context(args.query,args.session,args.snapshot,args.book)
         elif args.command=='prepare-book': result=store.prepare_task({'snapshot_id':args.snapshot,'book_id':args.book},args.request,args.session)
         elif args.command=='import-snapshot': result=store.save_snapshot(json.loads(Path(args.file).read_text(encoding='utf-8-sig')),imported=True)
         elif args.command=='import-text': result=store.import_text(args.snapshot,args.book,Path(args.file).read_text(encoding='utf-8-sig'),args.scope,args.complete)
