@@ -16,7 +16,7 @@
 
 ## 海外网文
 
-v0.6.0 新增 GoodNovel 长篇/短篇、Dreame、MegaNovel、Webnovel、Royal Road、Scribble Hub。七个入口均用真实公开页面采集，来源、分类、榜型、名次与英文词数口径见 [海外接入说明](overseas.md)。
+v0.6.0 新增 GoodNovel 长篇/短篇、Dreame、MegaNovel、Webnovel、Royal Road、Scribble Hub。v0.6.2 为 Royal Road 增加 RST 公开快照备用源，为 Scribble Hub 增加访问拒绝状态与浏览器保存榜单导入；来源、分类、榜型、名次与英文词数口径见 [海外接入说明](overseas.md)。
 
 ## 支持的选项
 
