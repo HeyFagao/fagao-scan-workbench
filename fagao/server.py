@@ -138,6 +138,10 @@ class JobManager:
                     return {'status':'cooldown','retry_after_seconds':AUTO_FAILURE_COOLDOWN_SECONDS,'requires_login':True,'auth':auth}
                 attempts=self.store.scope_jobs(key)
                 last=attempts[0] if attempts else None
+                if (options.get('mode')=='overseas' and last
+                        and last.get('status')=='failed'
+                        and last.get('error_code') in ('forbidden','source_access_denied','verification_required')):
+                    return {'status':'cooldown','retry_after_seconds':86400,'requires_action':True,'job':last}
                 if last and (last.get('status') in ('failed','interrupted') or last.get('auth_state') in ('network_error','unavailable')):
                     age=_age_seconds(last.get('finished_at') or last.get('updated_at') or last.get('created_at'))
                     if age is not None and age<AUTO_FAILURE_COOLDOWN_SECONDS:
@@ -501,6 +505,11 @@ class JobManager:
                     job.update(auth_state=result_auth,auth_message=auth_message)
                     if result_auth!='connected':
                         job.update(partial=True,message=f"已保存 {snapshot['books_count']} 本有效作品；{auth_message}")
+                source_state=result.get('source_state')
+                if result.get('mode')=='overseas' and source_state in ('forbidden','source_access_denied','verification_required'):
+                    source_message=str(result.get('source_message') or '来源拒绝继续读取，自动重试已暂停。')[:1000]
+                    job.update(status='failed',partial=True,error_code=source_state,
+                               message=f"已保存 {snapshot['books_count']} 本有效作品；{source_message}")
                 self.store.save_job(job)
         except Exception as exc:
             with self.lock:
@@ -514,7 +523,7 @@ class JobManager:
                     auth_state=getattr(exc,'state',None)
                     if job['platform']=='heiyan' and auth_state in ('logged_out','expired','forbidden','network_error','unavailable'):
                         self.store.auth_state('heiyan',{'state':auth_state,'message':message[:1200]})
-                    job.update(status='failed',message=message[:1200] or '采集失败，请重试。',error_code=getattr(exc,'code','collection_failed'),finished_at=now(),waiting_for_more=False)
+                    job.update(status='failed',message=message[:1200] or '采集失败，请重试。',error_code=getattr(exc,'code',None) or auth_state or 'collection_failed',finished_at=now(),waiting_for_more=False)
                     self.store.save_job(job)
         finally:
             with self.lock:
@@ -678,6 +687,14 @@ class Handler(BaseHTTPRequestHandler):
             if p!='heiyan' or action not in ('login','check'): raise AppError('invalid_auth','仅支持黑岩登录或连接检查。')
             return store.auth_state(p,auth(p,action,store.directory))
         if path=='/api/import/snapshot': return store.save_snapshot(data.get('snapshot'),imported=True)
+        if path=='/api/import/overseas-html':
+            if data.get('platform')!='scribblehub':
+                raise AppError('unsupported_platform','HTML 榜单导入当前支持 Scribble Hub 周收藏榜。')
+            from .scribble_import import parse_saved_ranking
+            from .collectors import CollectorError
+            try: snapshot=parse_saved_ranking(data.get('html'),data.get('source_url'))
+            except CollectorError as exc: raise AppError('invalid_ranking_html',str(exc)) from exc
+            return store.save_snapshot(snapshot,imported=True)
         if path=='/api/import/text': return store.import_text(data.get('snapshot_id'),data.get('book_id'),data.get('text'),data.get('scope'),data.get('complete',False))
         if path=='/api/config': return store.update_config(data)
         if path in ('/api/resolve','/api/prepare'):

@@ -74,7 +74,7 @@ def clean_pagination(value):
     if value is None: return None
     if not isinstance(value,dict): raise AppError('invalid_pagination','分页采集信息必须是对象。')
     result={}
-    for key in ('pages_fetched','max_pages','source_total'):
+    for key in ('pages_fetched','max_pages','source_total','pages_imported','source_page','source_pages'):
         item=value.get(key)
         if item is None:
             if key=='source_total': result[key]=None

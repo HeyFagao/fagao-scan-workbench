@@ -18,6 +18,7 @@ def main():
     p=sub.add_parser('translation-context'); p.add_argument('query',nargs='?',default='翻译这本'); p.add_argument('--snapshot'); p.add_argument('--book')
     p=sub.add_parser('prepare-book'); p.add_argument('--snapshot',required=True); p.add_argument('--book',required=True); p.add_argument('--request',default='分析已定位作品')
     p=sub.add_parser('import-snapshot'); p.add_argument('file')
+    p=sub.add_parser('import-ranking-html'); p.add_argument('file'); p.add_argument('--platform',choices=['scribblehub'],default='scribblehub'); p.add_argument('--source-url')
     p=sub.add_parser('import-text'); p.add_argument('--snapshot',required=True); p.add_argument('--book',required=True); p.add_argument('--file',required=True); p.add_argument('--scope',required=True); p.add_argument('--complete',action='store_true')
     p=sub.add_parser('save-report'); p.add_argument('--task',required=True); p.add_argument('--file',required=True)
     p=sub.add_parser('text'); p.add_argument('id')
@@ -46,6 +47,11 @@ def main():
         elif args.command=='translation-context': result=store.translation_context(args.query,args.session,args.snapshot,args.book)
         elif args.command=='prepare-book': result=store.prepare_task({'snapshot_id':args.snapshot,'book_id':args.book},args.request,args.session)
         elif args.command=='import-snapshot': result=store.save_snapshot(json.loads(Path(args.file).read_text(encoding='utf-8-sig')),imported=True)
+        elif args.command=='import-ranking-html':
+            from .scribble_import import parse_saved_ranking
+            source=Path(args.file)
+            if source.stat().st_size>8*1024*1024: raise AppError('too_large','榜单 HTML 文件不得超过 8 MB。')
+            result=store.save_snapshot(parse_saved_ranking(source.read_text(encoding='utf-8-sig'),args.source_url),imported=True)
         elif args.command=='import-text': result=store.import_text(args.snapshot,args.book,Path(args.file).read_text(encoding='utf-8-sig'),args.scope,args.complete)
         elif args.command=='save-report': result=store.save_report(args.task,Path(args.file).read_text(encoding='utf-8-sig'))
         elif args.command=='text': result=store.text_record(args.id)

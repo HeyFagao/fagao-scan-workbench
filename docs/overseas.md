@@ -1,4 +1,4 @@
-# 海外网文接入 · v0.6.0
+# 海外网文接入 · v0.6.2
 
 “海外网文”位于“我的收藏”上方。模式 `overseas` 独立保存浏览条件与选中作品；收藏、历史、报告共用现有资料库。作品书名、作者、简介保留来源英文，分类及已知标签通过固定词典显示中文。原标签另存 `source_tags`，无需模型翻译。
 
@@ -36,4 +36,19 @@ GoodNovel 默认狼人使用实际支持分页的 `/rankings?page=2`。非默认
 
 适配器按公开网页的数据结构独立实现，使用 Python 标准库解析 JSON/HTML，不运行来源页面脚本。调研参考包含 `Varun-Patkar/webnovel-filter-extension`、`fs-c/royalroad-api` 及 WebToEpub 的 GoodNovel 目录实现；本版未引入这些仓库的运行时依赖或全文下载代码。
 
-Royal Road 的 RST 公开历史数据服务已调研，本版使用官方新星列表，尚未接入其历史增长 API。海外首页统计只显示来源实际作品指标，不套用中文标题句式或每万汉字公式。
+Royal Road 官网首次请求返回访问拒绝或网络失败时，自动读取独立的 [RST 公开快照 API](https://rst.doomlabs.net/api/snapshots/latest)。一次请求最多 50 本；保存 `source_id=rst:doomlabs`、真实 `captured_at`、RST 快照 ID 和来源名次。页面显示 RST 名称与日期，原作品链接仍指向 Royal Road。该接口没有作者或简介，保持空值，不从标题推测；翻译只使用实际取得的书名。RST 也失败时保留两路失败原因与已有记录。海外首页统计只显示来源实际作品指标，不套用中文标题句式或每万汉字公式。
+
+
+## 访问拒绝与浏览器榜单导入
+
+海外任务保留 `forbidden`、`source_access_denied` 等真实错误状态；首次读取失败显示明确的状态卡和来源链接。访问被拒绝后暂停自动重试，手动“更新榜单”可以重新尝试。已有快照、收藏和选中对象继续可读。
+
+Scribble Hub 周收藏榜来源为 `https://www.scribblehub.com/series-ranking/?order=2&sort=2`。尚未接入经核验的当期独立备用 API。官网返回 403 不等同于未登录或缺少 Python 依赖；不要承诺登录必然解决。需要从浏览器接入时，使用用户正常打开且已显示作品的榜单页面，保存为“仅 HTML”，点击“导入已打开的榜单”；也可由 WorkBuddy 执行：
+
+```sh
+python3 -m fagao --data-dir DATA_DIR import-ranking-html SAVED_PAGE.html
+```
+
+HTTP 入口：`POST /api/import/overseas-html`，请求 `{platform:"scribblehub",html:"保存的页面内容"}`，沿用本机写入校验。解析器校验官网 canonical、当前激活的 Favorites/Weekly、页码及连续原榜名次；其它周期、其它筛选、验证页和空内容会拒绝。
+
+导入只登记该页实际书目，不执行脚本、不保存 HTML 或登录信息；`source_id=browser-import`、`data_date=null`、`complete=false`。导入时间不是来源更新时间，历史保存文件不能标成本周实时榜。没有可靠图片地址时保留书名占位，并提示使用“仅 HTML”保存方式。

@@ -11,13 +11,20 @@ async function wait(fn,message){for(let i=0;i<300;i++){if(await fn())return;awai
  const vc=new VirtualConsole();vc.on('jsdomError',error=>errors.push(String(error)));
  const dom=new JSDOM(await(await fetch(base+'/')).text(),{url:base+'/',runScripts:'outside-only',pretendToBeVisual:true,virtualConsole:vc});
  const w=dom.window,d=w.document;
- let scribbleJob=null;const moreRequests=[];
+ let scribbleJob=null, royalPhase='blocked', crossTabDenial=null;const moreRequests=[],htmlImports=[];
  let releaseTranslation;
  const translationGate=new Promise(resolve=>releaseTranslation=resolve);
  w.fetch=async(path,init)=>{
   const pathname=new URL(path,base).pathname;
   if(pathname==='/api/collect'){
    const request=JSON.parse(init.body);collections.push(request);
+   if(request.platform==='meganovel'){
+    crossTabDenial={id:'qa-denied-in-other-tab',platform:'meganovel',kind:'collect',status:'failed',error_code:'forbidden',message:'其他窗口的榜单请求返回 HTTP 403。',options:request.options};
+    return Response.json({status:'cooldown',requires_action:true,retry_after_seconds:86400,job:crossTabDenial});
+   }
+   if(request.platform==='royalroad'){
+    royalPhase='cached';return Response.json({status:'fresh',retry_after_seconds:900,snapshot_id:process.env.FAGAO_TEST_ROYAL_SNAPSHOT});
+   }
    if(request.platform==='scribblehub'){
     scribbleJob={id:'qa-scribble',platform:'scribblehub',kind:'collect',options:request.options,status:'running',automatic:true,interactive:true,partial_snapshot_id:process.env.FAGAO_TEST_SCRIBBLE_FIRST,partial_count:10,demand_count:10,waiting_for_more:true,message:'首批10本已载入'};
     return Response.json({status:'started',job_id:scribbleJob.id,job:scribbleJob});
@@ -32,9 +39,16 @@ async function wait(fn,message){for(let i=0;i<300;i++){if(await fn())return;awai
   if(pathname==='/api/state'||pathname==='/api/view'){
    const data=await(await fetch(new URL(path,base),init)).json();
    if(pathname==='/api/state'&&!scribbleJob)data.snapshots=data.snapshots.filter(item=>item.platform!=='scribblehub');
+   if(royalPhase==='blocked')data.snapshots=data.snapshots.filter(item=>item.platform!=='royalroad');
+   const royalError={id:'qa-royal-denied',platform:'royalroad',kind:'collect',status:'failed',error_code:'forbidden',message:'Royal Road 返回 HTTP 403；本次读取被拒绝。',options:{mode:'overseas',channel:'全部',category:'全部',board:'新星榜',period:'当前',limit:10000,max_pages:100}};
+   data.jobs=[royalError,...(data.jobs||[])];
    data.jobs=[{id:'qa-failed-live',platform:'goodnovel',kind:'collect',status:'failed',message:'当前更新暂时无法连接',options:{mode:'overseas',channel:'全部',category:'狼人',board:'分类榜',limit:10000,max_pages:100}},...(data.jobs||[])];
    if(scribbleJob)data.jobs=[scribbleJob,...(data.jobs||[])];
+   if(crossTabDenial)data.jobs=[crossTabDenial,...(data.jobs||[])];
    return Response.json(data);
+  }
+  if(pathname==='/api/import/overseas-html'){
+   htmlImports.push(JSON.parse(init.body));return fetch(base+'/api/snapshots/'+process.env.FAGAO_TEST_SCRIBBLE_FIRST);
   }
   if(pathname==='/api/overview/refresh')return Response.json({status:'fresh',retry_after_seconds:900});
   if(pathname==='/api/translation-context'){translations.push(JSON.parse(init.body));await translationGate;}
@@ -101,6 +115,11 @@ async function wait(fn,message){for(let i=0;i<300;i++){if(await fn())return;awai
  d.querySelector('[data-platform="dreame"]').click();
  await wait(()=>d.querySelector('.page-head h1')?.textContent==='Dreame · 新书榜','Dreame did not use registry default');
  assert.equal(d.querySelectorAll('#board-kind option').length,6);
+ d.querySelector('[data-platform="meganovel"]').click();
+ await wait(()=>d.querySelector('.source-failure')?.textContent.includes('其他窗口的榜单请求返回 HTTP 403。'),'Requires-action cooldown ignored a job created by another tab');
+ assert(d.querySelector('.auto-status').textContent.includes('自动重试已暂停'),'Requires-action cooldown promises automatic retry');
+ assert(!d.querySelector('#content').textContent.includes('正在同步作品'),'Requires-action cooldown retains false syncing state');
+ assert.equal(collections.filter(item=>item.platform==='meganovel').length,1);
  d.querySelector('[data-platform="webnovel"]').click();
  await wait(()=>d.querySelector('.page-head h1')?.textContent==='Webnovel · 新书能量榜','Webnovel did not use registry default');
  assert.equal(d.querySelector('#board-channel').value,'男频');
@@ -109,6 +128,23 @@ async function wait(fn,message){for(let i=0;i<300;i++){if(await fn())return;awai
  const changed=collections.find(item=>item.platform==='webnovel'&&item.options.channel==='女频');
  assert.equal(changed.options.category,'全部','Webnovel channel switched to domestic category');
  assert.equal(changed.options.period,'周榜');
+ d.querySelector('[data-platform="royalroad"]').click();
+ await wait(()=>d.querySelector('.source-failure h2')?.textContent==='来源暂不接受工作台读取','First403 did not show access failure');
+ assert(!d.querySelector('#content').textContent.includes('正在同步作品'),'403 left a misleading syncing state');
+ assert(d.querySelector('.source-failure').textContent.includes('HTTP 403'));
+ assert.equal(d.querySelector('.source-failure a')?.href,'https://www.royalroad.com/fictions/rising-stars');
+ assert(d.querySelector('.auto-status').textContent.includes('自动重试已暂停'));
+ assert.equal(collections.filter(item=>item.platform==='royalroad').length,0,'A known403 automatically retried');
+ d.querySelector('.source-failure [data-action="collect"]').click();
+ await wait(()=>d.querySelector('.book-title')?.textContent==='The RST English Book','Public snapshot did not render');
+ assert.equal(collections.find(item=>item.platform==='royalroad').automatic,false,'Explicit retry lost manual intent');
+ assert(d.querySelector('.job-warning').textContent.includes('HTTP 403'),'Cached403 did not retain failure notice');
+ assert.equal(d.querySelectorAll('.book-row').length,1,'Cached403 erased existing books');
+ assert(d.querySelector('.snapshot-source').textContent.includes('RST 公开榜单快照'));
+ assert(d.querySelector('.snapshot-source').textContent.includes('2026-11-09T09:40:00Z'));
+ assert.equal(d.querySelector('.list-key').textContent,'列表序号 / 作品来源名次');
+ assert.equal(d.querySelector('.row-summary').textContent,'本次来源未提供简介');
+ assert.equal(d.querySelector('.source-note a').href,'https://rst.doomlabs.net/');
  d.querySelector('[data-platform="scribblehub"]').click();
  await wait(()=>d.querySelector('.page-head h1')?.textContent==='Scribble Hub · 周收藏榜','Scribble weekly board did not open');
  await wait(()=>d.querySelectorAll('.book-row').length===10,'First overseas source page did not become visible');
@@ -118,7 +154,25 @@ async function wait(fn,message){for(let i=0;i<300;i++){if(await fn())return;awai
  await wait(()=>moreRequests.length===1,'Scrolling did not request next overseas source page');
  assert.equal(moreRequests[0].job_id,'qa-scribble');
  await wait(()=>d.querySelectorAll('.book-row').length===30,'Weekly source continuation failed after snapshot period arrived');
+ scribbleJob={...scribbleJob,status:'failed',error_code:'source_access_denied',message:'Scribble Hub 返回 HTTP 403。'};
+ d.querySelector('[data-platform="goodnovel"]').click();
+ await wait(()=>d.querySelector('.page-head h1')?.textContent==='GoodNovel · 分类榜','Return before import test failed');
+ d.querySelector('[data-platform="scribblehub"]').click();
+ await wait(()=>d.querySelector('.job-warning [data-action="import-ranking-html"]'),'Denied source lacks saved-page import');
+ d.querySelector('[data-action="import-ranking-html"]').click();
+ const importInput=d.querySelector('#snapshot-file');
+ assert(importInput.accept.includes('.html'),'HTML picker format missing');
+ d.querySelector('[data-platform="goodnovel"]').click();
+ await wait(()=>d.querySelector('.page-head h1')?.textContent==='GoodNovel · 分类榜','Switch while picker open failed');
+ Object.defineProperty(importInput,'files',{value:[{name:'ranking.html',type:'text/html',size:25,text:async()=>'<html>saved ranking</html>'}],configurable:true});
+ importInput.dispatchEvent(new w.Event('change',{bubbles:true}));
+ await wait(()=>htmlImports.length===1,'Saved HTML was not sent to dedicated import endpoint');
+ assert.equal(htmlImports[0].platform,'scribblehub','HTML import followed later page instead of chosen platform');
+ assert.equal(htmlImports[0].html,'<html>saved ranking</html>');
+ await wait(()=>d.querySelector('.book-title')?.textContent==='Scribble Fixture 1','Imported source did not open');
+ assert(d.querySelector('.auto-status').textContent.includes('历史记录'),'Saved-page import should stay a historical snapshot');
+ assert.equal(d.querySelector('.pagination-summary').textContent,'已导入第 1 页 · 本页 10 本 · 来源更新时间未知','HTML import falsely reports zero fetched pages');
  assert.deepEqual(errors,[]);
  dom.window.close();
- console.log('Overseas UI passed: navigation, Chinese registry filters, original English/cover, cache+scroll, pinned translation, favorites, domestic return and weekly channel scope.');
+ console.log('Overseas UI passed: navigation, Chinese registry filters, original English/cover, cache+scroll, pinned translation, favorites, domestic return weekly channel scope, denied-source states, source provenance and pinned HTML import.');
 })().catch(error=>{console.error(error);process.exit(1)});
