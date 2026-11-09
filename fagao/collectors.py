@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from html import unescape
 from html.parser import HTMLParser
 from http.cookiejar import CookieJar
+import inspect
 import json
 import os
 from pathlib import Path
@@ -106,6 +107,50 @@ def _int(value):
 def _notify(progress, message):
     if progress:
         progress(message)
+
+
+def _notify_snapshot(progress, snapshot, has_more):
+    """Publish a usable page before another request; the consumer may wait here.
+
+    Legacy one-argument progress handlers still receive a status message. The
+    richer callback may persist an immutable snapshot and block until a user
+    requests more rows. No source session/cookie is included in this payload.
+    Cancellation exceptions from the callback deliberately propagate.
+    """
+    if not progress or not snapshot.get("books"):
+        return
+    message = f"已加载 {len(snapshot['books'])} 本，可先浏览" + ("，后续书目按需继续。" if has_more else "。")
+    # Do not catch TypeError from inside the callback: it can signal a genuine
+    # consumer failure, which must not be retried as a second invocation.
+    try:
+        inspect.signature(progress).bind(message, snapshot=snapshot, has_more=has_more)
+    except (TypeError, ValueError):
+        progress(message)
+    else:
+        progress(message, snapshot=snapshot, has_more=has_more)
+
+
+def _fanqie_preview_books(rows, category):
+    """Decode the actual list fields without waiting for slow detail requests."""
+    books = []
+    for row in rows:
+        book_id = str(row.get("bookId") or row.get("book_id") or "")
+        rank = _int(row.get("currentPos"))
+        title = _fanqie_text(row.get("bookName"))
+        if not re.fullmatch(r"\d{5,30}", book_id) or not rank or not title:
+            continue
+        metrics = []
+        for name, value, unit in (("在读", row.get("read_count"), "人"), ("字数", row.get("wordNumber"), "字")):
+            number = _int(value)
+            if number is not None:
+                metrics.append({"name": name, "value": number, "unit": unit})
+        books.append({"id": book_id, "title": title, "author": _fanqie_text(row.get("author")),
+                      "summary": _fanqie_text(row.get("abstract")), "rank": rank,
+                      "url": f"{FANQIE}/page/{book_id}", "cover_url": _cover_url(row.get("thumbUri")),
+                      "tags": [category], "metrics": metrics,
+                      "status": {"1": "连载中", "0": "已完结"}.get(str(row.get("creationStatus")), ""),
+                      "metadata_status": "list_preview"})
+    return sorted(books, key=lambda book: book["rank"])
 
 
 def _page_options(options, page_size):
@@ -233,6 +278,24 @@ def _fanqie(options, progress, data_dir=None):
     rank_version = str(rank_data.get("rankVersion") or "")
     pages_fetched, stop_reason = 1, "max_pages"
     offset = len(rows)
+
+    def publish_page():
+        if not progress:
+            return
+        preview = _fanqie_preview_books(rows[:limit], category)
+        if not preview:
+            return
+        raw = _result("fanqie", "long", channel, category, board, source, preview,
+                      warnings=list(warnings), complete=False, categories=list(categories), rank_version=rank_version,
+                      requested_count=limit, available_count=len(rows),
+                      pagination={"pages_fetched": pages_fetched, "max_pages": max_pages, "stop_reason": "loading",
+                                  "source_total": rank_data.get("total_num"), "page_size": 100,
+                                  "initial_page_size": initial_page_size})
+        if rank_version.isdigit() and len(rank_version) == 10:
+            raw["data_date"] = datetime.fromtimestamp(int(rank_version), timezone.utc).isoformat()
+        _notify_snapshot(progress, raw, len(rows) < limit and pages_fetched < max_pages)
+
+    publish_page()
     # Same paginated public endpoint used by the platform's own rank page.
     # Keep the SSR version for each page, and require explicit currentPos fields.
     while len(rows) < limit and pages_fetched < max_pages:
@@ -276,6 +339,7 @@ def _fanqie(options, progress, data_dir=None):
             warnings.append("后续榜单分页连接失败，仅保留已取得的原榜名次。")
             stop_reason = "request_failed"
             break
+        publish_page()
     if len(rows) >= limit:
         stop_reason = "requested_limit" if options.get("limit") else "max_pages"
     available = len(rows)
@@ -489,6 +553,20 @@ def _qidian(options, progress):
     csrf = next((cookie.value for cookie in cookies if cookie.name == "_csrfToken" and (cookie.domain == "m.qidian.com" or cookie.domain.endswith(".qidian.com"))), None)
     # Official rank component maps its verified route id to id+'list'.
     endpoint = QIDIAN_BOARDS[board] + "list"
+
+    def publish_page():
+        if not progress or not books:
+            return
+        raw = _result("qidian", "long", "男频", "全部", board, source, [dict(book) for book in books[:limit]],
+                      warnings=list(warnings), complete=False, requested_count=limit,
+                      available_count=len(books), source_total=total, source_filters=dict(selected_filters),
+                      pagination={"pages_fetched": pages_fetched, "max_pages": max_pages, "stop_reason": "loading",
+                                  "source_total": total, "page_size": 20})
+        has_more = bool(len(books) < limit and pages_fetched < max_pages and csrf and endpoint
+                        and data.get("isLast") not in (1, True, "1"))
+        _notify_snapshot(progress, raw, has_more)
+
+    publish_page()
     while len(books) < limit and pages_fetched < max_pages:
         if data.get("isLast") in (1, True, "1"):
             stop_reason = "last_page"
@@ -535,6 +613,7 @@ def _qidian(options, progress):
             break
         books.extend(fresh)
         data = new_data
+        publish_page()
     if len(books) >= limit and data.get("isLast") not in (1, True, "1"):
         stop_reason = "requested_limit" if options.get("limit") else "max_pages"
     elif data.get("isLast") in (1, True, "1"):
@@ -667,6 +746,17 @@ def _ciweimao(options, progress):
     pages_fetched, stop_reason, next_url = 0, "max_pages", source
     books, warnings = [], []
     started_at = datetime.now(timezone.utc).isoformat()
+
+    def publish_page(has_next):
+        if not progress or not books:
+            return
+        raw = _result("ciweimao", "long", "综合", "全部", board, source, [dict(book) for book in books[:limit]],
+                      warnings=list(warnings), complete=False, period="月榜" if board == "月票榜" else None,
+                      requested_count=limit, available_count=len(books),
+                      pagination={"pages_fetched": pages_fetched, "max_pages": max_pages, "stop_reason": "loading",
+                                  "source_total": None, "page_size": 10, "started_at": started_at})
+        _notify_snapshot(progress, raw, bool(has_next and pages_fetched < max_pages and len(books) < limit))
+
     while next_url and pages_fetched < max_pages and len(books) < limit:
         _page_pause(progress, f"正在读取刺猬猫第 {pages_fetched + 1} 页，已取得 {len(books)} 本…")
         try:
@@ -697,6 +787,7 @@ def _ciweimao(options, progress):
         if not next_link:
             stop_reason = "last_page"
             next_url = None
+            publish_page(False)
             break
         candidate = urllib.parse.urljoin(next_url, next_link.attrs.get("href", ""))
         parsed = urllib.parse.urlsplit(candidate)
@@ -705,8 +796,10 @@ def _ciweimao(options, progress):
         if parsed.scheme != "https" or parsed.hostname != "www.ciweimao.com" or not page_match or int(page_match[1]) != pages_fetched + 1 or parsed.query:
             stop_reason = "invalid_next_page"
             warnings.append("平台下一页没有指向同一个榜单周期，已停止，避免混榜。")
+            publish_page(False)
             break
         next_url = candidate
+        publish_page(True)
     if len(books) >= limit and stop_reason not in ("last_page", "empty_page"):
         stop_reason = "requested_limit" if options.get("limit") else "max_pages"
     if board == "月票榜":
@@ -812,7 +905,14 @@ def auth(platform, action, data_dir):
 
 
 def collect(platform, options, data_dir, progress=None):
-    """Collect one precisely scoped list; failures never fabricate a snapshot."""
+    """Collect one precisely scoped list; failures never fabricate a snapshot.
+
+    Public long-list collectors emit ``progress(message, snapshot=raw,
+    has_more=bool)`` after each accepted source page. A callback may suspend
+    collection there until the consumer requests another batch. Ordinary status
+    messages still call ``progress(message)``. One-argument callbacks remain
+    compatible. The final return is the fully enriched result, not the preview.
+    """
     if platform == "fanqie":
         return _fanqie(options, progress, data_dir)
     if platform == "qidian":

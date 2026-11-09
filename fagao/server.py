@@ -7,6 +7,7 @@ import json
 import mimetypes
 import re
 import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -20,6 +21,8 @@ MAX_BODY = 30 * 1024 * 1024
 
 AUTO_FRESH_SECONDS = 15 * 60
 AUTO_FAILURE_COOLDOWN_SECONDS = 5 * 60
+INTERACTIVE_IDLE_SECONDS = 120
+OVERVIEW_SCOPE = 'overview:fanqie-new-qidian-ciweimao:v1'
 
 
 def collection_scope(platform, options):
@@ -69,14 +72,26 @@ def _age_seconds(timestamp):
 class JobManager:
     def __init__(self,store):
         self.store=store; self.lock=threading.RLock(); self.active={}
+        self.condition=threading.Condition(self.lock)
+        self.overview_lock=threading.Lock(); self.overview_cache=None
 
-    def start(self,platform,options,automatic=False):
+    def start(self,platform,options,automatic=False,interactive=False,demand_count=10):
         if not isinstance(automatic,bool): raise AppError('invalid_automatic','automatic 应为布尔值。')
+        if not isinstance(interactive,bool): raise AppError('invalid_interactive','interactive 应为布尔值。')
+        if isinstance(demand_count,bool) or not isinstance(demand_count,int) or not 1<=demand_count<=10000:
+            raise AppError('invalid_count','浏览目标数量应为 1 到 10000。')
         key,options=collection_scope(platform,options)
         with self.lock:
             active_id=self.active.get(key)
             if active_id:
                 job=self.store.job(active_id)
+                job['shared']=True
+                if not interactive and job.get('interactive'):
+                    # The overview needs the complete category and must not wait
+                    # for scrolling in a different browser tab.
+                    job.update(interactive=False,waiting_for_more=False)
+                    self.condition.notify_all()
+                self.store.save_job(job)
                 return {'status':'busy','job_id':active_id,'job':job}
             if automatic:
                 auth=self.store.state().get('auth',{}).get('heiyan',{}) if platform=='heiyan' else {}
@@ -90,17 +105,182 @@ class JobManager:
                         return {'status':'cooldown','retry_after_seconds':max(1,math.ceil(AUTO_FAILURE_COOLDOWN_SECONDS-age)),'job':last}
                 # A saved partial batch is usable, but an expired session must not
                 # make it look freshly complete after the user reconnects.
-                completed=None if last and last.get('auth_state') in ('logged_out','expired','forbidden','network_error','unavailable') else next((j for j in attempts if j.get('status')=='completed' and j.get('snapshot_id')),None)
+                completed=None if last and last.get('auth_state') in ('logged_out','expired','forbidden','network_error','unavailable') else next((j for j in attempts if j.get('status')=='completed' and j.get('snapshot_id') and not j.get('paused_for_demand')),None)
                 if completed:
                     age=_age_seconds(completed.get('finished_at') or completed.get('created_at'))
                     if age is not None and age<AUTO_FRESH_SECONDS:
                         try: self.store.snapshot(completed['snapshot_id'])
                         except AppError: pass
                         else: return {'status':'fresh','snapshot_id':completed['snapshot_id'],'retry_after_seconds':max(1,math.ceil(AUTO_FRESH_SECONDS-age))}
-            job={'id':uuid.uuid4().hex,'kind':'collect','platform':platform,'status':'pending','message':'正在准备采集','created_at':now(),'options':options,'scope_key':key,'automatic':automatic}
+            job={'id':uuid.uuid4().hex,'kind':'collect','platform':platform,'status':'pending','message':'正在准备采集','created_at':now(),'options':options,'scope_key':key,'automatic':automatic,
+                 'interactive':interactive,'demand_count':demand_count,'waiting_for_more':False}
             self.store.save_job(job); self.active[key]=job['id']
             threading.Thread(target=self._run,args=(job,),daemon=True).start()
             return {'status':'started','job_id':job['id'],'job':dict(job)}
+
+    def more(self,jid,count=100):
+        if isinstance(count,bool) or not isinstance(count,int) or not 1<=count<=1000:
+            raise AppError('invalid_count','每次继续读取的数量应为 1 到 1000。')
+        with self.condition:
+            job=self.store.job(jid)
+            if job.get('kind')!='collect': raise AppError('invalid_job','只有榜单浏览任务可以继续读取。')
+            target=min(10000,max(job.get('demand_count',10),job.get('partial_count',0))+count)
+            if job['status'] in ('pending','running'):
+                job.update(demand_count=target,waiting_for_more=False,demand_updated_at=now())
+                self.store.save_job(job); self.condition.notify_all()
+                return {'status':'continued','job_id':jid,'job':job}
+            if job.get('paused_for_demand'):
+                if self.active.get(job['scope_key'])==jid: self.active.pop(job['scope_key'],None)
+                return self.start(job['platform'],job['options'],False,True,target)
+            return {'status':job['status'],'job_id':jid,'job':job}
+
+    def overview(self):
+        from .overview import build_overview
+        revision=self.store.snapshot_revision()
+        with self.overview_lock:
+            if self.overview_cache is None or self.overview_cache[0]!=revision:
+                self.overview_cache=(revision,build_overview(self.store.overview_history()))
+            result=dict(self.overview_cache[1])
+        jobs=self.store.scope_jobs(OVERVIEW_SCOPE)
+        result['update']=jobs[0] if jobs else None
+        return result
+
+    def start_overview(self,automatic=False):
+        if not isinstance(automatic,bool): raise AppError('invalid_automatic','automatic 应为布尔值。')
+        with self.lock:
+            if OVERVIEW_SCOPE in self.active:
+                jid=self.active[OVERVIEW_SCOPE]
+                return {'status':'busy','job_id':jid,'job':self.store.job(jid)}
+            attempts=self.store.scope_jobs(OVERVIEW_SCOPE)
+            last=attempts[0] if attempts else None
+            if automatic and last:
+                age=_age_seconds(last.get('finished_at') or last.get('created_at'))
+                fresh=last['status']=='completed' and not last.get('partial')
+                duration=AUTO_FRESH_SECONDS if fresh else AUTO_FAILURE_COOLDOWN_SECONDS
+                if age is not None and age<duration:
+                    return {'status':'fresh' if fresh else 'cooldown','job_id':last['id'],'job':last,
+                            'retry_after_seconds':max(1,math.ceil(duration-age))}
+            job={'id':uuid.uuid4().hex,'kind':'overview','platform':'overview','status':'pending',
+                 'message':'正在汇总番茄新书榜、起点与刺猬猫月票榜','created_at':now(),
+                 'scope_key':OVERVIEW_SCOPE,'automatic':automatic,
+                 'progress':{'platform':'fanqie','channel':'男频','category':'玄幻脑洞',
+                             'completed_categories':0,'failed_categories':0,'skipped_categories':0,'total_categories':4}}
+            self.store.save_job(job); self.active[OVERVIEW_SCOPE]=job['id']
+            threading.Thread(target=self._run_overview,args=(job,),daemon=True).start()
+            return {'status':'started','job_id':job['id'],'job':dict(job)}
+
+    def _run_overview(self,job):
+        from .batch import collect_all_categories
+        counters=job['progress']
+        result={'channels':[],'snapshots_count':0,'preview_count':0,'failed_categories':[],
+                'incomplete_categories':[],'warnings':[],'complete':False}
+
+        def update(message):
+            with self.lock:
+                if self.store.job(job['id'])['status']=='cancelled':
+                    raise AppError('cancelled','首页更新已暂停，已取得榜单保留。')
+                job.update(status='running',message=str(message),progress=dict(counters),updated_at=now())
+                self.store.save_job(job)
+
+        def load(platform,options,track=True):
+            counters.update(platform=platform,channel=options['channel'],category=options['category'])
+            update(f"正在更新{options['channel']}／{options['board']}／{options['category']}")
+            reply=self.start(platform,options,job['automatic'])
+            child_id=reply.get('job_id')
+            with self.lock:
+                if self.store.job(job['id'])['status']=='cancelled':
+                    if child_id and reply['status']=='started' and not self.store.job(child_id).get('shared'):
+                        self.cancel(child_id)
+                    raise AppError('cancelled','首页更新已暂停，已取得榜单保留。')
+                job.update(active_child_id=child_id,owns_child=reply['status']=='started')
+                self.store.save_job(job)
+            try:
+                if reply['status']=='cooldown': raise AppError('source_cooldown','该分类刚才访问失败，稍后自动重试。')
+                if reply['status']=='fresh':
+                    snapshot=self.store.snapshot(reply['snapshot_id'])
+                    if track: counters['skipped_categories']+=1
+                else:
+                    last_message=None
+                    while True:
+                        with self.lock:
+                            if self.store.job(job['id'])['status']=='cancelled':
+                                if job.get('owns_child') and not self.store.job(child_id).get('shared'): self.cancel(child_id)
+                                raise AppError('cancelled','首页更新已暂停。')
+                        child=self.store.job(child_id)
+                        if child['status'] not in ('pending','running','cancelling'): break
+                        if child.get('message')!=last_message:
+                            last_message=child.get('message'); update(last_message or '正在更新榜单')
+                        threading.Event().wait(0.05)
+                    if child['status']!='completed' or not child.get('snapshot_id'):
+                        raise AppError(child.get('error_code','source_failed'),child.get('message','该分类暂时无法更新。'))
+                    snapshot=self.store.snapshot(child['snapshot_id'])
+                if track:
+                    counters['completed_categories']+=1; result['snapshots_count']+=1
+                    update(f"已汇总 {counters['completed_categories']} 个榜单分类，继续更新其余分类")
+                else: result['preview_count']+=1
+                return snapshot
+            except Exception as exc:
+                if track and getattr(exc,'code',None)!='cancelled': counters['failed_categories']+=1
+                raise
+
+        try:
+            # Populate each platform before deep category pagination. A returning
+            # user sees the existing cache immediately; only missing seed scopes
+            # need this one-page pass. These are previews, never fresh full scans.
+            counters['phase']='preview'
+            cached=self.store.state()['snapshots']
+            for platform,channel,category,board,period in (
+                ('fanqie','男频','玄幻脑洞','新书榜',''),
+                ('fanqie','女频','古言脑洞','新书榜',''),
+                ('qidian','男频','全部','月票榜',''),
+                ('ciweimao','综合','全部','月票榜','月榜'),
+            ):
+                if any(s.get('platform')==platform and s.get('channel')==channel and s.get('category')==category
+                       and s.get('board')==board and (s.get('period') or '')==period and s.get('books_count',0)>0 for s in cached):
+                    continue
+                options={'channel':channel,'category':category,'board':board,'limit':10000,'max_pages':1}
+                if period: options['period']=period
+                try: load(platform,options,False)
+                except Exception as exc:
+                    if getattr(exc,'code',None)=='cancelled': raise
+                    result['warnings'].append(f"{platform}首批暂未取得，将在完整更新时重试。")
+            counters['phase']='full'
+            for channel in ('男频','女频'):
+                def discovered(categories):
+                    counters['total_categories']+=max(0,len(categories)-1)
+                    update(f"已发现番茄{channel}新书榜 {len(categories)} 个分类")
+                batch=collect_all_categories(self.store,{'channel':channel,'board':'新书榜','limit':10000,'max_pages':100},
+                    update,load_category=lambda options:load('fanqie',options),on_discovery=discovered)
+                result['channels'].append({key:value for key,value in batch.items() if key!='snapshots'})
+                result['failed_categories'].extend({'platform':'fanqie','channel':channel,**item} for item in batch['failed_categories'])
+                result['incomplete_categories'].extend({'platform':'fanqie','channel':channel,'category':category} for category in batch['incomplete_categories'])
+                result['warnings'].extend(batch['warnings'])
+            for platform,channel,period in (('qidian','男频',''),('ciweimao','综合','月榜')):
+                options={'channel':channel,'category':'全部','board':'月票榜','limit':10000,'max_pages':100}
+                if period: options['period']=period
+                try:
+                    snapshot=load(platform,options)
+                    if snapshot.get('complete') is not True:
+                        result['incomplete_categories'].append({'platform':platform,'channel':channel,'category':'全部'})
+                except Exception as exc:
+                    if getattr(exc,'code',None)=='cancelled': raise
+                    result['failed_categories'].append({'platform':platform,'channel':channel,'category':'全部',
+                                                       'code':getattr(exc,'code','source_failed'),'message':str(exc)[:1200]})
+            result['complete']=not result['failed_categories'] and not result['incomplete_categories'] and all(b['discovery_complete'] for b in result['channels'])
+            with self.lock:
+                if self.store.job(job['id'])['status']=='cancelled': return
+                job.update(status='completed' if result['snapshots_count'] or result['preview_count'] else 'failed',partial=not result['complete'],result=result,
+                           message=f"已汇总 {result['snapshots_count']} 个榜单分类"+('；部分来源稍后重试' if not result['complete'] else ''),
+                           finished_at=now(),progress=dict(counters),active_child_id=None,owns_child=False)
+                self.store.save_job(job)
+        except Exception as exc:
+            with self.lock:
+                if self.store.job(job['id'])['status']!='cancelled':
+                    job.update(status='failed',partial=True,result=result,message=str(exc)[:1200],finished_at=now())
+                    self.store.save_job(job)
+        finally:
+            with self.lock:
+                if self.active.get(OVERVIEW_SCOPE)==job['id']: self.active.pop(OVERVIEW_SCOPE,None)
 
     def start_text(self,sid,bid,chapters=3,start_chapter=1,all_chapters=False):
         if not isinstance(all_chapters,bool): raise AppError('invalid_range','all 应为布尔值。')
@@ -169,10 +349,39 @@ class JobManager:
 
     def _run(self,job):
         def progress(message,*args,**kwargs):
-            with self.lock:
+            with self.condition:
                 current=self.store.job(job['id'])
                 if current['status']=='cancelled': raise AppError('cancelled','已取消本次采集。')
+                job.update({key:current[key] for key in ('interactive','demand_count','waiting_for_more','shared') if key in current})
+                partial=kwargs.get('snapshot')
+                if partial is not None:
+                    if not isinstance(partial,dict) or partial.get('platform')!=job['platform']:
+                        raise AppError('partial_scope_mismatch','增量榜单的平台与请求不一致。')
+                    for field in ('channel','category','board'):
+                        if partial.get(field)!=job['options'][field]:
+                            raise AppError('partial_scope_mismatch','增量榜单的频道、分类或榜型与请求不一致。')
+                    if job['options'].get('period') and partial.get('period')!=job['options']['period']:
+                        raise AppError('partial_scope_mismatch','增量榜单的周期与请求不一致。')
+                    snapshot=self.store.save_snapshot({**partial,'complete':False})
+                    job.update(partial_snapshot_id=snapshot['id'],partial_count=snapshot['books_count'])
                 job.update(status='running',message=str(message),updated_at=now()); self.store.save_job(job)
+                # Only a genuine source-page boundary can pause network work.
+                # Polling never renews the idle timer; an abandoned tab releases
+                # its worker while retaining immutable visible snapshots.
+                if partial is not None and kwargs.get('has_more') and job.get('interactive'):
+                    deadline=time.monotonic()+INTERACTIVE_IDLE_SECONDS
+                    while True:
+                        current=self.store.job(job['id'])
+                        if current['status']=='cancelled': raise AppError('cancelled','已取消本次采集。')
+                        job.update({key:current[key] for key in ('interactive','demand_count','waiting_for_more','shared') if key in current})
+                        if not current.get('interactive') or current.get('demand_count',10)>job.get('partial_count',0):
+                            job.update(waiting_for_more=False); self.store.save_job(job); break
+                        remaining=deadline-time.monotonic()
+                        if remaining<=0: raise AppError('paused_for_demand','已保留当前榜单，继续向下浏览时再读取。')
+                        if not job.get('waiting_for_more'):
+                            job.update(waiting_for_more=True,message=f"已显示 {job.get('partial_count',0)} 本，向下浏览继续读取")
+                            self.store.save_job(job)
+                        self.condition.wait(min(remaining,1))
         try:
             from .collectors import collect
             progress('正在连接平台')
@@ -180,7 +389,7 @@ class JobManager:
             with self.lock:
                 if self.store.job(job['id'])['status']=='cancelled': return
                 snapshot=self.store.save_snapshot(result)
-                job.update(status='completed',message=f"已保存 {snapshot['books_count']} 本作品",snapshot_id=snapshot['id'],finished_at=now())
+                job.update(status='completed',message=f"已保存 {snapshot['books_count']} 本作品",snapshot_id=snapshot['id'],finished_at=now(),waiting_for_more=False)
                 result_auth=result.get('auth_state')
                 if job['platform']=='heiyan' and result_auth in ('connected','logged_out','expired','forbidden','network_error','unavailable'):
                     auth_message=str(result.get('auth_message') or ('书库访问已确认。' if result_auth=='connected' else '本次只保存部分结果，请重新检查黑岩连接。'))[:1200]
@@ -193,10 +402,15 @@ class JobManager:
             with self.lock:
                 if self.store.job(job['id'])['status']!='cancelled':
                     message=getattr(exc,'message',None) or str(exc)
+                    if getattr(exc,'code',None)=='paused_for_demand' and job.get('partial_snapshot_id'):
+                        job.update(status='completed',snapshot_id=job['partial_snapshot_id'],partial=True,
+                                   paused_for_demand=True,waiting_for_more=False,message=message,finished_at=now())
+                        self.store.save_job(job)
+                        return
                     auth_state=getattr(exc,'state',None)
                     if job['platform']=='heiyan' and auth_state in ('logged_out','expired','forbidden','network_error','unavailable'):
                         self.store.auth_state('heiyan',{'state':auth_state,'message':message[:1200]})
-                    job.update(status='failed',message=message[:1200] or '采集失败，请重试。',error_code=getattr(exc,'code','collection_failed'),finished_at=now())
+                    job.update(status='failed',message=message[:1200] or '采集失败，请重试。',error_code=getattr(exc,'code','collection_failed'),finished_at=now(),waiting_for_more=False)
                     self.store.save_job(job)
         finally:
             with self.lock:
@@ -211,6 +425,9 @@ class JobManager:
                 else:
                     j.update(status='cancelled',message='已取消本次采集，已有结果保留。',finished_at=now())
                 self.store.save_job(j)
+                if j.get('kind')=='overview' and j.get('owns_child') and j.get('active_child_id'):
+                    if not self.store.job(j['active_child_id']).get('shared'): self.cancel(j['active_child_id'])
+                self.condition.notify_all()
             return j
 
 class WorkbenchServer(ThreadingHTTPServer):
@@ -279,6 +496,7 @@ class Handler(BaseHTTPRequestHandler):
         store=self.server.store
         if path=='/api/health': return {'app':'fagao-scan-workbench','version':__version__,'data_dir':str(store.directory),'source_root':str(Path(__file__).resolve().parent.parent)}
         if path=='/api/state': return store.state()
+        if path=='/api/overview': return self.server.jobs.overview()
         if path=='/api/context': return store.context()
         if path.startswith('/api/snapshots/'): return store.snapshot(path.rsplit('/',1)[-1])
         if path.startswith('/api/reports/'): return store.report(path.rsplit('/',1)[-1])
@@ -318,7 +536,11 @@ class Handler(BaseHTTPRequestHandler):
             return build_insights(snapshot,store.state(full=True)['snapshots'])
         if path=='/api/view': return store.set_view(data)
         if path=='/api/favorite': return store.toggle_favorite(data.get('snapshot_id'),data.get('book_id'),bool(data.get('enabled')))
-        if path=='/api/collect': return self.server.jobs.start(data.get('platform'),data.get('options',{}),data.get('automatic',False))
+        if path=='/api/collect':
+            args=(data.get('platform'),data.get('options',{}),data.get('automatic',False))
+            return self.server.jobs.start(*args,interactive=data['interactive']) if 'interactive' in data else self.server.jobs.start(*args)
+        if path=='/api/overview/refresh': return self.server.jobs.start_overview(data.get('automatic',False))
+        if path=='/api/jobs/more': return self.server.jobs.more(data.get('job_id'),data.get('count',100))
         if path=='/api/jobs/cancel': return self.server.jobs.cancel(data.get('job_id'))
         if path=='/api/auth':
             from .collectors import auth
