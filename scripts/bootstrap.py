@@ -253,22 +253,28 @@ def service_matches(value: dict | None, data_dir: Path, release: Path) -> bool:
 
 
 def runtime_environment(root: Path) -> dict:
-    """Apply only an explicitly configured private Node directory to this child."""
+    """An obsolete optional browser runtime must not block the core workbench."""
     env = os.environ.copy()
     config = root / "runtime.json"
     if not config.exists():
         return env
-    value = read_json(config)
+    try:
+        value = read_json(config)
+    except InstallError:
+        return env
+    required = value.get("enable_legacy_heiyan_backend") is True
     node = value.get("node_executable")
     if node is None:
         return env
     if not isinstance(node, str) or not node or "\x00" in node:
-        raise InstallError("runtime.json 的 node_executable 须为 Node 可执行文件绝对路径。")
+        if required:
+            raise InstallError("runtime.json 的 node_executable 须为 Node 可执行文件绝对路径。")
+        return env
     candidate = Path(node).expanduser()
-    if not candidate.is_absolute() or not candidate.is_file():
-        raise InstallError("runtime.json 指定的 Node 不存在或不是绝对路径。")
-    if candidate.name.lower() not in ("node", "node.exe"):
-        raise InstallError("node_executable 须指向名为 node 或 node.exe 的实际程序。")
+    if not candidate.is_absolute() or not candidate.is_file() or candidate.name.lower() not in ("node", "node.exe"):
+        if required:
+            raise InstallError("runtime.json 指定的 Node 不存在或不是有效的 Node 可执行文件绝对路径。")
+        return env
     env["PATH"] = str(candidate.parent) + os.pathsep + env.get("PATH", "")
     return env
 
@@ -296,17 +302,20 @@ if state and (state.get("app") != "fagao-scan-workbench" or pathlib.Path(state.g
 environment = os.environ.copy()
 runtime_file = root / "runtime.json"
 if runtime_file.exists():
-    runtime = json.loads(runtime_file.read_text(encoding="utf-8"))
+    try:
+        runtime = json.loads(runtime_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        runtime = {}
     if not isinstance(runtime, dict):
-        raise SystemExit("Invalid local runtime.json; ask WorkBuddy to repair the private Node path")
+        runtime = {}
     node = runtime.get("node_executable")
     if node is not None:
-        if not isinstance(node, str) or not node:
-            raise SystemExit("node_executable must be an absolute Node executable path")
-        candidate = pathlib.Path(node).expanduser()
-        if not candidate.is_absolute() or not candidate.is_file() or candidate.name.lower() not in ("node", "node.exe"):
+        candidate = pathlib.Path(node).expanduser() if isinstance(node, str) and node and "\\x00" not in node else None
+        valid = candidate is not None and candidate.is_absolute() and candidate.is_file() and candidate.name.lower() in ("node", "node.exe")
+        if not valid and runtime.get("enable_legacy_heiyan_backend") is True:
             raise SystemExit("The configured private Node executable is missing or invalid")
-        environment["PATH"] = str(candidate.parent) + os.pathsep + environment.get("PATH", "")
+        if valid:
+            environment["PATH"] = str(candidate.parent) + os.pathsep + environment.get("PATH", "")
 command = [sys.executable, str(release / "scripts" / "launch.py"), "--data-dir", current["data_dir"], "--port", str(port)]
 raise SystemExit(subprocess.call(command, cwd=release, env=environment))
 '''
@@ -324,6 +333,7 @@ PROJECT_INSTRUCTIONS = """# 发糕扫榜工作台 · 固定项目入口
 4. 日常打开工作台，运行上一级的 `open-workbench.py`，不要另建服务或猜测端口。这个入口按 `current.json` 选择版本，并核对服务所属资料与源码目录。
 5. 只有在定位、取文和实际阅读后才分析。用户说“第二本”“原榜第 14 名”“刚选的这本”时，按当前版本文档调用 CLI 固定作品；后续不因更新榜单而换书。
 6. 更新源码不会替换资料目录；旧版本正在运行时按安装结果处理，先核对具体服务进程再重启，不终止无关 Python、浏览器或其他应用。
+7. 当前黑岩入口是腾讯文档书单，点击后由用户在普通浏览器登录；不是掌文后台，不为这个入口安装 Node 或 Playwright。启动器会先检查当前功能的本地依赖与资源，失败由维护助手修复后再打开。
 
 如果 `current.json` 缺失、字段无效或目标版本不在本安装目录中，停止启动并让维护助手重新执行可信安装流程。不要用其他用户目录或猜测的版本兜底。
 """
@@ -472,11 +482,14 @@ def install(*, repo=None, commit=None, source_dir=None, install_root=None, data_
             launched = json.loads(run.stdout)
         except ValueError as exc:
             raise InstallError("启动入口没有返回可验证结果，未切换现用版本。") from exc
+        readiness = launched.get("readiness", {})
+        if not isinstance(readiness, dict) or readiness.get("status") != "ready":
+            raise InstallError("本地依赖与必要资源未通过启动自检，未切换现用版本。请由 WorkBuddy 修复后重新安装。")
         if not service_matches(health(port),data,release):
             raise InstallError("工作台未通过版本与资料目录健康检查，未切换现用版本。")
         interpreter = str(Path(sys.executable).resolve())
         atomic_json(root/"current.json",{"app":APP,"release_id":release_id,"data_dir":str(data),"port":port,"source":source,"interpreter":interpreter})
-        return {"status":"ready","release_id":release_id,"release_dir":str(release),"url":f"http://127.0.0.1:{port}/","data_dir":str(data),"shortcut":str(shortcut),"project_dir":str(project_dir),"interpreter":interpreter,"browser_opened":bool(launched.get("browser_opened")),"pid":launched.get("pid"),"service":launched.get("status")}
+        return {"status":"ready","release_id":release_id,"release_dir":str(release),"url":f"http://127.0.0.1:{port}/","data_dir":str(data),"shortcut":str(shortcut),"project_dir":str(project_dir),"interpreter":interpreter,"browser_opened":bool(launched.get("browser_opened")),"pid":launched.get("pid"),"service":launched.get("status"),"readiness":readiness}
     finally:
         if stage.exists():
             shutil.rmtree(stage)
