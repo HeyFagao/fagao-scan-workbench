@@ -2,6 +2,7 @@ import concurrent.futures
 import copy
 import tempfile
 import unittest
+from unittest.mock import patch
 from datetime import datetime, timezone
 from pathlib import Path
 from fagao.store import AppError, Store
@@ -46,6 +47,35 @@ class StoreTest(unittest.TestCase):
         other=Store(self.tmp.name)
         self.assertEqual(other.state()['history'][0]['book_id'],'b')
         self.assertEqual(other.state()['views']['long']['selected_id'],'b')
+    def test_state_polling_does_not_decode_unreferenced_book_bodies(self):
+        import json
+        raw=snapshot(); raw['books'][0]['title']='UNREFERENCED_BODY_SENTINEL'
+        extra=self.store.save_snapshot(raw)
+        original=json.loads
+        def checked(value,*args,**kwargs):
+            self.assertNotIn('UNREFERENCED_BODY_SENTINEL',value)
+            return original(value,*args,**kwargs)
+        with patch('fagao.store.json.loads',side_effect=checked):
+            result=self.store.state()
+        self.assertIn(extra['id'],[s['id'] for s in result['snapshots']])
+        self.assertEqual(result['history'][0]['book']['title'],'乙书')
+        self.assertNotIn('books',result['snapshots'][0])
+    def test_old_snapshot_metadata_backfills_without_losing_records(self):
+        with self.store.connect() as c:
+            c.execute('DELETE FROM snapshot_metadata')
+        after=Store(self.tmp.name).state()
+        self.assertEqual(after['snapshots'][0]['id'],self.s['id'])
+        self.assertEqual(after['history'][0]['book_id'],'b')
+        self.assertEqual(after['snapshots'][0]['books_count'],3)
+        with self.store.connect() as c:
+            self.assertEqual(c.execute('SELECT COUNT(*) FROM snapshot_metadata').fetchone()[0],1)
+    def test_snapshot_revision_changes_only_with_new_ranking_record(self):
+        before=self.store.snapshot_revision()
+        self.store.toggle_favorite(self.s['id'],'a',True)
+        self.assertEqual(self.store.snapshot_revision(),before)
+        fresh=self.store.save_snapshot(snapshot())
+        self.assertNotEqual(self.store.snapshot_revision(),before)
+        self.assertEqual({s['id'] for s in self.store.snapshot_history()},{self.s['id'],fresh['id']})
     def test_duplicate_rank_or_id_rejected(self):
         for field in ('rank','id'):
             s=snapshot(); s['books'][1][field]=s['books'][0][field]

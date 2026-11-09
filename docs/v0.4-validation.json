@@ -1,0 +1,117 @@
+{
+  "version": "0.4.0",
+  "date": "2026-11-09",
+  "python_tests": 243,
+  "ui_api_checks": 72,
+  "ui_external_requests": 0,
+  "real_first_batches": [
+    {
+      "platform": "fanqie",
+      "first_batch_seconds": 6.71,
+      "books": 10,
+      "covers": 10,
+      "first_source_rank": 1,
+      "last_source_rank": 10,
+      "has_more": true,
+      "data_date": "2026-11-09T08:20:00+00:00",
+      "source_url": "https://fanqienovel.com/rank/0_1_253",
+      "status": "first_batch_ready_before_next_page"
+    },
+    {
+      "platform": "qidian",
+      "first_batch_seconds": 7.77,
+      "books": 20,
+      "covers": 20,
+      "first_source_rank": 1,
+      "last_source_rank": 20,
+      "has_more": true,
+      "data_date": null,
+      "source_url": "https://m.qidian.com/rank/yuepiao/",
+      "status": "first_batch_ready_before_next_page"
+    },
+    {
+      "platform": "ciweimao",
+      "first_batch_seconds": 11.43,
+      "books": 10,
+      "covers": 10,
+      "first_source_rank": 1,
+      "last_source_rank": 10,
+      "has_more": true,
+      "data_date": null,
+      "source_url": "https://www.ciweimao.com/rank-index/yp-month",
+      "status": "first_batch_ready_before_next_page"
+    }
+  ],
+  "cached_source_overview": {
+    "status": "passed",
+    "source": "previously_verified_public_snapshots",
+    "network_requests": 0,
+    "elapsed_seconds": 0.0116,
+    "platforms": [
+      {
+        "platform": "fanqie",
+        "board": "新书榜",
+        "summary": {
+          "books": 297,
+          "title_count": 297,
+          "metric_count_books": 297,
+          "total_metric": 3302575
+        },
+        "formulas": 5,
+        "candidates": 12,
+        "source_dates": [
+          "2026-11-09T06:50:00+00:00"
+        ]
+      },
+      {
+        "platform": "qidian",
+        "board": "月票榜",
+        "summary": {
+          "books": 60,
+          "title_count": 60,
+          "metric_count_books": 60,
+          "total_metric": 449629.0
+        },
+        "formulas": 4,
+        "candidates": 12,
+        "source_dates": []
+      },
+      {
+        "platform": "ciweimao",
+        "board": "月票榜",
+        "summary": {
+          "books": 30,
+          "title_count": 30,
+          "metric_count_books": 0,
+          "total_metric": null
+        },
+        "formulas": 3,
+        "candidates": 12,
+        "source_dates": []
+      }
+    ]
+  },
+  "local_installation": {
+    "status": "passed",
+    "version": "0.4.0",
+    "checks": [
+      "preflight_ready",
+      "legacy_optional_node_does_not_block",
+      "fixed_source_identity",
+      "same_data_directory",
+      "selection_preserved",
+      "favorites_preserved",
+      "overview_endpoint",
+      "repeat_install_reused",
+      "fixed_project_entry"
+    ],
+    "browser_opened": false,
+    "scope": "Linux isolated local-source installation; not Windows/macOS/WorkBuddy UI"
+  },
+  "not_verified": [
+    "Windows/macOS actual installation",
+    "WorkBuddy desktop operation",
+    "User Tencent Docs login",
+    "Browser pixel visual review"
+  ]
+}

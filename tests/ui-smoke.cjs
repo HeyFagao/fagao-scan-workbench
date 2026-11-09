@@ -5,16 +5,17 @@ const {JSDOM, VirtualConsole} = require(process.env.FAGAO_QA_NODE_MODULES ? proc
 const fs = require('node:fs');
 const base=process.env.FAGAO_TEST_URL;
 if (!base) throw new Error('Start tests/run_ui_smoke.py rather than running this directly.');
-const errors=[], collections=[];
+const errors=[], collections=[], overviewUpdates=[];
 const pause=ms=>new Promise(r=>setTimeout(r,ms));
 async function wait(fn,msg){for(let i=0;i<150;i++){if(await fn())return;await pause(20)}throw new Error(msg)}
 async function api(path,body){const r=await fetch(base+path,body?{method:'POST',headers:{'Content-Type':'application/json','X-Fagao-Request':'1'},body:JSON.stringify(body)}:{});const j=await r.json();assert(!j.error,JSON.stringify(j));return j;}
-async function open({stale=false,freshSnapshot=null,history=false,expiredHeiyan=false,holdCollection=false,forceConnectedHeiyan=false,collectionResponse=null,contentFixture=false,storedOptions=null}={}){
+async function open({stale=false,freshSnapshot=null,history=false,expiredHeiyan=false,holdCollection=false,forceConnectedHeiyan=false,collectionResponse=null,contentFixture=false,storedOptions=null,startHome=false,collectionFixture=null}={}){
   const vc=new VirtualConsole();vc.on('jsdomError',e=>errors.push(String(e)));
   const dom=new JSDOM(await (await fetch(base+'/')).text(),{url:base+'/',runScripts:'outside-only',pretendToBeVisual:true,virtualConsole:vc});
   const makeHold=()=>{let release;const promise=new Promise(resolve=>{release=resolve});return {promise,release,captured:false}};
   let mockAuth=null;
   const control={pending:null,viewPending:null,collectionPending:holdCollection?makeHold():null,stateRequests:0,holdNextState(){return this.pending=makeHold()},holdNextView(){return this.viewPending=makeHold()}};dom.control=control;
+  control.moreRequests=[];control.collectionJob=null;control.collectionPolls=0;
   control.catalogRequests=[];control.textRequests=[];control.textAssets=[];control.textJob=null;control.textPolls=0;control.cancelCalls=0;
   control.finishText=({cancelled=false}={})=>{
     const job=control.textJob, asset={id:'qa-asset-'+control.textRequests.length,snapshot_id:job.snapshot_id,book_id:job.book_id,title:job.title,platform:'fanqie',scope:'第 1—3 章；实际取得第 1、3 章，缺失第 2 章',chapters:[{index:1,title:'第一章'},{index:3,title:'第三章'}],missing:[{index:2,chapter:'第二章',reason:'平台暂未提供正文'}],coverage_complete:false,complete:false,cancelled,characters:66,created_at:'2026-11-09T12:00:00Z',acquisition:'public_download'};
@@ -23,12 +24,16 @@ async function open({stale=false,freshSnapshot=null,history=false,expiredHeiyan=
   dom.window.fetch=async(path,init)=>{
     const pathname=new URL(path,base).pathname;
     if(pathname==='/api/view' && control.viewPending && !control.viewPending.captured){const held=control.viewPending;held.captured=true;await held.promise;}
+    if(pathname==='/api/overview/refresh'){overviewUpdates.push(JSON.parse(init.body));return Response.json({status:'fresh',retry_after_seconds:900});}
     if(pathname==='/api/collect'){
       if(control.collectionPending && !control.collectionPending.captured){const held=control.collectionPending;held.captured=true;await held.promise;}
       const body=JSON.parse(init.body);collections.push(body);
+      if(collectionFixture){control.collectionJob={id:'qa-collection',platform:'fanqie',kind:'collection',options:body.options,status:'running',automatic:body.automatic,interactive:true,partial_snapshot_id:collectionFixture.first,partial_count:10,demand_count:10,waiting_for_more:true,message:'已读取10本，向下浏览时继续'};return Response.json({status:'started',job_id:control.collectionJob.id,job:control.collectionJob});}
       if(collectionResponse?.auth)mockAuth=collectionResponse.auth;
       return Response.json(collectionResponse || {status:'fresh',snapshot_id:freshSnapshot,retry_after_seconds:900});
     }
+    if(pathname==='/api/jobs/qa-collection'){control.collectionPolls++;return Response.json(control.collectionJob);}
+    if(pathname==='/api/jobs/more' && collectionFixture){control.moreRequests.push(JSON.parse(init.body));control.collectionJob={...control.collectionJob,waiting_for_more:false,demand_count:110};return Response.json({status:'continued',job_id:control.collectionJob.id,job:control.collectionJob});}
     if(pathname==='/api/catalog'){
       if(!contentFixture)throw new Error('Catalog must be intercepted in UI tests.');
       const body=JSON.parse(init.body);control.catalogRequests.push(body);
@@ -47,7 +52,7 @@ async function open({stale=false,freshSnapshot=null,history=false,expiredHeiyan=
     const response=await fetch(new URL(path,base),init);
     if(pathname==='/api/state' || pathname==='/api/view'){
       if(pathname==='/api/state')control.stateRequests++;
-      const data=await response.json();if(contentFixture){data.jobs=[...(control.textJob?[control.textJob]:[]),...(data.jobs || [])];data.texts=[...control.textAssets,...(data.texts || [])];}if(stale)data.snapshots.forEach(item=>{item.collected_at='2020-01-01T00:00:00Z';});if(expiredHeiyan)data.auth={...data.auth,heiyan:{state:'expired',message:'测试登录已过期'}};if(forceConnectedHeiyan)data.auth={...data.auth,heiyan:mockAuth || {state:'connected'}};
+      const data=await response.json();if(control.collectionJob)data.jobs=[control.collectionJob,...(data.jobs || [])];if(contentFixture){data.jobs=[...(control.textJob?[control.textJob]:[]),...(data.jobs || [])];data.texts=[...control.textAssets,...(data.texts || [])];}if(stale)data.snapshots.forEach(item=>{item.collected_at='2020-01-01T00:00:00Z';});if(expiredHeiyan)data.auth={...data.auth,heiyan:{state:'expired',message:'测试登录已过期'}};if(forceConnectedHeiyan)data.auth={...data.auth,heiyan:mockAuth || {state:'connected'}};
       if(pathname==='/api/state' && control.pending && !control.pending.captured){const pending=control.pending;pending.captured=true;await pending.promise;}
       return Response.json(data,{status:response.status});
     }
@@ -65,10 +70,16 @@ async function open({stale=false,freshSnapshot=null,history=false,expiredHeiyan=
   if(history){const s=await api('/api/state');dom.window.localStorage.setItem('fagao-history-views',JSON.stringify({long:s.views.long.snapshot_id}));}
   if(storedOptions){dom.window.localStorage.setItem('fagao-collection-options',JSON.stringify(storedOptions));dom.window.localStorage.setItem('fagao-options-version','2');}
   dom.window.eval(fs.readFileSync('web/app.js','utf8'));
-  await wait(()=>dom.window.document.querySelector('[data-action="select-book"]'),'books did not render');return dom;
+  await wait(()=>dom.window.document.querySelector('.overview-tabs'),'homepage did not render');
+  await wait(()=>!dom.window.document.querySelector('.overview-collection-status')?.textContent.includes('正在读取本机'),'homepage did not finish loading');
+  if(startHome){await pause(100);return dom;}
+  const initialState=await api('/api/state');dom.window.document.querySelector(`[data-action="mode"][data-mode="${initialState.active_mode}"]`).click();
+  await wait(()=>dom.window.document.querySelector('[data-action="select-book"]') || dom.window.document.querySelector('#heiyan-booklist'),'books did not render');await pause(100);return dom;
 }
 (async()=>{
- let dom=await open(), d=dom.window.document;
+ let dom=await open({startHome:true}), d=dom.window.document;
+ assert(d.querySelector('.overview-tabs'),'homepage overview missing');assert.equal(d.querySelector('[data-section="overview"]').getAttribute('aria-current'),'true');assert.equal(d.querySelectorAll('.overview-tabs button').length,3);assert.match(d.querySelector('.overview-scope').textContent,/仅新书榜/);assert.equal(collections.length,0,'homepage started category-specific scan');await wait(()=>overviewUpdates.length>0,'homepage did not request aggregate update');assert.equal(overviewUpdates[0].automatic,true);dom.window.close();
+ dom=await open();d=dom.window.document;
  await wait(()=>collections.length===1,'recent limited snapshot wrongly suppressed automatic scope check');assert.equal(collections[0].automatic,true);assert.equal(collections[0].options.limit,10000);
  assert.equal(d.querySelector('#main-site').href,'https://www.fagaochuangzuo.com/');assert(d.querySelector('#points-entry button').disabled);
  const buttons=d.querySelectorAll('[data-action="select-book"]');assert.equal(buttons.length,3);
@@ -89,7 +100,7 @@ async function open({stale=false,freshSnapshot=null,history=false,expiredHeiyan=
  r=await api('/api/resolve',{query:'番茄新书榜第14名'});assert.equal(r.book_id,'qa-b');
  const q=d.querySelector('#query');q.value='独有简介';q.dispatchEvent(new dom.window.Event('input',{bubbles:true}));
  await wait(()=>d.querySelectorAll('[data-action="select-book"]').length===1,'summary filter failed');
- d.querySelector('[data-mode="short"]').click();await wait(()=>d.querySelector('.login-card'),'heiyan login missing');
+ d.querySelector('[data-mode="short"]').click();await wait(()=>d.querySelector('#heiyan-booklist'),'heiyan sheet entry missing');assert.equal(d.querySelector('#heiyan-booklist').href,'https://docs.qq.com/sheet/DYVNwaVJZV2ZxTWl3?tab=q1ans7');assert.equal(d.querySelector('#heiyan-booklist').target,'_blank');assert(!d.querySelector('[data-action="login"]'),'old backend login still exposed');
  assert(!d.querySelector('.positions'),'library cannot inherit rank');
  d.querySelector('[data-mode="long"]').click();await wait(()=>d.querySelector('.detail h2')?.textContent==='测试作品乙','long state not restored');
  dom.window.close();dom=await open();d=dom.window.document;
@@ -144,9 +155,9 @@ async function open({stale=false,freshSnapshot=null,history=false,expiredHeiyan=
  const oldLibrary=await api('/api/import/snapshot',{snapshot:{platform:'heiyan',channel:'全部',category:'书库',board:'书库',books:[{id:'hy-fixture',title:'登录过期时保留的测试书目',summary:'隔离测试'}]}});
  await api('/api/view',{mode:'short',platform:'heiyan',snapshot_id:oldLibrary.id,selected_id:null,filters:{query:'',sort:'source',favorites:false}});
  dom=await open({expiredHeiyan:true});d=dom.window.document;
- assert(d.querySelector('.reconnect-card'),'saved library must still show reconnect action');assert.match(d.querySelector('.reconnect-card').textContent,/过期/);assert.equal(d.querySelectorAll('.book-row').length,1);assert.equal(collections.length,beforeLibrary,'expired library should not auto collect');dom.window.close();
+ assert(d.querySelector('#heiyan-booklist'),'saved book list must retain TencentDocs entry');assert(!d.querySelector('.reconnect-card'),'old backend dependency/login exposed');assert.equal(d.querySelectorAll('.book-row').length,1);assert.equal(collections.length,beforeLibrary,'Heiyan should not auto collect');dom.window.close();
  dom=await open({forceConnectedHeiyan:true,collectionResponse:{status:'cooldown',requires_login:true,auth:{state:'expired',message:'采集时发现登录已过期'},retry_after_seconds:300}});d=dom.window.document;
- await wait(()=>d.querySelector('.reconnect-card'),'auth cooldown did not show reconnect card');assert.match(d.querySelector('.reconnect-card').textContent,/过期/);assert.equal(d.querySelectorAll('.book-row').length,1);dom.window.close();
+ assert(d.querySelector('#heiyan-booklist'),'connected old auth changed primary booklist');assert.equal(collections.length,beforeLibrary,'old connected auth triggered hidden browser');assert.equal(d.querySelectorAll('.book-row').length,1);dom.window.close();
  // Catalogs and chapter text remain fixed to the selected book, independent of collection.
  await api('/api/view',{mode:'long',platform:'fanqie',snapshot_id:original,selected_id:'qa-b',filters:{query:'',sort:'source',favorites:false}});
  dom=await open({contentFixture:true});d=dom.window.document;
@@ -187,5 +198,38 @@ async function open({stale=false,freshSnapshot=null,history=false,expiredHeiyan=
  await api('/api/view',{mode:'long',platform:'fanqie',snapshot_id:observation.id,selected_id:null});dom=await open();d=dom.window.document;
  d.querySelector('[data-action="insights"]').click();await wait(()=>d.querySelector('.insights-table'),'real metrics table missing');assert.match(d.querySelector('#dialog-body').textContent,/实际间隔 3 天/);assert.match(d.querySelector('#dialog-body').textContent,/\+50/);assert.match(d.querySelector('.insight-row').textContent,/穿越/);assert(!d.querySelector('#dialog-body').textContent.includes('7日增长'),'comparison invented an interval');
  d.querySelector('[data-action="insight-book"]').click();await wait(()=>d.querySelector('.detail h2')?.textContent==='穿越后，我成为女帝','observation reference did not open source work');assert(!d.querySelector('#dialog').open);assert.equal((await api('/api/state')).views.long.snapshot_id,observation.id);dom.window.close();
- assert.deepEqual(errors,[]);console.log(JSON.stringify({passed:true,checks:46,layout_verified:false,external_platform_requests:0}));
+ // The default overview excludes reading-board books and opens exact source references.
+ await api('/api/import/snapshot',{snapshot:{platform:'fanqie',channel:'男频',category:'玄幻脑洞',board:'阅读榜',data_date:'2026-11-09',books:[{id:'qa-excluded-reading',title:'阅读榜不应汇总的样本',rank:1,metrics:[{name:'在读',value:99999999},{name:'字数',value:10000}]}]}});
+ dom=await open({startHome:true});d=dom.window.document;
+ assert.match(d.querySelector('.overview-scope').textContent,/阅读榜不参与/);assert(!d.querySelector('#content').textContent.includes('阅读榜不应汇总的样本'),'reading board polluted homepage');
+ assert(d.querySelector('.formula-card'),'source-backed formula missing');assert(d.querySelector('.overview-book-card'),'candidate source books missing');
+ const reference=d.querySelector('[data-action="overview-book"]'), referencedSnapshot=reference.dataset.snapshot, referencedBook=reference.dataset.book;
+ reference.click();await wait(()=>d.querySelector('.detail h2'),'overview sample did not open');const exact=await api('/api/state');assert.equal(exact.views.long.snapshot_id,referencedSnapshot);assert.equal(exact.views.long.selected_id,referencedBook);await pause(80);dom.window.close();
+ // A real source first batch is visible before a later network batch; a fixed
+ // selection can follow a verified same-job prefix without changing old tasks.
+ const firstBooks=Array.from({length:10},(_,i)=>({id:'qa-stream-'+i,title:'逐步加载作品'+i,rank:i+1,summary:'本地测试夹具'}));
+ const baseSnapshot={platform:'fanqie',mode:'long',channel:'女频',category:'古言脑洞',board:'新书榜',data_date:'2026-11-09T05:10:00Z',complete:false};
+ const firstStream=await api('/api/import/snapshot',{snapshot:{...baseSnapshot,books:firstBooks}});
+ await api('/api/view',{mode:'long',platform:'fanqie',snapshot_id:null,selected_id:null,filters:{query:'',sort:'source',favorites:false}});
+ dom=await open({collectionFixture:{first:firstStream.id}});d=dom.window.document;
+ await wait(()=>d.querySelectorAll('.book-row').length===10,'first network batch did not render before full collection');assert.equal(dom.control.moreRequests.length,0,'first render fetched more without scrolling');assert(!d.querySelector('.job-strip .spinner'),'idle demand gate displayed loading spinner');
+ await wait(()=>dom.control.collectionPolls>0,'first partial was not registered to its source job');
+ const nextStream=await api('/api/import/snapshot',{snapshot:{...baseSnapshot,books:[...firstBooks,...Array.from({length:30},(_,i)=>({id:'qa-stream-'+(i+10),title:'逐步加载作品'+(i+10),rank:i+11}))]}});
+ d.querySelectorAll('.book-row')[1].click();await wait(()=>d.querySelector('.detail h2')?.textContent==='逐步加载作品1','first-batch selection failed');
+ const fixedTask=await api('/api/prepare',{query:'分析刚选的这本'});assert.equal(fixedTask.snapshot_id,firstStream.id);assert.equal(fixedTask.book_id,'qa-stream-1');
+ d.querySelector('[data-action="load-more"]').click();await wait(()=>dom.control.moreRequests.length===1,'scroll-more did not request next network batch');
+ dom.window.dispatchEvent(new dom.window.Event('scroll'));dom.window.dispatchEvent(new dom.window.Event('scroll'));await pause(50);assert.equal(dom.control.moreRequests.length,1,'repeated scroll grew demand before pending batch arrived');
+ dom.control.collectionJob={...dom.control.collectionJob,partial_snapshot_id:nextStream.id,partial_count:40,demand_count:40,waiting_for_more:true,message:'已读取40本，向下浏览继续'};
+ await wait(()=>d.querySelectorAll('.book-row').length>10,'same-job stream did not append after selection');assert.equal(d.querySelector('.detail h2').textContent,'逐步加载作品1');assert.equal((await api('/api/state')).views.long.selected_id,'qa-stream-1');assert.equal((await api('/api/resolve',{query:'分析刚选的这本'})).book_id,'qa-stream-1');assert.equal((await api('/api/tasks/'+fixedTask.id)).snapshot_id,firstStream.id,'stream append rewrote immutable prepared task');
+ await pause(80);dom.window.close();
+ // Overview seeding can add snapshots after /state was first read. Platform
+ // navigation must fetch current metadata and render cache before network waits.
+ await api('/api/view',{mode:'long',platform:'qidian',snapshot_id:null,selected_id:null});
+ dom=await open({startHome:true,holdCollection:true});d=dom.window.document;
+ const seeded=await api('/api/import/snapshot',{snapshot:{platform:'qidian',mode:'long',channel:'男频',category:'全部',board:'月票榜',books:[{id:'qa-seed',title:'首页后台已缓存的起点作品',rank:1}]}});
+ d.querySelector('[data-action="platform"][data-platform="qidian"]').click();await wait(()=>d.querySelector('.book-row'),'same-platform cache was hidden behind network');
+ assert.match(d.querySelector('.book-row').textContent,/首页后台已缓存/);await wait(()=>dom.control.collectionPending.captured,'background collection was not held');assert.equal((await api('/api/state')).views.long.snapshot_id,seeded.id);dom.control.collectionPending.release();await pause(150);dom.window.close();
+ // Returning home wins over a slower platform-navigation metadata request.
+ dom=await open({startHome:true});d=dom.window.document;const lateNavigation=dom.control.holdNextState();d.querySelector('[data-action="platform"][data-platform="fanqie"]').click();await wait(()=>lateNavigation.captured,'platform metadata request was not held');d.querySelector('[data-section="overview"]').click();lateNavigation.release();await pause(120);assert(d.querySelector('.overview-tabs'),'late platform navigation overrode return-home');assert.equal(d.querySelector('[data-section="overview"]').getAttribute('aria-current'),'true');dom.window.close();
+ assert.deepEqual(errors,[]);console.log(JSON.stringify({passed:true,checks:72,layout_verified:false,external_platform_requests:0}));
 })().catch(e=>{console.error(e);process.exitCode=1;process.exit(1)});

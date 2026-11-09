@@ -74,6 +74,26 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(status,200); self.assertEqual(body,expected)
         start.assert_called_once_with('fanqie',{'board':'阅读榜'},True)
 
+    def test_interactive_collect_and_load_more_contract(self):
+        expected={'status':'started','job_id':'scroll-job','job':{'kind':'collect'}}
+        with patch.object(self.server.jobs,'start',return_value=expected) as start:
+            status,body,_=self.post('/api/collect',{'platform':'fanqie','options':{'board':'新书榜'},'automatic':True,'interactive':True})
+        self.assertEqual((status,body),(200,expected))
+        start.assert_called_once_with('fanqie',{'board':'新书榜'},True,interactive=True)
+        with patch.object(self.server.jobs,'more',return_value=expected) as more:
+            status,body,_=self.post('/api/jobs/more',{'job_id':'scroll-job','count':100})
+        self.assertEqual((status,body),(200,expected)); more.assert_called_once_with('scroll-job',100)
+
+    def test_overview_endpoints_keep_reading_boards_out_of_options(self):
+        expected={'scope_label':'番茄新书榜与其他平台','platforms':[],'update':None}
+        with patch.object(self.server.jobs,'overview',return_value=expected):
+            status,body,_=self.request('/api/overview')
+        self.assertEqual((status,body),(200,expected))
+        reply={'status':'started','job_id':'overview-job','job':{'kind':'overview'}}
+        with patch.object(self.server.jobs,'start_overview',return_value=reply) as refresh:
+            status,body,_=self.post('/api/overview/refresh',{'automatic':True,'options':{'board':'阅读榜'}})
+        self.assertEqual((status,body),(200,reply)); refresh.assert_called_once_with(True)
+
     def test_heiyan_expired_collection_updates_auth_and_preserves_snapshot(self):
         import time
         from unittest.mock import patch

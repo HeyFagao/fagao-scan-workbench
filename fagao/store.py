@@ -16,7 +16,7 @@ PLATFORMS = [
     {'id':'fanqie','name':'番茄小说','mode':'long','status':'available','message':'公开榜单；以实际采集结果为准'},
     {'id':'qidian','name':'起点中文网','mode':'long','status':'available','message':'公开移动榜单；以实际采集结果为准'},
     {'id':'ciweimao','name':'刺猬猫','mode':'long','status':'available','message':'公开榜单分页采集；实际覆盖以采集结果为准'},
-    {'id':'heiyan','name':'黑岩故事会','mode':'short','status':'login_required','message':'登录管理后台并验证书库权限'},
+    {'id':'heiyan','name':'黑岩故事会','mode':'short','status':'external','message':'打开腾讯文档书单，在原站完成登录','source_url':'https://docs.qq.com/sheet/DYVNwaVJZV2ZxTWl3?tab=q1ans7'},
     {'id':'fanqie_short','name':'番茄短故事','mode':'short','status':'unavailable','message':'热门故事入口待实机验证；可导入来源明确的书目'},
 ]
 
@@ -96,6 +96,7 @@ class Store:
             c.executescript('''
                 PRAGMA journal_mode=WAL;
                 CREATE TABLE IF NOT EXISTS snapshots(id TEXT PRIMARY KEY, created_at TEXT NOT NULL, body TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS snapshot_metadata(id TEXT PRIMARY KEY, created_at TEXT NOT NULL, body TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS kv(key TEXT PRIMARY KEY, body TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS favorites(platform TEXT, book_id TEXT, snapshot_id TEXT, created_at TEXT, PRIMARY KEY(platform,book_id));
                 CREATE TABLE IF NOT EXISTS history(id INTEGER PRIMARY KEY AUTOINCREMENT, snapshot_id TEXT, book_id TEXT, selected_at TEXT);
@@ -199,7 +200,37 @@ class Store:
             if len(snap['categories'])>=100: break
         with self.connect() as c:
             c.execute('INSERT INTO snapshots VALUES (?,?,?)',(snap['id'],timestamp,dumps(snap)))
+            metadata={k:v for k,v in snap.items() if k not in ('books','categories')}
+            c.execute('INSERT INTO snapshot_metadata VALUES (?,?,?)',(snap['id'],timestamp,dumps(metadata)))
         return snap
+
+    def _snapshot_metadata(self,c):
+        # Backfill old installations lazily, including records written by an
+        # older CLI. Ordinary UI polling must not decode every historical book.
+        missing=c.execute('SELECT s.id,s.created_at,s.body FROM snapshots s LEFT JOIN snapshot_metadata m ON m.id=s.id WHERE m.id IS NULL').fetchall()
+        for row in missing:
+            source=json.loads(row['body'])
+            metadata={k:v for k,v in source.items() if k not in ('books','categories')}
+            c.execute('INSERT INTO snapshot_metadata VALUES (?,?,?)',(row['id'],row['created_at'],dumps(metadata)))
+        return [json.loads(r[0]) for r in c.execute('SELECT m.body FROM snapshot_metadata m JOIN snapshots s ON s.id=m.id ORDER BY s.created_at DESC')]
+
+    def snapshot_revision(self):
+        """Immutable snapshot additions invalidate cached aggregate results."""
+        with self.connect() as c:
+            row=c.execute('SELECT COUNT(*),COALESCE(MAX(rowid),0) FROM snapshots').fetchone()
+            return tuple(row)
+
+    def snapshot_history(self):
+        """Full ranking records only, without loading reports or user texts."""
+        with self.connect() as c:
+            return [json.loads(r[0]) for r in c.execute('SELECT body FROM snapshots ORDER BY created_at DESC')]
+
+    def overview_history(self):
+        """Load current scopes and comparable baselines, not every page preview."""
+        from .overview import relevant_snapshot_ids
+        with self.connect() as c:
+            ids=relevant_snapshot_ids(self._snapshot_metadata(c))
+            return [self._snapshot(c,sid) for sid in ids]
 
     def _ordered(self,c,snapshot,filters):
         books=snapshot['books']; query=filters.get('query','').casefold()
@@ -261,16 +292,26 @@ class Store:
         return self.state()
 
     def _state(self,c,full=False):
-        snapshots=[json.loads(r[0]) for r in c.execute('SELECT body FROM snapshots ORDER BY created_at DESC')]
-        lookup={s['id']:s for s in snapshots}
+        snapshots=([json.loads(r[0]) for r in c.execute('SELECT body FROM snapshots ORDER BY created_at DESC')]
+                   if full else self._snapshot_metadata(c))
+        lookup={s['id']:s for s in snapshots} if full else {}
+        book_lookup={}
+        def referenced(sid,bid):
+            if sid not in lookup:
+                try: lookup[sid]=self._snapshot(c,sid)
+                except AppError: lookup[sid]=None
+            source=lookup[sid]
+            if source and sid not in book_lookup:
+                book_lookup[sid]={b['id']:b for b in source['books']}
+            return source,book_lookup.get(sid,{}).get(bid,{})
         views={mode:self._kv(c,'view:'+mode,{'platform':'fanqie' if mode=='long' else 'heiyan','snapshot_id':None,'filters':{'query':'','sort':'rank','favorites':False},'page':1,'page_size':20,'selected_id':None,'ordered_ids':[]}) for mode in ('long','short')}
         fav=[]
         for row in c.execute('SELECT * FROM favorites ORDER BY created_at DESC'):
-            s=lookup.get(row['snapshot_id']); b=next((b for b in s['books'] if b['id']==row['book_id']),{}) if s else {}
+            s,b=referenced(row['snapshot_id'],row['book_id'])
             fav.append({**dict(row),'title':b.get('title',''),'mode':s['mode'] if s else '', 'book':b})
         history=[]
         for row in c.execute('SELECT * FROM history ORDER BY id DESC LIMIT 2000'):
-            s=lookup.get(row['snapshot_id']); b=next((b for b in s['books'] if b['id']==row['book_id']),{}) if s else {}
+            s,b=referenced(row['snapshot_id'],row['book_id'])
             history.append({**dict(row),'title':b.get('title',''),'platform':s['platform'] if s else '', 'mode':s['mode'] if s else '', 'book':b})
         return {'config':self._kv(c,'config',{}),'platforms':PLATFORMS,'snapshots':snapshots if full else [{k:v for k,v in s.items() if k not in ('books','categories')} for s in snapshots],'views':views,'active_mode':self._kv(c,'active_mode','long'),'favorites':fav,'history':history,'reports':[json.loads(r[0]) for r in c.execute('SELECT body FROM reports ORDER BY created_at DESC')],'texts':[json.loads(r[0]) for r in c.execute('SELECT body FROM texts ORDER BY created_at DESC')],'jobs':[json.loads(r[0]) for r in c.execute('SELECT body FROM jobs ORDER BY created_at DESC LIMIT 30')],'auth':self._kv(c,'auth',{}),'analysis_target':self._kv(c,'analysis_target')}
 

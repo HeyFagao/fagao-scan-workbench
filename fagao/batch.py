@@ -45,7 +45,7 @@ def _options(options):
     return result
 
 
-def collect_all_categories(store, options, progress=None):
+def collect_all_categories(store, options, progress=None, *, load_category=None, on_discovery=None):
     """Collect one Fanqie channel/board, saving a separate snapshot per category.
 
     Discovery uses only the first successful category's current navigation.
@@ -73,13 +73,18 @@ def collect_all_categories(store, options, progress=None):
         try:
             notify(f"正在采集番茄{channel}／{board}／{category}；每个分类独立保存。")
             requested = {**deepcopy(options), "category": category}
-            raw = collect("fanqie", requested, store.directory, notify if progress else None)
+            # A scheduler may reuse an existing/fresh job and return its saved
+            # snapshot. CLI callers keep the direct sequential collection path.
+            raw = (load_category(requested) if load_category else
+                   collect("fanqie", requested, store.directory, notify if progress else None))
             if (not isinstance(raw, dict) or raw.get("platform") != "fanqie"
                     or raw.get("mode", "long") != "long"
                     or raw.get("channel") != channel or raw.get("board") != board
                     or raw.get("category") != category):
                 raise AppError("batch_scope_mismatch", "来源返回的频道、分类或榜型与请求不符，未保存混合结果。")
-            snapshot = store.save_snapshot(raw)
+            snapshot = raw if load_category else store.save_snapshot(raw)
+            if not snapshot.get("id"):
+                raise AppError("batch_snapshot_missing", "分类任务未返回已保存的榜单记录。")
         except _ProgressInterrupted as exc:
             raise exc.original
         except Exception as exc:
@@ -113,6 +118,8 @@ def collect_all_categories(store, options, progress=None):
         return result
     result["discovery_complete"] = True
     result["categories"] = [first] + [category for category in discovered if category != first]
+    if on_discovery:
+        on_discovery(list(result["categories"]))
     for category in result["categories"][1:]:
         one(category)
     result["complete"] = not result["failed_categories"] and not result["incomplete_categories"]
