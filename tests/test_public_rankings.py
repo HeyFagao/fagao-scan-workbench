@@ -158,7 +158,7 @@ class PublicRankingsTests(unittest.TestCase):
     def test_fetch_limits_and_exact_content_revision(self):
         path = "api/female/new/index.json"; url = public.RAW_ROOT + path
         content = b'{"date":"2026-11-09"}'
-        with patch.object(public.urllib.request, "build_opener") as builder:
+        with patch.object(public.network, "build_opener") as builder:
             builder.return_value.open.return_value = Response(content, url)
             result = public._fetch_json(path)
             self.assertEqual(builder.return_value.open.call_args.kwargs["timeout"], public.TIMEOUT_SECONDS)
@@ -167,17 +167,17 @@ class PublicRankingsTests(unittest.TestCase):
         for bad in ("../secret", "api/male/read/index.json", "https://evil.example/x", "data/female/new/20261109.json?x=1"):
             with self.assertRaises(CollectorError): public._fetch_json(bad)
         for content, headers in ((b"bad-json", {}), (b"[]", {}), (b"{}", {"Content-Length": str(public.MAX_BYTES + 1)})):
-            with patch.object(public.urllib.request, "build_opener") as builder:
+            with patch.object(public.network, "build_opener") as builder:
                 builder.return_value.open.return_value = Response(content, url, headers)
                 with self.assertRaises(CollectorError): public._fetch_json(path)
-        with patch.object(public, "MAX_BYTES", 4), patch.object(public.urllib.request, "build_opener") as builder:
+        with patch.object(public, "MAX_BYTES", 4), patch.object(public.network, "build_opener") as builder:
             builder.return_value.open.return_value = Response(b'{"a":123}', url)
             with self.assertRaises(CollectorError): public._fetch_json(path)
 
     def test_redirect_and_socket_errors_never_fall_back_to_untrusted_urls(self):
         with self.assertRaises(CollectorError):
             public._NoRedirect().redirect_request(None, None, 302, "", {}, "http://127.0.0.1/")
-        with patch.object(public.urllib.request, "build_opener") as builder:
+        with patch.object(public.network, "build_opener") as builder:
             builder.return_value.open.side_effect = TimeoutError()
             with self.assertRaises(CollectorError) as caught: public._fetch_json("api/male/new/index.json")
         self.assertEqual(caught.exception.state, "network_error")
