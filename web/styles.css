@@ -129,6 +129,16 @@ h3 { font-size: 15px; }
 .book-row[aria-pressed=true] .rank { color: var(--rose); }
 .star { color: var(--rose); font-weight: 400; }
 .detail { display: flex; flex-direction: column; min-width: 0; align-self: start; margin-top: 16px; padding: 0 0 24px 25px; border-left: 1px solid #eaeaea; background: #fff; }
+@media (min-width: 901px) {
+  .detail {
+    position: sticky;
+    top: 16px;
+    max-height: calc(100vh - 32px);
+    max-height: calc(100dvh - 32px);
+    overflow-y: auto;
+    scrollbar-gutter: stable;
+  }
+}
 .detail-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 19px; color: #999; font-size: 11px; }
 .favorite-button { min-height: 30px; padding: 3px 0; color: #777; font-size: 12px; }
 .favorite-button[aria-pressed=true] { color: var(--rose); }
