@@ -185,11 +185,26 @@ class OwnedProcess:
 
     def close(self):
         if self.handle:
-            if self.api.WaitForSingleObject(self.handle, 0) == 258:
-                if not self.api.TerminateProcess(self.handle, 0):
+            state = self.api.WaitForSingleObject(self.handle, 0)
+            if state == 0xFFFFFFFF:
+                raise ctypes.WinError(ctypes.get_last_error())
+            need(state in (0, 258), "unexpected owned process wait result")
+            if state == 258:
+                terminated = self.api.TerminateProcess(self.handle, 0)
+                termination_error = ctypes.get_last_error() if not terminated else None
+                # Closing the fixture Job initiates asynchronous termination.
+                # The process may exit between the first wait and TerminateProcess,
+                # which then reports ACCESS_DENIED. Accept that race only when
+                # this same, already-owned handle becomes signaled within 10 s.
+                ended = self.api.WaitForSingleObject(self.handle, 10000)
+                if ended == 0xFFFFFFFF:
                     raise ctypes.WinError(ctypes.get_last_error())
-                need(self.api.WaitForSingleObject(self.handle, 10000) == 0, "owned process cleanup timed out")
-            self.api.CloseHandle(self.handle)
+                if ended != 0:
+                    if termination_error is not None:
+                        raise ctypes.WinError(termination_error)
+                    raise RuntimeError("owned process cleanup timed out")
+            if not self.api.CloseHandle(self.handle):
+                raise ctypes.WinError(ctypes.get_last_error())
             self.handle = None
 
 
@@ -349,6 +364,17 @@ def installed_service(result, data, port):
     need(observed.get("version"), "service version missing")
     pid = server_pid(data)
     return source, OwnedProcess(pid), observed
+
+
+def cleanup_error(stage, error, *, pid=None):
+    detail = {"stage": stage, "error_type": type(error).__name__}
+    if getattr(error, "winerror", None) is not None:
+        detail["winerror"] = error.winerror
+    if getattr(error, "errno", None) is not None:
+        detail["errno"] = error.errno
+    if pid is not None:
+        detail["owned_pid"] = pid
+    return detail
 
 
 def run_smoke(args):
@@ -531,23 +557,23 @@ def run_smoke(args):
                 if not any(process.pid == pid and process.handle for process in owned):
                     owned.append(OwnedProcess(pid))
             except (OSError, ValueError, RuntimeError) as error:
-                cleanup_errors.append(type(error).__name__)
+                cleanup_errors.append(cleanup_error("capture_owned_process", error))
         for job, process in reversed(jobs):
             try:
                 job.close()
                 process.communicate(timeout=10)
             except BaseException as error:
-                cleanup_errors.append(type(error).__name__)
+                cleanup_errors.append(cleanup_error("close_managed_job", error, pid=process.pid))
         for process in reversed(owned):
             try:
                 process.close()
             except BaseException as error:
-                cleanup_errors.append(type(error).__name__)
+                cleanup_errors.append(cleanup_error("close_owned_process", error, pid=process.pid))
         # Only this mkdtemp-created fixture is removed. No user install path is used.
         try:
             shutil.rmtree(base)
         except OSError as error:
-            cleanup_errors.append(type(error).__name__)
+            cleanup_errors.append(cleanup_error("remove_fixture_directory", error))
         report["cleanup"] = {"completed": not cleanup_errors, "owned_processes": len(owned),
                               "fixture_removed": not base.exists(), "errors": cleanup_errors}
         if cleanup_errors:
