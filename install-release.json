@@ -2,29 +2,75 @@
   "schema_version": 1,
   "status": "published",
   "app": "fagao-scan-workbench",
-  "app_version": "0.7.0-dev.5",
+  "app_version": "0.7.0-dev.6",
   "repository": "ShiQi-Han03/fagao-scan-workbench",
-  "source_commit": "8bc355c7e64c8a8099d159af59136da39a2cd690",
-  "release_tag": "v0.7.0-dev.5",
-  "installer_url": "https://raw.githubusercontent.com/ShiQi-Han03/fagao-scan-workbench/8bc355c7e64c8a8099d159af59136da39a2cd690/scripts/bootstrap.py",
-  "installer_sha256": "41d3f3de190ee27086f2b86d6c4c56a92f668330829b2fd01fd35cc83c9b501d",
-  "source_archive_url": "https://codeload.github.com/ShiQi-Han03/fagao-scan-workbench/zip/8bc355c7e64c8a8099d159af59136da39a2cd690",
-  "source_archive_sha256": "04e184763b2488206f53cab5cbd4cfd088e6b3e37363d42fa7ed7fed87cccbca",
-  "source_archive_sha256_purpose": "Publisher anonymous-download receipt; the bootstrap uses a pinned Git commit and safe extraction.",
+  "source_commit": "76279ffa67e860d425704d487cb0bbaf2b7d347e",
+  "release_tag": "v0.7.0-dev.6",
+  "installer_url": "https://raw.githubusercontent.com/ShiQi-Han03/fagao-scan-workbench/76279ffa67e860d425704d487cb0bbaf2b7d347e/scripts/bootstrap.py",
+  "installer_sha256": "f9289d2d4557f2a943823768d71f6a9273d1dc82aaeba3a65c76a663eec41a52",
+  "source_archive_url": "https://codeload.github.com/ShiQi-Han03/fagao-scan-workbench/zip/76279ffa67e860d425704d487cb0bbaf2b7d347e",
+  "source_archive_sha256": "f798e40178448e49d3a03fc470cbfc37a20c3d2b89bba9bd1da0f7252645ca86",
+  "source_archive_sha256_purpose": "Required SHA-256 of the pinned source archive; bootstrap rejects missing or mismatched digests before extraction or installation.",
   "minimum_python": "3.10",
-  "verified_at": "2026-11-10T06:52:54.923581+00:00",
+  "verified_at": "2026-11-10T11:00:49.847425+00:00",
   "channel": "experimental",
   "verification": {
-    "python_tests": 586,
+    "python_tests": 633,
     "membership_ui_checks": 46,
     "domestic_ui_checks": 109,
     "overseas_ui": "passed",
     "anonymous_remote_install": "passed",
+    "macos_install_checks": 11,
+    "archive_digest_enforced": true,
     "repeat_install_preserves_data": true,
-    "platform": "macOS",
+    "platforms": [
+      "macOS",
+      "Windows (GitHub Actions)"
+    ],
+    "windows_install_tested": true,
+    "windows_native_ci_tested": true,
+    "windows_ci_run_url": "https://github.com/ShiQi-Han03/fagao-scan-workbench/actions/runs/42803648013",
+    "windows_jobs": [
+      {
+        "python": "3.11.9",
+        "job_id": 129787239134,
+        "native_checks": 14,
+        "unit_tests": {
+          "bootstrap-tests": {
+            "ran": 65,
+            "skipped": 2
+          },
+          "launch-tests": {
+            "ran": 21,
+            "skipped": 0
+          }
+        },
+        "cleanup_passed": true,
+        "native_tls_fallback": "verified"
+      },
+      {
+        "python": "3.12.10",
+        "job_id": 129787238775,
+        "native_checks": 14,
+        "unit_tests": {
+          "bootstrap-tests": {
+            "ran": 65,
+            "skipped": 2
+          },
+          "launch-tests": {
+            "ran": 21,
+            "skipped": 0
+          }
+        },
+        "cleanup_passed": true,
+        "native_tls_fallback": "verified"
+      }
+    ],
+    "windows_fixtures_cleaned": true,
     "workbuddy_app_interaction_tested": false,
-    "windows_install_tested": false,
+    "real_user_machine_tested": false,
     "real_member_login_in_this_check": false,
+    "real_payment_in_this_check": false,
     "external_ranking_network_in_this_check": false
   },
   "account_qualification": "Determined by the website response after the user logs in and confirms authorization."
