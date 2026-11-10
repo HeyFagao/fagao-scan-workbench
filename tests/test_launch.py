@@ -43,7 +43,7 @@ class PreflightTests(unittest.TestCase):
             with patch.object(launch, "ROOT", root):
                 with self.assertRaisesRegex(RuntimeError, "安装文件缺失"):
                     launch.preflight()
-                for name in ("fagao/server.py", "fagao/store.py", "fagao/overview.py", "fagao/dashboard.py", "fagao/public_rankings.py", "fagao/network.py", "fagao/overseas.py", "fagao/overseas_readers.py", "fagao/royalroad_fallback.py", "fagao/scribble_import.py", "fagao/opening_content.py", "fagao/reader_crypto.py", "fagao/_vendor/__init__.py", "fagao/_vendor/pyaes/__init__.py", "fagao/_vendor/pyaes/aes.py", "fagao/_vendor/pyaes/blockfeeder.py", "fagao/_vendor/pyaes/util.py", "web/index.html", "web/app.js", "web/styles.css"):
+                for name in ("fagao/server.py", "fagao/store.py", "fagao/overview.py", "fagao/dashboard.py", "fagao/public_rankings.py", "fagao/network.py", "fagao/overseas.py", "fagao/overseas_readers.py", "fagao/royalroad_fallback.py", "fagao/scribble_import.py", "fagao/opening_content.py", "fagao/reader_crypto.py", "fagao/_vendor/__init__.py", "fagao/_vendor/pyaes/__init__.py", "fagao/_vendor/pyaes/aes.py", "fagao/_vendor/pyaes/blockfeeder.py", "fagao/_vendor/pyaes/util.py", "web/index.html", "web/app.js", "web/styles.css", "web/theme.js"):
                     path = root / name
                     path.parent.mkdir(parents=True, exist_ok=True)
                     path.write_text("fixture", encoding="utf-8")
@@ -61,6 +61,13 @@ class PreflightTests(unittest.TestCase):
             with self.subTest(name=name), patch.object(Path, "is_file", lambda path: False if path == missing else original(path)):
                 with self.assertRaisesRegex(RuntimeError, "安装文件缺失"):
                     launch.preflight()
+
+    def test_missing_theme_script_is_detected_before_service_launch(self):
+        original = Path.is_file
+        missing = launch.ROOT / "web/theme.js"
+        with patch.object(Path, "is_file", lambda path: False if path == missing else original(path)):
+            with self.assertRaisesRegex(RuntimeError, "安装文件缺失"):
+                launch.preflight()
 
     def test_check_flag_never_starts_service_or_opens_browser(self):
         with patch("sys.argv", ["launch.py", "--check"]), patch.object(launch, "ensure_running") as start, patch.object(launch.webbrowser, "open") as browser, patch("builtins.print"):
