@@ -30,8 +30,11 @@
   const nextAutoAt = new Map(), autoMessages = new Map(), latestResults = new Map(), snapshotJobs=new Map();
   let historyViews = {};
   const MEMBER_SITE='https://www.fagaochuangzuo.com/';
+  const WORKBENCH_SITE=MEMBER_SITE+'?module=rankings';
+  const WORKBENCH_MASCOT=MEMBER_SITE+'growth/redemption/fagao-check.png';
   let membership={allowed:false,reason:'checking',account:null}, accountEpoch=0, membershipRequest=0;
   let membershipTimer=null, membershipDeadlineTimer=null, membershipBusy=false, logoutPending=false, storageAccount=null;
+  let foregroundMembershipBusy=false, foregroundMembershipAt=-Infinity, foregroundMembershipGeneration=0;
   let legacy={checked:false,checking:false,decision_required:false,counts:{},error:''},legacyBusy=false,legacyConfirmed=false,legacyRequest=0;
   let callbackNotice='';
   const readable=()=>membership.allowed || membership.can_read_history===true;
@@ -40,15 +43,15 @@
   const writeActions=new Set(['collect','overview-refresh','overview-retry','collection-options','translation-context','favorite','import-snapshot','import-ranking-html','import-text','choose-text','catalog','reload-catalog','chapter-preset','chapter-all','choose-chapter','context']);
   const dataRequests=new Set(), downloadURLs=new Set();
   const membershipCopy={
-    checking:['正在连接你的工作台','正在确认发糕账号与会员状态。'],
+    checking:['正在连接你的工作台','正在确认发糕账号与使用状态。'],
     not_authenticated:['连接发糕账号','使用发糕写作的现有账号，在官网确认后即可打开工作台。'],
-    not_eligible:['当前账号暂无工作台权益','当前账号暂不符合工作台开放条件，可前往发糕写作查看账号权益。'],
-    expired:['会员已到期','前往发糕写作续费后，工作台会恢复使用。已有资料继续保存在这台电脑。'],
+    not_eligible:['和发糕娘一起开启专属扫榜','前往官网开启体验，发现热门作品，寻找创作灵感。'],
+    expired:['这次扫榜体验结束啦','你的收藏和资料都还在，继续和发糕娘一起找灵感吧。'],
     suspended:['工作台暂时停用','当前账号的工作台权益已停用，请联系发糕写作客服。'],
     device_revoked:['这台电脑已退出授权','重新连接发糕账号，确认这台电脑后继续使用。'],
     device_limit:['已达到设备数量上限','请先在发糕写作移除不再使用的电脑，再重新连接。'],
     account_changed:['账号已在其他窗口更改','请重新确认当前账号，再继续打开工作台。'],
-    verification_unavailable:['暂时无法确认会员状态','请检查网络后重试。已有榜单、正文和报告仍保存在本机。']
+    verification_unavailable:['暂时无法确认使用状态','请检查网络后重试。已有榜单、正文和报告仍保存在本机。']
   };
   function storageKey(name){return storageAccount===null?null:`${name}:${encodeURIComponent(storageAccount)}`;}
   function savePreference(name,value){const key=storageKey(name);if(key)try{localStorage.setItem(key,value);}catch{}}
@@ -103,22 +106,40 @@
     const account=value.account && typeof value.account.id==='string' && value.account.id.length>0 && value.account.id.length<=256
       ? {id:value.account.id,display_name:typeof value.account.display_name==='string'?value.account.display_name.slice(0,160):'已连接账号'}:null;
     const basis=value.access_basis===undefined?'paid_membership':value.access_basis;
-    const knownBasis=['paid_membership','experimental_membership','experimental_account'].includes(basis);
-    const result={allowed:false,can_read_history:false,access_mode:'none',access_basis:knownBasis?basis:null,reason:membershipCopy[reason]?reason:'verification_unavailable',account,generation:typeof value.generation==='string' || typeof value.generation==='number'?String(value.generation):'',membership_expires_at:value.membership_expires_at,permit_expires_at:value.permit_expires_at,identity_expires_at:value.identity_expires_at,history_eligible:value.history_eligible===true,history_membership_expires_at:value.history_membership_expires_at,server_time:value.server_time,policy_version:value.policy_version};
+    const knownBasis=['paid_membership','experimental_membership','experimental_account','free_trial','word_pack'].includes(basis);
+    const experienceBasis=basis==='free_trial' || basis==='word_pack';
+    const hasAccess=Object.prototype.hasOwnProperty.call(value,'access_expires_at');
+    const accessEnd=hasAccess?value.access_expires_at:value.membership_expires_at;
+    const hasHistoryAccess=Object.prototype.hasOwnProperty.call(value,'history_access_expires_at');
+    const historyEnd=hasHistoryAccess?value.history_access_expires_at:value.history_membership_expires_at;
+    const result={allowed:false,can_read_history:false,access_mode:'none',access_basis:knownBasis?basis:null,reason:membershipCopy[reason]?reason:'verification_unavailable',account,generation:typeof value.generation==='string' || typeof value.generation==='number'?String(value.generation):'',membership_expires_at:value.membership_expires_at,access_expires_at:accessEnd,permit_expires_at:value.permit_expires_at,identity_expires_at:value.identity_expires_at,history_eligible:value.history_eligible===true,history_membership_expires_at:value.history_membership_expires_at,history_access_expires_at:historyEnd,server_time:value.server_time,policy_version:value.policy_version};
+    const time=raw=>typeof raw==='string' && /(?:Z|[+-]\d{2}:\d{2})$/.test(raw)?Date.parse(raw):NaN;
+    const validDates=['membership_expires_at','access_expires_at','history_membership_expires_at','history_access_expires_at','identity_expires_at','permit_expires_at'].every(key=>value[key]==null || Number.isFinite(time(value[key])));
+    const memberBasis=basis==='paid_membership' || basis==='experimental_membership';
+    const extendedMemberClock=memberBasis && hasAccess && accessEnd!=null && value.membership_expires_at!=null && time(accessEnd)>time(value.membership_expires_at);
+    if(!validDates || extendedMemberClock){result.reason='verification_unavailable';return result;}
     if(value.allowed){
-      const expires=Date.parse(value.membership_expires_at),permit=Date.parse(value.permit_expires_at),server=Date.parse(value.server_time);
-      // Only the explicit, verified account grant is independent of the real
-      // membership date. Every access basis still needs a short finite lease.
-      const validMembership=basis==='experimental_account'?(value.membership_expires_at==null || Number.isFinite(expires)):(Number.isFinite(expires) && permit<=expires);
-      if(account && result.generation && knownBasis && reason==='active' && [permit,server].every(Number.isFinite) && server<permit && permit-server<=900000 && validMembership){result.allowed=true;result.access_mode='full';result.reason='active';}
+      const expires=time(value.membership_expires_at),access=time(accessEnd),permit=time(value.permit_expires_at),server=time(value.server_time);
+      // A trial or purchase grants workbench time, never a synthetic membership.
+      // Every basis still needs a short finite lease within its own deadline.
+      const validMembership=basis==='experimental_account' || experienceBasis
+        ? (value.membership_expires_at==null || Number.isFinite(expires))
+        : (Number.isFinite(expires) && permit<=expires);
+      const validAccess=basis==='experimental_account'
+        ? (!hasAccess || accessEnd===null || (Number.isFinite(access) && permit<=access))
+        : ((!experienceBasis || hasAccess) && Number.isFinite(access) && permit<=access);
+      const identity=value.identity_expires_at==null?null:time(value.identity_expires_at);
+      const validIdentity=identity===null || (Number.isFinite(identity) && identity>server && identity-server<=900000);
+      if(account && result.generation && knownBasis && reason==='active' && [permit,server].every(Number.isFinite) && server<permit && permit-server<=900000 && validMembership && validAccess && validIdentity){result.allowed=true;result.access_mode='full';result.reason='active';}
       else result.reason='verification_unavailable';
     }else if(value.can_read_history===true && value.access_mode==='read_only' && reason==='expired'){
-      const expires=Date.parse(value.membership_expires_at),server=Date.parse(value.server_time),identity=value.identity_expires_at==null?null:Date.parse(value.identity_expires_at);
-      if(account && result.generation && knownBasis && [expires,server].every(Number.isFinite) && expires<=server && (identity===null || (Number.isFinite(identity) && identity>server))){result.can_read_history=true;result.access_mode='read_only';}
+      const expires=time(accessEnd),server=time(value.server_time),identity=value.identity_expires_at==null?null:time(value.identity_expires_at);
+      const validIdentity=identity===null?!experienceBasis:(Number.isFinite(identity) && identity>server && identity-server<=900000);
+      if(account && result.generation && knownBasis && (!experienceBasis || hasAccess) && [expires,server].every(Number.isFinite) && expires<=server && validIdentity){result.can_read_history=true;result.access_mode='read_only';}
       else result.reason='verification_unavailable';
     }else if(value.can_read_history===true && value.access_mode==='read_only' && reason==='not_eligible'){
-      const historyEnd=Date.parse(value.history_membership_expires_at),server=Date.parse(value.server_time),identity=Date.parse(value.identity_expires_at);
-      if(account && result.generation && knownBasis && value.history_eligible===true && [historyEnd,server,identity].every(Number.isFinite) && historyEnd<=server && identity>server){result.can_read_history=true;result.access_mode='read_only';}
+      const history=time(historyEnd),server=time(value.server_time),identity=time(value.identity_expires_at);
+      if(account && result.generation && knownBasis && (!experienceBasis || hasHistoryAccess) && value.history_eligible===true && [history,server,identity].every(Number.isFinite) && history<=server && identity>server && identity-server<=900000){result.can_read_history=true;result.access_mode='read_only';}
       else result.reason='verification_unavailable';
     }
     return result;
@@ -128,7 +149,7 @@
       if(button.tagName!=='BUTTON' || !writeActions.has(button.dataset.action))return;
       if(membership.can_read_history){
         if(!button.hasAttribute('data-readonly-disabled'))button.dataset.readonlyDisabled=String(button.disabled);
-        button.disabled=true;button.title='续费会员后恢复此操作';
+        button.disabled=true;button.title='恢复扫榜使用权益后可继续操作';
       }else if(button.hasAttribute('data-readonly-disabled')){
         button.disabled=button.dataset.readonlyDisabled==='true';delete button.dataset.readonlyDisabled;button.removeAttribute('title');
       }
@@ -138,19 +159,25 @@
     const info=membershipCopy[membership.reason] || membershipCopy.verification_unavailable, account=membership.account;
     document.body.classList.toggle('membership-locked',!readable());document.body.classList.toggle('membership-read-only',membership.can_read_history===true);document.body.classList.toggle('legacy-pending',legacyBlocked());
     const sidebar=$('.sidebar');sidebar.inert=!readable() || legacyBlocked();sidebar.setAttribute('aria-disabled',String(sidebar.inert));
-    const expiry=account && membership.membership_expires_at?new Date(membership.membership_expires_at):null;
+    const experience=membership.access_basis==='free_trial' || membership.access_basis==='word_pack';
+    const expiry=account && membership.access_expires_at?new Date(membership.access_expires_at):null;
     const expiryLabel=expiry && Number.isFinite(expiry.getTime())?expiry.toLocaleString('zh-CN',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}):'';
     const accountExperiment=membership.allowed && membership.access_basis==='experimental_account';
-    const activeLabel=accountExperiment?'已连接':'会员有效'+(expiryLabel?' · '+expiryLabel+' 到期':'');
-    const historyOnlyLabel=membership.reason==='not_eligible'?'当前权益仅可查看历史资料':'会员已到期 · 历史资料只读';
-    $('#membership-account').innerHTML=account?`<div class="membership-account-text"><strong>${escape(account.display_name || '已连接账号')}</strong><small>${membership.allowed?escape(activeLabel):membership.can_read_history?historyOnlyLabel:escape(info[0])}</small></div><button class="quiet-button membership-check" data-action="membership-refresh" aria-label="重新确认会员状态" ${membershipBusy?'disabled':''}>↻</button><button class="quiet-button" data-action="membership-logout" ${membershipBusy?'disabled':''}>退出</button>`:'<span class="membership-unconnected">'+(membership.reason==='checking'?'正在确认账号':'尚未连接账号')+'</span>';
+    const activeLabel=accountExperiment?'已连接':experience
+      ? (membership.access_basis==='free_trial'?'体验中':'扫榜可用')+(expiryLabel?' · 使用至 '+expiryLabel:'')
+      : '会员有效'+(expiryLabel?' · '+expiryLabel+' 到期':'');
+    const historyOnlyLabel='使用已到期 · 历史资料只读';
+    const mascot=`<img class="membership-mascot" src="${WORKBENCH_MASCOT}" alt="发糕娘" referrerpolicy="no-referrer" decoding="async">`;
+    const renewActions=`<a class="button primary small" href="${WORKBENCH_SITE}&amp;purchase=membership" target="_blank" rel="noopener noreferrer">开通会员</a><a class="button secondary small" href="${WORKBENCH_SITE}&amp;purchase=word_pack" target="_blank" rel="noopener noreferrer">购买字数包，续用 15 天</a>`;
+    $('#membership-account').innerHTML=account?`<div class="membership-account-text"><strong>${escape(account.display_name || '已连接账号')}</strong><small>${membership.allowed?escape(activeLabel):membership.can_read_history?historyOnlyLabel:escape(info[0])}</small></div><button class="quiet-button membership-check" data-action="membership-refresh" aria-label="重新确认使用状态" ${membershipBusy?'disabled':''}>↻</button><button class="quiet-button" data-action="membership-logout" ${membershipBusy?'disabled':''}>退出</button>`:'<span class="membership-unconnected">'+(membership.reason==='checking'?'正在确认账号':'尚未连接账号')+'</span>';
     $('#membership-notice').hidden=!membership.can_read_history;
-    const priorPaidEnd=membership.history_membership_expires_at?new Date(membership.history_membership_expires_at).toLocaleString('zh-CN',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}):'';
-    $('#membership-notice').innerHTML=membership.can_read_history?`<div><strong>${membership.reason==='not_eligible'?'当前会员权益不含新任务，历史资料可以继续查看':'会员已到期，历史资料可以继续查看'}</strong><span>${membership.reason==='not_eligible'?`此前付费权益截止 ${escape(priorPaidEnd)}。当前主站会员截止${expiryLabel?' '+escape(expiryLabel):'时间以官网为准'}；这段权益不作为扫榜付费资格。`:'已有榜单、收藏、正文和报告保留；续费后恢复更新与新任务。'}</span></div><a class="button secondary small" href="${MEMBER_SITE}" target="_blank" rel="noopener noreferrer">前往官网续费 ↗</a>`:'';
+    $('#membership-notice').innerHTML=membership.can_read_history?`${mascot}<div class="membership-renew-copy"><strong>这次扫榜体验结束啦</strong><span>历史资料可以继续查看，和发糕娘一起寻找新的灵感吧。</span><div class="membership-renew-actions">${renewActions}</div></div>`:'';
     applyReadOnlyControls();
     if(readable())return;
     const checking=membership.reason==='checking', reconnect=['not_authenticated','device_revoked','device_limit'].includes(membership.reason);
-    $('#content').innerHTML=`<section id="membership-card" class="membership-card" aria-labelledby="membership-title"><div class="membership-symbol" aria-hidden="true">${checking?'<span class="spinner"></span>':'▦'}</div><span class="membership-eyebrow">发糕扫榜工作台</span><h1 id="membership-title">${escape(info[0])}</h1><p>${escape(info[1])}</p>${account?`<div class="membership-current">${escape(account.display_name || '已连接账号')}${expiryLabel?`<span>会员截止 ${escape(expiryLabel)}</span>`:''}</div>`:''}<div class="membership-actions">${checking?'':reconnect?`<button class="button primary" data-action="membership-connect" ${membershipBusy?'disabled':''}>${membershipBusy?'正在连接…':'连接发糕账号'}</button>`:`<a class="button primary" href="${MEMBER_SITE}" target="_blank" rel="noopener noreferrer">${membership.reason==='expired'?'前往官网续费':'前往发糕写作'} ↗</a>`}${checking?'':`<button class="button ${reconnect?'quiet-button':'secondary'}" data-action="membership-refresh" ${membershipBusy?'disabled':''}>${membershipBusy?'正在确认…':'重新确认状态'}</button>`}</div><small>${reconnect?'将在官网完成登录，工作台不会索取你的密码。':'账号恢复权益后可继续使用，无需重新安装。'}</small></section>`;
+    const expired=membership.reason==='expired';
+    const action=expired?renewActions:reconnect?`<button class="button primary" data-action="membership-connect" ${membershipBusy?'disabled':''}>${membershipBusy?'正在连接…':'连接发糕账号'}</button>`:`<a class="button primary" href="${WORKBENCH_SITE}" target="_blank" rel="noopener noreferrer">${membership.reason==='not_eligible'?'前往官网开始体验':'前往发糕写作'} ↗</a>`;
+    $('#content').innerHTML=`<section id="membership-card" class="membership-card membership-welcome" aria-labelledby="membership-title">${checking?'<div class="membership-symbol" aria-hidden="true"><span class="spinner"></span></div>':mascot}<span class="membership-eyebrow">发糕扫榜工作台</span><h1 id="membership-title">${escape(info[0])}</h1><p>${escape(info[1])}</p>${account?`<div class="membership-current">${escape(account.display_name || '已连接账号')}</div>`:''}<div class="membership-actions">${checking?'':action}${checking?'':`<button class="button ${reconnect || expired?'quiet-button':'secondary'}" data-action="membership-refresh" ${membershipBusy?'disabled':''}>${membershipBusy?'正在确认…':'重新确认状态'}</button>`}</div><small>${reconnect?'将在官网完成登录，工作台不会索取你的密码。':'账号恢复权益后可继续使用，无需重新安装。'}</small></section>`;
   }
   function renderLegacy(){
     if(!membership.allowed || !legacyBlocked())return;
@@ -219,7 +246,7 @@
       const epoch=accountEpoch;
       membershipDeadlineTimer=setTimeout(()=>{
         if(epoch!==accountEpoch || !readable())return;
-        const expired=next.allowed && next.access_basis!=='experimental_account' && Date.parse(next.membership_expires_at)<=Date.parse(next.permit_expires_at);
+        const expired=next.allowed && next.access_basis!=='experimental_account' && Date.parse(next.access_expires_at)<=Date.parse(next.permit_expires_at);
         applyMembership({...membership,allowed:false,can_read_history:false,access_mode:'none',reason:expired?'expired':'verification_unavailable'});
         checkMembership({force:true}).catch(()=>{});
       },Math.min(remaining,2147483647));
@@ -233,6 +260,18 @@
     const remaining=lease?Date.parse(lease)-Date.parse(membership.server_time):Infinity;
     const renewSoon=Number.isFinite(remaining) && remaining<=45000;
     membershipTimer=setTimeout(()=>checkMembership({force:renewSoon}).catch(()=>{}),renewSoon?Math.max(1,Math.min(15000,remaining/2)):15000);
+  }
+  function refreshForegroundMembership({force=false}={}){
+    if(document.hidden || logoutPending || foregroundMembershipBusy)return;
+    const now=performance.now();
+    // Returning from checkout must refresh an expired account's server grant,
+    // rather than waiting for the still-valid history identity lease to expire.
+    // Browsers may emit focus, visibilitychange and pageshow together.
+    if(now-foregroundMembershipAt<3000)return;
+    foregroundMembershipAt=now;foregroundMembershipBusy=true;
+    const generation=++foregroundMembershipGeneration;
+    checkMembership({force:force || !!membership.account && !membership.allowed,reload:true})
+      .catch(()=>{}).finally(()=>{if(generation===foregroundMembershipGeneration)foregroundMembershipBusy=false;});
   }
   async function checkMembership({force=false,reload=false}={}){
     if(logoutPending && !force)return;
@@ -1253,10 +1292,10 @@
   $('#dialog').addEventListener('click',(event)=>{if(event.target===$('#dialog')){const r=$('#dialog').getBoundingClientRect();if(event.clientX<r.left || event.clientX>r.right || event.clientY<r.top || event.clientY>r.bottom)$('#dialog').close();}});
   window.addEventListener('scroll',()=>{lastListScrollAt=Date.now();const sentinel=$('#list-end');if(sentinel && sentinel.getBoundingClientRect().top<window.innerHeight+240)loadMoreBooks().catch(error=>notice(error.message));},{passive:true});
   document.addEventListener('keydown',event=>{if((event.key==='Enter' || event.key===' ') && event.target.matches?.('.scatter-dot')){event.preventDefault();dispatch(event.target).catch(error=>notice(error.message));}});
-  document.addEventListener('visibilitychange',()=>{if(!document.hidden)checkMembership({reload:true}).catch(()=>{});});
-  window.addEventListener('focus',()=>checkMembership({reload:true}).catch(()=>{}));
-  window.addEventListener('pagehide',()=>{membershipRequest++;clearTimeout(membershipTimer);clearAccountView();membership={allowed:false,reason:'checking',account:null};renderMembership();});
-  window.addEventListener('pageshow',event=>{if(event.persisted)checkMembership({reload:true}).catch(()=>{});});
+  document.addEventListener('visibilitychange',refreshForegroundMembership);
+  window.addEventListener('focus',refreshForegroundMembership);
+  window.addEventListener('pagehide',()=>{membershipRequest++;foregroundMembershipGeneration++;foregroundMembershipBusy=false;foregroundMembershipAt=-Infinity;clearTimeout(membershipTimer);clearAccountView();membership={allowed:false,reason:'checking',account:null};renderMembership();});
+  window.addEventListener('pageshow',event=>{if(event.persisted)refreshForegroundMembership({force:true});});
   const callbackURL=new URL(window.location.href);
   if(callbackURL.searchParams.getAll('authorization').length===1 && callbackURL.searchParams.get('authorization')==='cancelled'){
     callbackNotice='已取消这次官网授权。资料未改变，需要时可重新连接发糕账号。';

@@ -424,6 +424,11 @@ dialog[data-kind="text"],dialog[data-kind="insights"]{width:min(850px,calc(100vw
 .membership-check { font-size: 17px !important; }
 .membership-card { max-width: 650px; margin: 72px auto; padding: 46px 32px; background: #fff; border: 1px solid #e9e9e9; border-radius: 8px; text-align: center; }
 .membership-symbol { width: 44px; height: 44px; display: grid; place-items: center; margin: 0 auto 22px; border: 1px solid #ececec; border-radius: 9px; font-size: 24px; color: #777; }
+.membership-mascot { display: block; width: 160px; height: 160px; object-fit: contain; flex-shrink: 0; }
+.membership-welcome { border-color: #eee9f4; border-radius: 20px; padding-top: 28px; box-shadow: 0 12px 40px #41345506; }
+.membership-welcome > .membership-mascot { margin: 0 auto 12px; }
+.membership-welcome .button.primary, .membership-readonly-notice .button.primary { background: #6b57a4; border-color: #6b57a4; color: #fff; }
+.membership-welcome .button.primary:hover, .membership-readonly-notice .button.primary:hover { background: #58458f; border-color: #58458f; }
 .membership-eyebrow { display: block; font-size: 11px; color: #999; letter-spacing: .1em; margin-bottom: 12px; }
 .membership-card h1 { margin: 0 0 15px; font-size: 25px; color: #333; font-weight: 500; }
 .membership-card > p { max-width: 440px; margin: 0 auto; font-size: 13px; line-height: 1.9; color: #777; }
@@ -433,11 +438,14 @@ dialog[data-kind="text"],dialog[data-kind="insights"]{width:min(850px,calc(100vw
 .membership-card > small { display: block; margin-top: 21px; font-size: 10px; color: #999; line-height: 1.8; }
 .membership-locked .sidebar button { cursor: default; }
 .membership-locked .sidebar, .legacy-pending .sidebar { opacity: .65; }
-.membership-readonly-notice { display: flex; justify-content: space-between; align-items: center; gap: 14px; padding: 16px 18px; margin-bottom: 22px; border: 1px solid #e8dfd4; border-radius: 5px; background: #fff; color: #6d6053; }
+.membership-readonly-notice { display: flex; align-items: center; gap: 20px; padding: 18px 24px; margin-bottom: 22px; border: 1px solid #ebe4f4; border-radius: 16px; background: linear-gradient(110deg,#fbf9fe,#fff); color: #514263; }
 .membership-readonly-notice[hidden] { display: none; }
-.membership-readonly-notice strong { display: block; font-size: 12px; font-weight: 500; }
-.membership-readonly-notice span { display: block; margin-top: 5px; font-size: 11px; line-height: 1.7; color: #8b8178; }
+.membership-readonly-notice > .membership-mascot { width: 92px; height: 92px; }
+.membership-readonly-notice strong { display: block; font-size: 14px; font-weight: 500; }
+.membership-readonly-notice span { display: block; margin-top: 6px; font-size: 12px; line-height: 1.7; color: #82778e; }
 .membership-readonly-notice .button { flex-shrink: 0; }
+.membership-renew-copy { min-width: 0; }
+.membership-renew-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; margin-top: 14px; }
 .legacy-claim-card { max-width: 700px; margin-top: 42px; }
 .legacy-claim-card > p strong { color: #444; font-weight: 500; }
 .legacy-counts { display: flex; justify-content: center; gap: 28px; padding: 0; margin: 25px 0; list-style: none; }
@@ -459,7 +467,10 @@ dialog[data-kind="text"],dialog[data-kind="insights"]{width:min(850px,calc(100vw
   .membership-card { margin: 18px auto; padding: 32px 20px; }
   .membership-card h1 { font-size: 21px; }
   .membership-card > p { font-size: 12px; }
-  .membership-readonly-notice { flex-direction: column; align-items: flex-start; padding: 13px; }
+  .membership-readonly-notice { align-items: flex-start; gap: 10px; padding: 15px 12px; }
+  .membership-readonly-notice > .membership-mascot { width: 62px; height: 62px; }
+  .membership-renew-actions { gap: 7px; }
+  .membership-renew-actions .button { font-size: 11px; padding: 8px 10px; }
 }
 .overseas-navigation { padding: 14px 0; border-top: 1px solid #ececec; }
 .overseas-heading { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 41px; padding: 8px; border-radius: 4px; color: #555; font-size: 12px; text-align: left; }

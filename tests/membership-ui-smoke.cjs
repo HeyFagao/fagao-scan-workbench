@@ -49,6 +49,18 @@ function mixedHistoryMember(overrides = {}) {
     membership_expires_at: new Date(now + 86400000).toISOString(), permit_expires_at: null,
     identity_expires_at: new Date(now + 15 * 60000).toISOString(), ...overrides});
 }
+function experience(basis = 'free_trial', id = 'account-a', overrides = {}) {
+  const now = Date.now();
+  return member(id, {access_basis: basis, membership_expires_at: null,
+    access_expires_at: new Date(now + (basis === 'free_trial' ? 7 : 15) * 86400000).toISOString(),
+    identity_expires_at: new Date(now + 15 * 60000).toISOString(), ...overrides});
+}
+function experienceHistory(basis = 'free_trial', id = 'account-a', overrides = {}) {
+  const ended = new Date(Date.now() - 1000).toISOString();
+  return experience(basis, id, {allowed: false, reason: 'expired', can_read_history: true,
+    access_mode: 'read_only', access_expires_at: ended, history_access_expires_at: ended,
+    history_eligible: true, permit_expires_at: null, ...overrides});
+}
 function legacyStatus(overrides = {}) {
   return {available: false, counts: {}, claim_status: 'unclaimed', decision: null,
     decision_required: false, can_skip: true, original_preserved: true, ...overrides,
@@ -371,6 +383,200 @@ async function locked(dom) {
         assert.equal(dom.control.protectedCalls().length, count);
       } finally {dom.window.close();}
     }],
+    ['server trials and word-pack time open the account without inventing membership', async () => {
+      for (const basis of ['free_trial', 'word_pack']) {
+        const grant = experience(basis);
+        const dom = await open(grant);
+        try {
+          await unlocked(dom);
+          const label = dom.window.document.querySelector('#membership-account').textContent;
+          assert.match(label, basis === 'free_trial' ? /体验中/ : /扫榜可用/);
+          assert.match(label, /使用至/);
+          assert(label.includes(String(new Date(grant.access_expires_at).getFullYear())));
+          assert.doesNotMatch(label, /会员有效|会员截止|实验|永久/);
+          assert.equal(dom.window.document.querySelector('#membership-notice').hidden, true);
+          assert.equal(dom.control.calls.some(call => call.url.includes('/experience')), false,
+            'The client silently claimed a trial instead of using official website activation.');
+        } finally {dom.window.close();}
+      }
+    }],
+    ['experience leases require their actual server deadline and bounded identity', async () => {
+      const base = experience();
+      const clock = Date.parse(base.server_time), iso = delta => new Date(clock + delta).toISOString();
+      const invalid = [
+        {access_expires_at: undefined}, {access_expires_at: null}, {access_expires_at: 'invalid'},
+        {access_expires_at: '2099-01-01T00:00:00'}, {server_time: '2026-11-10T00:00:00'},
+        {access_expires_at: iso(0)}, {access_expires_at: iso(20000), permit_expires_at: iso(30000)},
+        {membership_expires_at: 'invalid'}, {permit_expires_at: iso(900001)},
+        {identity_expires_at: 'invalid'}, {identity_expires_at: iso(900001)},
+        {identity_expires_at: iso(0)}, {generation: ''}, {account: null},
+      ];
+      for (const basis of ['free_trial', 'word_pack']) {
+        for (const fields of invalid) {
+          const dom = await open({...base, access_basis: basis, ...fields});
+          try {await locked(dom); assert.equal(dom.control.protectedCalls().length, 0);}
+          finally {dom.window.close();}
+        }
+      }
+      const dom = await open(member('account-a', {access_expires_at: iso(10000), permit_expires_at: iso(20000)}));
+      try {await locked(dom); assert.equal(dom.control.protectedCalls().length, 0);}
+      finally {dom.window.close();}
+      const extended = await open(member('account-a', {access_expires_at: iso(172800000), membership_expires_at: iso(86400000)}));
+      try {await locked(extended); assert.equal(extended.control.protectedCalls().length, 0);}
+      finally {extended.window.close();}
+    }],
+    ['expired experience keeps saved work read-only and offers the existing official purchase routes', async () => {
+      for (const basis of ['free_trial', 'word_pack']) {
+        const dom = await open(experienceHistory(basis));
+        try {
+          await unlocked(dom);
+          const notice = dom.window.document.querySelector('#membership-notice');
+          assert.equal(notice.hidden, false);
+          assert.match(notice.textContent, /这次扫榜体验结束啦/);
+          assert.match(notice.textContent, /历史资料可以继续查看/);
+          assert.doesNotMatch(notice.textContent, /会员已到期|实验|管理员/);
+          const mascot = notice.querySelector('img');
+          assert.equal(mascot?.getAttribute('referrerpolicy'), 'no-referrer');
+          assert.equal(mascot?.src, 'https://www.fagaochuangzuo.com/growth/redemption/fagao-check.png');
+          // The illustration is optional: failure must leave text and purchase links usable.
+          mascot.dispatchEvent(new dom.window.Event('error'));
+          const links = [...notice.querySelectorAll('a')].map(link => new URL(link.href));
+          assert.deepEqual(links.map(url => [url.origin, url.searchParams.get('module'), url.searchParams.get('purchase')]), [
+            ['https://www.fagaochuangzuo.com', 'rankings', 'membership'],
+            ['https://www.fagaochuangzuo.com', 'rankings', 'word_pack'],
+          ]);
+          dom.window.document.querySelector('[data-action="mode"][data-mode="long"]').click();
+          await wait(() => dom.window.document.querySelector('.detail h2')?.textContent === '甲私有作品', 'Expired trial lost its saved book.');
+          assert(dom.window.document.querySelector('[data-action="collect"]').disabled);
+          click(dom, 'report');
+          await wait(() => dom.window.document.querySelector('.report-text'), 'Expired trial could not open its saved report.');
+          assert.match(dom.window.document.querySelector('.report-text').textContent, /甲私有作品报告正文/);
+          await dom.control.runTimers(timer => timer.delay <= 20000);
+          assert.deepEqual(dom.control.readonlyMutationAttempts, []);
+          assert.equal(dom.control.calls.some(call => ['/api/collect', '/api/overview/refresh', '/api/translation-context', '/api/favorite'].includes(call.url)), false);
+        } finally {dom.window.close();}
+      }
+    }],
+    ['new purchase restores an expired experience without replacing saved selection', async () => {
+      const dom = await open(experienceHistory());
+      try {
+        await unlocked(dom);
+        dom.window.document.querySelector('[data-action="mode"][data-mode="long"]').click();
+        await wait(() => dom.window.document.querySelector('.detail h2')?.textContent === '甲私有作品', 'Expired experience selection missing.');
+        const before = JSON.stringify(dom.control.data['account-a']);
+        dom.control.membership = experience('word_pack');
+        await recheck(dom);
+        await wait(() => !dom.window.document.querySelector('[data-action="collect"]')?.disabled, 'Purchase did not restore new task controls.');
+        assert.equal(dom.window.document.querySelector('.detail h2').textContent, '甲私有作品');
+        assert.equal(dom.window.document.querySelector('#membership-notice').hidden, true);
+        assert.match(dom.window.document.querySelector('#membership-account').textContent, /扫榜可用/);
+        assert.equal(JSON.stringify(dom.control.data['account-a']), before);
+        assert.deepEqual(dom.control.readonlyMutationAttempts, []);
+      } finally {dom.window.close();}
+    }],
+    ['returning from checkout refreshes a cached history lease and coalesces foreground events', async () => {
+      const old = experienceHistory();
+      const dom = await open(old);
+      try {
+        await unlocked(dom);
+        dom.window.document.querySelector('[data-action="mode"][data-mode="long"]').click();
+        await wait(() => dom.window.document.querySelector('.detail h2')?.textContent === '甲私有作品', 'Saved selection missing before checkout.');
+        // The ordinary status endpoint may still hold its 15-minute history
+        // identity; only an explicit refresh obtains the newly purchased grant.
+        dom.control.overrides.set('/api/membership/status', {status: 200, body: old});
+        dom.control.membership = experience('word_pack');
+        const before = dom.control.calls.length;
+        dom.window.dispatchEvent(new dom.window.Event('focus'));
+        dom.window.document.dispatchEvent(new dom.window.Event('visibilitychange'));
+        const restoredPage = new dom.window.Event('pageshow');
+        Object.defineProperty(restoredPage, 'persisted', {value: true});
+        dom.window.dispatchEvent(restoredPage);
+        await wait(() => !dom.window.document.querySelector('[data-action="collect"]')?.disabled, 'Returning from checkout did not restore collection.');
+        assert.equal(dom.window.document.querySelector('#membership-notice').hidden, true);
+        assert.equal(dom.window.document.querySelector('.detail h2').textContent, '甲私有作品');
+        assert.match(dom.window.document.querySelector('#membership-account').textContent, /扫榜可用/);
+        dom.window.dispatchEvent(new dom.window.Event('focus'));
+        await pause(20);
+        const refreshed = dom.control.calls.slice(before).filter(call => call.url.startsWith('/api/membership/'));
+        assert.deepEqual(refreshed.map(call => call.url), ['/api/membership/refresh'], 'Foreground events duplicated the server verification.');
+        assert.equal(dom.control.calls.some(call => call.url.includes('/experience')), false, 'Returning from checkout silently claimed a trial.');
+      } finally {dom.window.close();}
+    }],
+    ['bfcache restore verifies a new grant even when an earlier foreground request was pending', async () => {
+      const dom = await open(experienceHistory());
+      let pending;
+      try {
+        await unlocked(dom);
+        pending = dom.control.holdNext('/api/membership/refresh');
+        dom.window.dispatchEvent(new dom.window.Event('focus'));
+        await wait(() => pending.captured, 'Foreground history refresh was not held.');
+        dom.window.dispatchEvent(new dom.window.Event('pagehide'));
+        assert.equal(dom.window.document.querySelector('.overview-tabs'), null, 'Leaving the page retained protected content.');
+        dom.control.membership = experience('word_pack');
+        const restoredPage = new dom.window.Event('pageshow');
+        Object.defineProperty(restoredPage, 'persisted', {value: true});
+        dom.window.dispatchEvent(restoredPage);
+        await unlocked(dom);
+        assert.match(dom.window.document.querySelector('#membership-account').textContent, /扫榜可用/);
+        assert.equal(dom.window.document.querySelector('#membership-notice').hidden, true);
+        pending.release(); await pause(20);
+        assert.equal(dom.window.document.querySelector('#membership-notice').hidden, true, 'Old history response replaced the new purchase.');
+        assert.equal(dom.control.calls.filter(call => call.url === '/api/membership/refresh').length, 2);
+        assert.deepEqual(dom.control.readonlyMutationAttempts, []);
+      } finally {pending?.release(); dom.window.close();}
+    }],
+    ['experience history rejects missing or stale identity and unverified deadline claims', async () => {
+      const base = experienceHistory();
+      const clock = Date.parse(base.server_time), iso = delta => new Date(clock + delta).toISOString();
+      const invalid = [
+        {access_expires_at: undefined}, {access_expires_at: null}, {access_expires_at: iso(1)},
+        {membership_expires_at: 'invalid'}, {access_expires_at: '2001-01-01T00:00:00'},
+        {access_expires_at: 'invalid'}, {identity_expires_at: undefined}, {identity_expires_at: null},
+        {identity_expires_at: iso(0)}, {identity_expires_at: iso(900001)}, {identity_expires_at: 'invalid'},
+        {reason: 'suspended'}, {reason: 'device_revoked'}, {access_mode: undefined}, {generation: ''},
+      ];
+      for (const basis of ['free_trial', 'word_pack']) {
+        for (const fields of invalid) {
+          const dom = await open({...base, access_basis: basis, ...fields});
+          try {await locked(dom); assert.equal(dom.control.protectedCalls().length, 0);}
+          finally {dom.window.close();}
+        }
+      }
+    }],
+    ['trial and word-pack cutoffs stop data while offline even with a later real membership date', async () => {
+      for (const basis of ['free_trial', 'word_pack']) {
+        const grant = experience(basis, 'account-a', {membership_expires_at: new Date(Date.now() + 86400000).toISOString()});
+        grant.access_expires_at = grant.permit_expires_at = new Date(Date.parse(grant.server_time) + 10000).toISOString();
+        const dom = await open(grant);
+        try {
+          await unlocked(dom);
+          dom.control.overrides.set('/api/membership/refresh', new Error('Synthetic offline verification'));
+          const count = dom.control.protectedCalls().length;
+          await dom.control.runTimers(timer => timer.delay >= 9000 && timer.delay <= 11000);
+          await locked(dom);
+          assert.equal(dom.window.document.querySelector('.overview-tabs'), null);
+          assert.equal(dom.control.protectedCalls().length, count);
+          assert.doesNotMatch(dom.window.document.querySelector('#main').textContent, /甲私有作品/);
+        } finally {dom.window.close();}
+      }
+    }],
+    ['switching trial accounts discards a delayed response from the earlier account', async () => {
+      const dom = await open(experience());
+      let pending;
+      try {
+        await unlocked(dom);
+        pending = dom.control.holdNext('/api/state');
+        await recheck(dom);
+        await wait(() => pending.captured, 'Prior trial response was not held.');
+        dom.control.membership = experience('word_pack', 'account-b');
+        await recheck(dom); await unlocked(dom);
+        pending.release(); await pause(30);
+        dom.window.document.querySelector('[data-section="favorites"]').click();
+        await wait(() => dom.window.document.querySelector('#content').textContent.includes('乙私有作品'), 'New trial account did not display its own data.');
+        assert.doesNotMatch(dom.window.document.querySelector('#main').textContent, /甲私有作品/);
+        assert.deepEqual(dom.control.missingBindings, []);
+      } finally {pending?.release(); dom.window.close();}
+    }],
     ['legacy data is inspected before any active-account data request', async () => {
       const dom = await open(member());
       try {
@@ -541,7 +747,7 @@ async function locked(dom) {
         await unlocked(dom);
         const notice = dom.window.document.querySelector('#membership-notice');
         assert(notice && !notice.hidden, 'Read-only membership notice missing.');
-        assert.match(notice.textContent, /到期|续费/);
+        assert.match(notice.textContent, /结束|续用/);
         dom.window.document.querySelector('[data-action="mode"][data-mode="long"]').click();
         await wait(() => dom.window.document.querySelector('.detail h2')?.textContent === '甲私有作品', 'Saved book was not readable after expiry.');
         for (const action of ['collect', 'catalog', 'favorite', 'import-text', 'import-snapshot', 'translation-context', 'context']) {

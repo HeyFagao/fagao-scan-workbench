@@ -1,8 +1,8 @@
-"""Local client for the proposed, narrowly scoped workbench authorization API.
+"""Local client for the narrowly scoped official workbench authorization API.
 
-The website endpoints below are an integration contract, not a claim that the
-production website already implements them.  A transport can be injected for
-isolated tests; there is deliberately no environment switch that disables auth.
+A transport can be injected for isolated tests; there is deliberately no
+environment switch that disables authorization. Website deployment state is
+verified separately from this client and its synthetic test fixtures.
 
 Only the revocable device credential and account identity are persisted.  Every
 new client/process verifies online before it can use data.  A successful HTTPS
@@ -48,19 +48,21 @@ MAX_RESPONSE_BYTES = 64 * 1024
 REQUEST_TIMEOUT = 8
 AUTHORIZATION_TTL = 300
 MAX_PERMIT_SECONDS = 900
-_ACCESS_BASES = {"paid_membership", "experimental_membership", "experimental_account"}
+_ACCESS_BASES = {"paid_membership", "experimental_membership", "experimental_account", "free_trial", "word_pack"}
+_MEMBER_BASES = {"paid_membership", "experimental_membership"}
+_EXPERIENCE_BASES = {"free_trial", "word_pack"}
 _REASONS = {
     "active", "not_authenticated", "not_eligible", "expired", "suspended",
     "device_revoked", "device_limit", "verification_unavailable",
 }
 _MESSAGES = {
     "not_authenticated": "请先连接发糕账号。",
-    "not_eligible": "当前账号没有有效的扫榜会员资格，请在官网查看会员权益。",
-    "expired": "会员或使用许可已到期，请核验会员或前往官网续费。",
+    "not_eligible": "当前账号暂未开通扫榜，请前往官网开始体验或查看使用权益。",
+    "expired": "扫榜使用期限或许可已到期，请在官网确认权益或续用。",
     "suspended": "此账号的扫榜工作台已停用，请联系管理员。",
     "device_revoked": "此设备授权已撤销，请重新连接发糕账号。",
     "device_limit": "已达到设备数量上限，请在官网移除旧设备。",
-    "verification_unavailable": "暂时无法核验会员，已有资料仍保留，请稍后重试。",
+    "verification_unavailable": "暂时无法核验使用资格，已有资料仍保留，请稍后重试。",
     "account_changed": "登录账号或会话已改变，请重新发起操作。",
     "invalid_callback": "授权回调无效，请重新连接发糕账号。",
     "authorization_expired": "本次授权已过期，请重新连接发糕账号。",
@@ -326,25 +328,25 @@ class MembershipClient:
         return {"allowed": False, "reason": reason, "account": account,
                 "account_id": account["id"] if account else None,
                 "display_name": account["display_name"] if account else None,
-                "generation": state["generation"], "membership_expires_at": None,
+                "generation": state["generation"], "membership_expires_at": None, "access_expires_at": None,
                 "permit_expires_at": None, "identity_expires_at": None,
                 "access_basis": None,
                 "server_time": None, "policy_version": None,
-                "history_eligible": False, "history_membership_expires_at": None,
+                "history_eligible": False, "history_membership_expires_at": None, "history_access_expires_at": None,
                 "can_read_history": False, "access_mode": "locked"}
 
     def _access_fields(self, result):
-        """The approved expired-member policy allows existing history only."""
+        """Expired official usage rights permit existing account history only."""
         read_only = (result["reason"] == "expired" and result.get("account") is not None
-                     and result.get("membership_expires_at") is not None and result.get("server_time") is not None
-                     and _timestamp(result["membership_expires_at"]) <= _timestamp(result["server_time"]))
-        prior_paid_history = (result["reason"] == "not_eligible" and result.get("account") is not None
+                     and result.get("access_expires_at") is not None and result.get("server_time") is not None
+                     and _timestamp(result["access_expires_at"]) <= _timestamp(result["server_time"]))
+        prior_history = (result["reason"] == "not_eligible" and result.get("account") is not None
                               and result.get("history_eligible") is True
-                              and result.get("history_membership_expires_at") is not None
+                              and result.get("history_access_expires_at") is not None
                               and result.get("identity_expires_at") is not None and result.get("server_time") is not None
-                              and _timestamp(result["history_membership_expires_at"]) <= _timestamp(result["server_time"])
+                              and _timestamp(result["history_access_expires_at"]) <= _timestamp(result["server_time"])
                               < _timestamp(result["identity_expires_at"]))
-        read_only = read_only or prior_paid_history
+        read_only = read_only or prior_history
         result["can_read_history"] = bool(result["allowed"] or read_only)
         result["access_mode"] = "active" if result["allowed"] else "read_only" if read_only else "locked"
         return result
@@ -355,13 +357,15 @@ class MembershipClient:
         allowed = raw["allowed"]
         if allowed != (raw["reason"] == "active"):
             raise _InvalidResponse()
-        # Only a known basis in a verified server response can detach an
-        # account-specific experiment from the real membership deadline.
-        # Older servers omitted this field and retain the paid-member rules.
+        # Each official source has an explicit boundary. A trial/word-pack
+        # deadline must never be inferred from, or become, a membership clock.
+        # Older servers omitted the neutral fields and retain member rules.
         access_basis = raw.get("access_basis", "paid_membership")
         if not isinstance(access_basis, str) or access_basis not in _ACCESS_BASES:
             raise _InvalidResponse()
         account_experiment = access_basis == "experimental_account"
+        experience = access_basis in _EXPERIENCE_BASES
+        neutral_protocol = experience or "access_expires_at" in raw or "history_access_expires_at" in raw
         server = _timestamp(raw.get("server_time"))
         policy = _text(raw.get("policy_version"), 100)
         account = _account(raw["account"]) if raw.get("account") is not None else None
@@ -372,34 +376,51 @@ class MembershipClient:
             # display metadata alone cannot become a read authorization.
             raise _InvalidResponse()
         membership = _timestamp(raw["membership_expires_at"]) if raw.get("membership_expires_at") is not None else None
+        access_end = (_timestamp(raw["access_expires_at"]) if raw.get("access_expires_at") is not None else None)
+        if "access_expires_at" not in raw and not experience:
+            access_end = membership if not account_experiment else None
         permit = _timestamp(raw["permit_expires_at"]) if raw.get("permit_expires_at") is not None else None
         identity = _timestamp(raw["identity_expires_at"]) if raw.get("identity_expires_at") is not None else None
         history_eligible = raw.get("history_eligible", False)
         if type(history_eligible) is not bool:
             raise _InvalidResponse()
-        history_end = (_timestamp(raw["history_membership_expires_at"])
+        history_membership_end = (_timestamp(raw["history_membership_expires_at"])
                        if raw.get("history_membership_expires_at") is not None else None)
+        history_end = (_timestamp(raw["history_access_expires_at"])
+                       if raw.get("history_access_expires_at") is not None else None)
+        if "history_access_expires_at" not in raw and not experience:
+            history_end = history_membership_end
         if history_eligible and (account is None or history_end is None or history_end > server
                                  or identity is None or identity <= server):
             raise _InvalidResponse()
-        if identity is not None and identity <= server:
+        if identity is not None and (identity <= server or (neutral_protocol and identity > server + MAX_PERMIT_SECONDS)):
+            raise _InvalidResponse()
+        if neutral_protocol and raw["reason"] == "expired" and (account is None or access_end is None
+                                                               or access_end > server or identity is None):
             raise _InvalidResponse()
         if permit is not None and not server < permit <= server + MAX_PERMIT_SECONDS:
             raise _InvalidResponse()
-        if not account_experiment and permit is not None and membership is not None and permit > membership:
+        if access_basis in _MEMBER_BASES and permit is not None and membership is not None and permit > membership:
+            raise _InvalidResponse()
+        if access_basis in _MEMBER_BASES and access_end is not None and membership is not None and access_end > membership:
+            raise _InvalidResponse()
+        if permit is not None and access_end is not None and permit > access_end:
             raise _InvalidResponse()
         if allowed and (not account or permit is None
-                        or (not account_experiment and (membership is None or permit > membership))):
+                        or (not account_experiment and access_end is None)
+                        or (access_basis in _MEMBER_BASES and membership is None)):
             raise _InvalidResponse()
         return {"allowed": allowed, "reason": raw["reason"], "account": account,
                 "access_basis": access_basis,
                 "account_id": account["id"] if account else None,
                 "display_name": account["display_name"] if account else None,
                 "membership_expires_at": _iso(membership) if membership is not None else None,
+                "access_expires_at": _iso(access_end) if access_end is not None else None,
                 "permit_expires_at": _iso(permit) if permit is not None else None,
                 "identity_expires_at": _iso(identity) if identity is not None else None,
                 "history_eligible": history_eligible,
-                "history_membership_expires_at": _iso(history_end) if history_end is not None else None,
+                "history_membership_expires_at": _iso(history_membership_end) if history_membership_end is not None else None,
+                "history_access_expires_at": _iso(history_end) if history_end is not None else None,
                 "server_time": _iso(server), "policy_version": policy}
 
     def _http_transport(self, method, url, payload, token):
@@ -477,8 +498,8 @@ class MembershipClient:
         if current is None:
             return None
         deadline = _timestamp(self._cache["permit_expires_at"])
-        if self._cache["access_basis"] != "experimental_account":
-            deadline = min(deadline, _timestamp(self._cache["membership_expires_at"]))
+        if self._cache.get("access_expires_at") is not None:
+            deadline = min(deadline, _timestamp(self._cache["access_expires_at"]))
         if current >= deadline:
             return None
         result = deepcopy(self._cache)
@@ -494,13 +515,13 @@ class MembershipClient:
             # An experiment is not evidence of a paid-membership history grant.
             # After its short permit expires, obtain a new server decision.
             return None
-        prior_paid = proof["reason"] == "not_eligible" and proof.get("history_eligible") is True
-        history_boundary = proof["history_membership_expires_at"] if prior_paid else proof["membership_expires_at"]
-        if (current is None or current >= _timestamp(proof["identity_expires_at"])
+        prior_history = proof["reason"] == "not_eligible" and proof.get("history_eligible") is True
+        history_boundary = proof["history_access_expires_at"] if prior_history else proof["access_expires_at"]
+        if (current is None or history_boundary is None or current >= _timestamp(proof["identity_expires_at"])
                 or current < _timestamp(history_boundary)):
             return None
         result = deepcopy(proof)
-        result.update(allowed=False, reason="not_eligible" if prior_paid else "expired", server_time=_iso(current))
+        result.update(allowed=False, reason="not_eligible" if prior_history else "expired", server_time=_iso(current))
         return self._access_fields(result)
 
     def _remember(self, result, state, started):
@@ -536,7 +557,9 @@ class MembershipClient:
                     # A slow exchange may consume the entire short permit. It
                     # does not establish that an account experiment has ended
                     # or that the user's real membership has expired.
-                    fallback = "verification_unavailable" if result.get("access_basis") == "experimental_account" else "expired"
+                    access_end = result.get("access_expires_at")
+                    entitlement_expired = (access_end is not None and self._server_epoch >= _timestamp(access_end))
+                    fallback = "expired" if entitlement_expired else "verification_unavailable"
                     result = self._history_cached(state) or self._base_status(state, fallback)
                 else:
                     result = current
