@@ -13,13 +13,17 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 import shutil
+import socket
+import ssl
 import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
-from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
+from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener, getproxies
 import uuid
 import zipfile
 
@@ -27,6 +31,8 @@ APP = "fagao-scan-workbench"
 MAX_ARCHIVE = 50 * 1024 * 1024
 MAX_EXPANDED = 200 * 1024 * 1024
 MAX_MEMBERS = 10000
+DOWNLOAD_ATTEMPTS = 3
+DOWNLOAD_TIMEOUT = 45
 REQUIRED = ("scripts/launch.py", "fagao/server.py", "fagao/store.py", "fagao/__main__.py", "web/index.html")
 EXCLUDED = {".git", "node_modules", "__pycache__", ".venv", ".DS_Store", ".env", ".data",
             "browser-profiles", ".fagao-release.json", ".fagao-install.json", ".install.lock",
@@ -35,13 +41,24 @@ RUNTIME_SUFFIXES = (".db", ".sqlite", ".sqlite3", ".sqlite-wal", ".sqlite-shm", 
 
 
 def excluded_path(relative: Path) -> bool:
-    return (any(part in EXCLUDED or part.startswith((".env.", ".staging-", ".download-"))
+    return (any(part in EXCLUDED or part.startswith((".env.", ".staging-", ".download-", ".pending-install-"))
                 for part in relative.parts)
             or relative.name.lower().endswith(RUNTIME_SUFFIXES))
 
 
 class InstallError(RuntimeError):
-    pass
+    def __init__(self, message, *, code="install_failed", stage="install", retryable=False, attempts=None):
+        super().__init__(message)
+        self.code = code
+        self.stage = stage
+        self.retryable = retryable
+        self.attempts = attempts
+
+    def diagnostic(self):
+        result = {"code": self.code, "message": str(self), "stage": self.stage, "retryable": self.retryable}
+        if self.attempts is not None:
+            result["attempts"] = self.attempts
+        return result
 
 
 def default_data_dir() -> Path:
@@ -149,34 +166,350 @@ def extract_archive(archive: Path, destination: Path, expected_root: str) -> Non
 class PinnedRedirect(HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         parsed = urlsplit(newurl)
-        if parsed.scheme != "https" or parsed.hostname != "codeload.github.com":
-            raise InstallError("下载发生了未经允许的跨站跳转。")
+        if (parsed.scheme != "https" or parsed.hostname != "codeload.github.com"
+                or parsed.username is not None or parsed.password is not None
+                or parsed.port not in (None, 443)):
+            raise InstallError("下载发生了未经允许的跨站跳转。", code="download_redirect_rejected", stage="download")
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-def download_archive(repo: str, commit: str, destination: Path) -> None:
-    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
+def remote_source(repo, commit, archive_sha256):
+    if (not isinstance(repo, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo)
+            or any(part in (".", "..") for part in repo.split("/"))):
         raise InstallError("仓库须是明确的 owner/repo。")
-    if not re.fullmatch(r"[a-fA-F0-9]{40}", commit):
+    if not isinstance(commit, str) or not re.fullmatch(r"[a-fA-F0-9]{40}", commit):
         raise InstallError("必须提供完整的 40 位 Git 提交 SHA，不能使用浮动 main 分支。")
-    url = f"https://codeload.github.com/{repo}/zip/{commit.lower()}"
+    if not isinstance(archive_sha256, str) or not re.fullmatch(r"[a-fA-F0-9]{64}", archive_sha256):
+        raise InstallError("请从已核验的 install-release.json 读取 source_archive_sha256，并传入 --archive-sha256；不能跳过源码包校验。",
+                           code="archive_checksum_required", stage="input")
+    return f"https://codeload.github.com/{repo}/zip/{commit.lower()}"
+
+
+def archive_digest(path: Path) -> str:
+    digest = hashlib.sha256()
+    size = 0
+    with path.open("rb") as handle:
+        while chunk := handle.read(1024 * 1024):
+            size += len(chunk)
+            if size > MAX_ARCHIVE:
+                raise InstallError("下载包超过允许大小。", code="archive_too_large", stage="download")
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def verify_archive_digest(path: Path, expected: str) -> None:
+    if path.is_symlink() or not path.is_file():
+        raise InstallError("源码包不是有效的普通文件。", code="archive_invalid_file", stage="download")
+    if archive_digest(path) != expected.lower():
+        raise InstallError("源码包 SHA-256 与发行指针不一致，已拒绝安装并保留原版本。",
+                           code="archive_checksum_mismatch", stage="download")
+
+
+def _download_urllib_stream(url: str, destination: Path) -> None:
     opener = build_opener(PinnedRedirect())
-    request = Request(url, headers={"User-Agent": "FagaoWorkbench-Installer/0.1"})
+    request = Request(url, headers={"User-Agent": "FagaoWorkbench-Installer/0.2"})
+    deadline = time.monotonic() + DOWNLOAD_TIMEOUT
+    with opener.open(request, timeout=DOWNLOAD_TIMEOUT) as response, destination.open("xb") as handle:
+        declared = response.headers.get("Content-Length")
+        if declared and (not declared.isdigit() or int(declared) < 0):
+            raise InstallError("下载响应大小无效。", code="download_invalid_response", stage="download")
+        if declared and int(declared) > MAX_ARCHIVE:
+            raise InstallError("下载包超过允许大小。", code="archive_too_large", stage="download")
+        size = 0
+        while True:
+            if time.monotonic() >= deadline:
+                raise TimeoutError("download deadline exceeded")
+            # read1 returns after one underlying read instead of waiting for a
+            # full 64 KiB while a proxy drips bytes below the socket timeout.
+            chunk = response.read1(64 * 1024)
+            if time.monotonic() > deadline:
+                raise TimeoutError("download deadline exceeded")
+            if not chunk:
+                break
+            size += len(chunk)
+            if size > MAX_ARCHIVE:
+                raise InstallError("下载包超过允许大小。", code="archive_too_large", stage="download")
+            handle.write(chunk)
+
+
+def _download_worker(url: str, destination: Path) -> None:
+    parsed = urlsplit(url)
+    parts = parsed.path.split("/")
+    if len(parts) != 5 or parts[3] != "zip" or url != remote_source(parts[1] + "/" + parts[2], parts[4], "0" * 64):
+        raise InstallError("内部下载任务不是固定 GitHub HTTPS 源码地址。", code="download_source_rejected", stage="download")
+    if not destination.is_absolute() or destination.exists() or destination.is_symlink():
+        raise InstallError("内部下载目标无效或已存在。", code="download_target_exists", stage="download")
+    _download_urllib_stream(url, destination)
+
+
+def _download_urllib(url: str, destination: Path) -> None:
+    # An OS child process makes the *whole* request bounded, including DNS,
+    # proxy/TLS handshakes and stalled body reads. subprocess.run kills and
+    # waits for this child on timeout, so no writer remains during cleanup.
+    result = subprocess.run([sys.executable, "-I", str(Path(__file__).resolve()),
+                             "--download-worker", url, str(destination.absolute())],
+                            stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                            encoding="utf-8", errors="replace", timeout=DOWNLOAD_TIMEOUT)
     try:
-        with opener.open(request, timeout=45) as response, destination.open("xb") as handle:
-            declared = response.headers.get("Content-Length")
-            if declared and int(declared) > MAX_ARCHIVE:
-                raise InstallError("下载包超过允许大小。")
+        value = json.loads(result.stdout)
+    except (ValueError, TypeError):
+        value = None
+    if result.returncode == 0 and isinstance(value, dict) and value.get("status") == "downloaded":
+        return
+    failure = value.get("error") if isinstance(value, dict) else None
+    if isinstance(failure, dict) and isinstance(failure.get("code"), str) and isinstance(failure.get("message"), str):
+        raise InstallError(failure["message"], code=failure["code"], stage="download", retryable=failure.get("retryable") is True)
+    raise InstallError("独立下载任务未返回可验证结果，已有版本未改动。", code="download_worker_failed", stage="download")
+
+
+def _curl_environment():
+    # Keep the installer session's working proxy route; never change system or
+    # application settings. Schannel must use the OS trust store, not a shell's
+    # alternate CA file/backend or a curlrc file from the current directory.
+    ignored = {"curl_ca_bundle", "ssl_cert_file", "ssl_cert_dir", "curl_ssl_backend", "sslkeylogfile"}
+    env = {key: value for key, value in os.environ.items() if key.lower() not in ignored}
+    available = {key.lower() for key in env}
+    for scheme, proxy in getproxies().items():
+        key = scheme.lower() + "_proxy"
+        if scheme.lower() in ("http", "https", "all", "no") and key not in available and isinstance(proxy, str):
+            env[key] = proxy
+    return env
+
+
+def _windows_system_curl() -> str | None:
+    if sys.platform != "win32":
+        return None
+    try:
+        # Do not resolve a potentially shadowed curl.exe from the source folder
+        # or PATH. Windows supplies a native Schannel curl in its system folder.
+        import ctypes
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        buffer = ctypes.create_unicode_buffer(32768)
+        length = kernel.GetSystemDirectoryW(buffer, len(buffer))
+        if not 0 < length < len(buffer):
+            return None
+        candidates = [Path(buffer.value) / "curl.exe", Path(buffer.value).parent / "Sysnative" / "curl.exe"]
+        for candidate in candidates:
+            if not candidate.is_file() or candidate.is_symlink():
+                continue
+            result = subprocess.run([str(candidate), "--disable", "--version"],
+                                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                    timeout=5, env=_curl_environment(), check=False)
+            if result.returncode == 0 and len(result.stdout) < 16384 and b"Schannel" in result.stdout:
+                return str(candidate)
+    except (OSError, AttributeError, subprocess.TimeoutExpired):
+        pass
+    return None
+
+
+def _download_curl(url: str, destination: Path, executable: str) -> None:
+    # No -L: even an HTTPS redirect cannot send this request to another host.
+    # Stream to Python as well as using --max-filesize: curl before 8.4 cannot
+    # enforce that option on responses without Content-Length.
+    command = [executable, "--disable", "--proto", "=https", "--proto-redir", "=https",
+               "--fail", "--silent", "--show-error", "--max-redirs", "0",
+               "--connect-timeout", "15", "--max-time", str(DOWNLOAD_TIMEOUT),
+               "--max-filesize", str(MAX_ARCHIVE), "--output", "-", "--url", url]
+    process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                               stderr=subprocess.DEVNULL, env=_curl_environment())
+    timed_out = threading.Event()
+    def expire():
+        timed_out.set()
+        try:
+            process.kill()
+        except OSError:
+            pass
+    timer = threading.Timer(DOWNLOAD_TIMEOUT + 5, expire)
+    timer.daemon = True
+    timer.start()
+    try:
+        with destination.open("xb") as handle:
             size = 0
-            while chunk := response.read(1024 * 1024):
+            while chunk := process.stdout.read(64 * 1024):
                 size += len(chunk)
                 if size > MAX_ARCHIVE:
-                    raise InstallError("下载包超过允许大小。")
+                    raise InstallError("下载包超过允许大小。", code="archive_too_large", stage="download")
                 handle.write(chunk)
-    except InstallError:
-        raise
-    except Exception as exc:
-        raise InstallError(f"指定 GitHub 版本下载失败：{type(exc).__name__}。请检查仓库、提交与网络，未改动已有版本。") from exc
+        code = process.wait(timeout=5)
+        if timed_out.is_set() or code == 28:
+            raise TimeoutError("native download timed out")
+        if code == 63:
+            raise InstallError("下载包超过允许大小。", code="archive_too_large", stage="download")
+        if code in (51, 60, 77, 82, 83):
+            raise InstallError("Windows 系统证书验证仍未通过，未降低 HTTPS 验证要求。",
+                               code="download_tls_verification_failed", stage="download")
+        if code:
+            raise InstallError("Windows 系统下载通道未完成下载，已有版本未改动。",
+                               code="download_native_failed", stage="download", retryable=code in (5, 6, 7, 18, 22, 35, 52, 55, 56, 92))
+    finally:
+        timer.cancel()
+        if process.poll() is None:
+            try:
+                process.kill()
+            except OSError:
+                pass
+        process.wait(timeout=5)
+        if process.stdout is not None:
+            process.stdout.close()
+
+
+def _download_failure(error: Exception) -> InstallError:
+    if isinstance(error, InstallError):
+        return error
+    reason = error.reason if isinstance(error, URLError) else error
+    if isinstance(reason, ssl.SSLCertVerificationError) or (isinstance(reason, ssl.SSLError) and "CERTIFICATE_VERIFY_FAILED" in str(reason)):
+        return InstallError("Python HTTPS 证书验证失败，将由维护助手使用已验证的系统通道处理。",
+                            code="download_tls_verification_failed", stage="download")
+    if isinstance(error, HTTPError):
+        retryable = error.code in (408, 429, 500, 502, 503, 504)
+        return InstallError(f"固定源码下载返回 HTTP {error.code}，已有版本未改动。",
+                            code="download_http_error", stage="download", retryable=retryable)
+    if isinstance(reason, (TimeoutError, socket.timeout, subprocess.TimeoutExpired)):
+        return InstallError("固定源码下载超时，已有版本未改动。", code="download_timeout", stage="download", retryable=True)
+    if isinstance(reason, PermissionError):
+        return InstallError("无法写入安装目录，请检查该用户目录的写入权限。", code="download_write_denied", stage="download")
+    return InstallError("固定源码下载连接失败，已有版本未改动。", code="download_connection_failed",
+                        stage="download", retryable=isinstance(error, (OSError, URLError)))
+
+
+def download_archive(repo: str, commit: str, destination: Path, archive_sha256=None) -> dict:
+    url = remote_source(repo, commit, archive_sha256)
+    if destination.exists() or destination.is_symlink():
+        raise InstallError("下载目标已存在，拒绝覆盖。", code="download_target_exists", stage="download")
+    attempts = []
+    native = None
+    transport = "python_https"
+    for number in range(1, DOWNLOAD_ATTEMPTS + 1):
+        try:
+            if transport == "windows_system_curl":
+                _download_curl(url, destination, native)
+            else:
+                _download_urllib(url, destination)
+            verify_archive_digest(destination, archive_sha256)
+            attempts.append({"transport": transport, "status": "verified"})
+            return {"status": "verified", "transport": transport, "attempts": attempts,
+                    "archive_sha256": archive_sha256.lower()}
+        except Exception as error:
+            destination.unlink(missing_ok=True)
+            failure = _download_failure(error)
+            attempts.append({"transport": transport, "status": "failed", "code": failure.code})
+            may_fallback = failure.retryable or failure.code == "download_tls_verification_failed"
+            if transport == "python_https" and sys.platform == "win32" and may_fallback:
+                native = _windows_system_curl()
+                if native is not None:
+                    transport = "windows_system_curl"
+                    if number < DOWNLOAD_ATTEMPTS:
+                        continue
+            if failure.retryable and number < DOWNLOAD_ATTEMPTS:
+                time.sleep(number)
+                continue
+            # The installer already completed bounded recovery. Do not instruct
+            # the caller to blindly run the same failing command indefinitely.
+            failure.retryable = False
+            failure.attempts = attempts
+            raise failure from None
+
+
+def copy_verified_archive(source: Path, destination: Path, expected_sha256: str) -> dict:
+    source = source.expanduser().absolute()
+    if source.is_symlink() or not source.is_file():
+        raise InstallError("本地源码包须为已核验的普通 ZIP 文件。", code="archive_invalid_file", stage="download")
+    if source.stat().st_size > MAX_ARCHIVE:
+        raise InstallError("下载包超过允许大小。", code="archive_too_large", stage="download")
+    with source.open("rb") as reader, destination.open("xb") as writer:
+        size = 0
+        while chunk := reader.read(64 * 1024):
+            size += len(chunk)
+            if size > MAX_ARCHIVE:
+                raise InstallError("下载包超过允许大小。", code="archive_too_large", stage="download")
+            writer.write(chunk)
+    verify_archive_digest(destination, expected_sha256)
+    return {"status": "verified", "transport": "verified_local_archive", "attempts": [],
+            "archive_sha256": expected_sha256.lower()}
+
+
+def _archive_identity(path: Path) -> dict:
+    info = path.stat()
+    return {"device": info.st_dev, "inode": info.st_ino, "bytes": info.st_size}
+
+
+def pending_archive(root: Path, repo: str, commit: str, archive_sha256: str) -> Path | None:
+    """Read only this installer's narrowly named, hash-bound recovery cache."""
+    receipt = root / (".pending-install-" + commit + ".json")
+    if not receipt.exists() and not receipt.is_symlink():
+        return None
+    if receipt.is_symlink():
+        raise InstallError("待完成安装记录不能是链接，已保留现场。", code="pending_archive_invalid", stage="download")
+    value = read_json(receipt)
+    name = value.get("archive_name")
+    if (value.get("app") != APP or value.get("format") != 1 or value.get("repo") != repo
+            or value.get("commit") != commit or value.get("archive_sha256") != archive_sha256.lower()
+            or not isinstance(name, str) or not re.fullmatch(r"\.download-[a-f0-9]{32}\.zip", name)):
+        raise InstallError("待完成安装记录与固定版本不符，未使用或清理。", code="pending_archive_invalid", stage="download")
+    archive = root / name
+    # A previous successful cleanup may have removed the archive just before
+    # Windows temporarily refused deletion of its small receipt.
+    if not archive.exists() and not archive.is_symlink():
+        return None
+    verify_archive_digest(archive, archive_sha256)
+    if _archive_identity(archive) != value.get("file_identity"):
+        raise InstallError("待完成安装包已被替换，未使用或清理。", code="pending_archive_invalid", stage="download")
+    return archive
+
+
+def remember_pending_archive(root: Path, repo: str, commit: str, archive_sha256: str, archive: Path) -> Path:
+    existing = pending_archive(root, repo, commit, archive_sha256)
+    if existing is not None:
+        return existing
+    if archive.parent != root or not re.fullmatch(r"\.download-[a-f0-9]{32}\.zip", archive.name):
+        raise InstallError("只能暂存安装器自行创建的源码包。", code="pending_archive_invalid", stage="download")
+    verify_archive_digest(archive, archive_sha256)
+    value = {"app":APP,"format":1,"repo":repo,"commit":commit,"archive_sha256":archive_sha256.lower(),
+             "archive_name":archive.name,"file_identity":_archive_identity(archive)}
+    atomic_json(root / (".pending-install-" + commit + ".json"), value)
+    return archive
+
+
+def cleanup_pending_archive(root: Path, repo: str, commit: str, archive_sha256: str) -> dict:
+    archive = pending_archive(root, repo, commit, archive_sha256)
+    if archive is None:
+        receipt = root / (".pending-install-" + commit + ".json")
+        if receipt.exists():
+            try:
+                receipt.unlink()
+            except OSError:
+                return {"status":"deferred","code":"pending_archive_cleanup_deferred"}
+            return {"status":"removed","owned_files":1}
+        return {"status":"not_needed"}
+    try:
+        archive.unlink()
+        (root / (".pending-install-" + commit + ".json")).unlink()
+    except OSError:
+        return {"status":"deferred","code":"pending_archive_cleanup_deferred"}
+    return {"status":"removed","owned_files":2}
+
+
+def resume_instruction(root, data, port, no_browser, source_dir, repo, commit, archive_sha256, archive, release):
+    installer = Path(__file__).resolve()
+    stable_installer = release / "scripts/bootstrap.py"
+    # A host may clean its temporary download directory between tool calls.
+    # Prefer the identical installer in the already verified pinned release.
+    if (stable_installer.is_file() and not stable_installer.is_symlink()
+            and sha_bytes(stable_installer.read_bytes()) == sha_bytes(installer.read_bytes())):
+        installer = stable_installer
+    argv = [sys.executable, str(installer)]
+    saved_archive = None
+    if source_dir:
+        argv += ["--source-dir", str(Path(source_dir).expanduser().resolve())]
+    else:
+        saved_archive = remember_pending_archive(root, repo, commit, archive_sha256, archive)
+        argv += ["--repo", repo, "--commit", commit, "--archive-sha256", archive_sha256.lower(),
+                 "--archive-file", str(saved_archive)]
+    argv += ["--install-root", str(root), "--data-dir", str(data), "--port", str(port)]
+    if no_browser:
+        argv.append("--no-browser")
+    return ({"type":"complete_install","argv":argv,"cwd":str(root),
+             "archive_reverified_on_resume":not bool(source_dir)}, saved_archive)
 
 
 def copy_local(source: Path, destination: Path) -> str:
@@ -394,11 +727,20 @@ def create_shortcut(root: Path, manifest: dict) -> Path:
     return managed_write(root, "发糕扫榜.desktop", content.encode(), manifest, True)
 
 
-def install(*, repo=None, commit=None, source_dir=None, install_root=None, data_dir=None, port=18376, no_browser=False) -> dict:
+def install(*, repo=None, commit=None, source_dir=None, archive_sha256=None, archive_file=None,
+            install_root=None, data_dir=None, port=18376, no_browser=False) -> dict:
     if sys.version_info < (3, 10):
         raise InstallError("需要 Python 3.10 或更新版本。")
     if not 1024 <= int(port) <= 65535:
         raise InstallError("端口须在 1024—65535 之间。")
+    # Reject an incomplete publication pin before creating a directory, marker
+    # or lock. A supplied ZIP is the same pinned GitHub release, not a local ID.
+    if source_dir:
+        if repo or commit or archive_sha256 or archive_file:
+            raise InstallError("--source-dir 不能与 GitHub 版本或源码包参数混用。", code="source_arguments_conflict", stage="input")
+    else:
+        remote_source(repo, commit, archive_sha256)
+    download = None
     data = Path(data_dir).expanduser().resolve() if data_dir else default_data_dir()
     raw_root = Path(install_root).expanduser().absolute() if install_root else data / "app"
     if raw_root.is_symlink():
@@ -440,6 +782,8 @@ def install(*, repo=None, commit=None, source_dir=None, install_root=None, data_
         raise InstallError("另一处正在安装；若已中断，请让维护助手核实后清理安装锁。") from exc
     os.close(descriptor)
     stage = root / (".staging-" + uuid.uuid4().hex)
+    archive = None
+    keep_archive = False
     try:
         atomic_json(marker, manifest)
         (root / "releases").mkdir(exist_ok=True)
@@ -451,13 +795,16 @@ def install(*, repo=None, commit=None, source_dir=None, install_root=None, data_
                 raise InstallError("远程安装须明确 --repo 和完整 --commit。")
             commit = commit.lower()
             archive = root / (".download-" + uuid.uuid4().hex + ".zip")
-            try:
-                download_archive(repo, commit, archive)
-                extract_archive(archive, stage, repo.split("/")[1] + "-" + commit)
-            finally:
-                archive.unlink(missing_ok=True)
+            cached = pending_archive(root, repo, commit, archive_sha256)
+            if archive_file or cached:
+                download = copy_verified_archive(Path(archive_file) if archive_file else cached, archive, archive_sha256)
+                if cached and (not archive_file or Path(archive_file).resolve() == cached.resolve()):
+                    download["transport"] = "verified_pending_archive"
+            else:
+                download = download_archive(repo, commit, archive, archive_sha256)
+            extract_archive(archive, stage, repo.split("/")[1] + "-" + commit)
             release_id = commit
-            source = {"kind":"github","repo":repo,"commit":commit}
+            source = {"kind":"github","repo":repo,"commit":commit,"archive_sha256":archive_sha256.lower()}
         validate_source(stage)
         release = root / "releases" / release_id
         release_meta = {"app":APP,"release_id":release_id,"source":source,"files":inventory(stage)}
@@ -477,11 +824,35 @@ def install(*, repo=None, commit=None, source_dir=None, install_root=None, data_
         atomic_json(marker,manifest)
         current_health = health(port)
         if current_health and not service_matches(current_health,data,release):
-            return {"status":"restart_required","release_id":release_id,"release_dir":str(release),"message":"新版本已准备，但旧版本或另一服务仍在运行。尚未切换 current，也未声称升级完成。请让 WorkBuddy 核实并停止旧服务，再运行本安装命令。","data_dir":str(data)}
+            resume, saved_archive = resume_instruction(root,data,port,no_browser,source_dir,repo,commit,archive_sha256,archive,release)
+            keep_archive = archive is not None and saved_archive == archive
+            return {"status":"restart_required","release_id":release_id,"release_dir":str(release),"message":"新版本已准备，但旧版本或另一服务仍在运行。尚未切换 current，也未声称升级完成。请让 WorkBuddy 核实并停止旧服务，再运行 resume.argv 完成安装。","data_dir":str(data),"install_root":str(root),"download":download,"current_switched":False,"resume":resume}
         cmd = [sys.executable,str(release/"scripts/launch.py"),"--data-dir",str(data),"--port",str(port)]
         if no_browser:
             cmd.append("--no-browser")
-        run = subprocess.run(cmd,cwd=release,capture_output=True,text=True,timeout=50,env=runtime_environment(root))
+        run = subprocess.run(cmd,cwd=release,capture_output=True,text=True,encoding="utf-8",errors="replace",timeout=50,env=runtime_environment(root))
+        if run.returncode == 3:
+            try:
+                pending = json.loads(run.stdout)
+            except ValueError as exc:
+                raise InstallError("后台启动入口未返回可验证结果，未切换现用版本。") from exc
+            if not isinstance(pending, dict):
+                raise InstallError("后台启动入口未返回可验证对象，未切换现用版本。")
+            action = pending.get("action", {})
+            pending_readiness = pending.get("readiness", {})
+            if (pending.get("status") != "background_required" or pending.get("code") != "native_background_required"
+                    or not isinstance(action, dict) or action.get("type") != "run_in_background"
+                    or action.get("cwd") != str(release)
+                    or action.get("health_url") != f"http://127.0.0.1:{port}/api/health"
+                    or action.get("argv") != [sys.executable,str(release/"scripts/launch.py"),"--data-dir",str(data),
+                                              "--port",str(port),"--foreground","--no-browser"]
+                    or not isinstance(pending_readiness, dict) or pending_readiness.get("status") != "ready"):
+                raise InstallError("后台启动请求与已核验版本不一致，未切换现用版本。")
+            resume, saved_archive = resume_instruction(root,data,port,no_browser,source_dir,repo,commit,archive_sha256,archive,release)
+            keep_archive = archive is not None and saved_archive == archive
+            return {**pending,"release_id":release_id,"release_dir":str(release),"data_dir":str(data),
+                    "install_root":str(root),"download":download,"current_switched":False,
+                    "resume":resume}
         if run.returncode:
             raise InstallError("版本已准备，但启动失败，未切换现用版本。" + run.stderr[-1800:])
         try:
@@ -495,10 +866,13 @@ def install(*, repo=None, commit=None, source_dir=None, install_root=None, data_
             raise InstallError("工作台未通过版本与资料目录健康检查，未切换现用版本。")
         interpreter = str(Path(sys.executable).resolve())
         atomic_json(root/"current.json",{"app":APP,"release_id":release_id,"data_dir":str(data),"port":port,"source":source,"interpreter":interpreter})
-        return {"status":"ready","release_id":release_id,"release_dir":str(release),"url":f"http://127.0.0.1:{port}/","data_dir":str(data),"shortcut":str(shortcut),"project_dir":str(project_dir),"interpreter":interpreter,"browser_opened":bool(launched.get("browser_opened")),"pid":launched.get("pid"),"service":launched.get("status"),"readiness":readiness}
+        archive_cleanup = cleanup_pending_archive(root, repo, commit, archive_sha256) if not source_dir else {"status":"not_needed"}
+        return {"status":"ready","release_id":release_id,"release_dir":str(release),"url":f"http://127.0.0.1:{port}/","data_dir":str(data),"shortcut":str(shortcut),"project_dir":str(project_dir),"interpreter":interpreter,"browser_opened":bool(launched.get("browser_opened")),"pid":launched.get("pid"),"service":launched.get("status"),"readiness":readiness,"download":download,"archive_cleanup":archive_cleanup,"lifecycle":launched.get("lifecycle")}
     finally:
         if stage.exists():
             shutil.rmtree(stage)
+        if archive is not None and not keep_archive:
+            archive.unlink(missing_ok=True)
         lock.unlink(missing_ok=True)
 
 
@@ -506,20 +880,33 @@ def main() -> int:
     parser=argparse.ArgumentParser(description="安装固定版本并启动发糕扫榜工作台")
     parser.add_argument("--repo",help="公开仓库 owner/repo")
     parser.add_argument("--commit",help="固定的完整 40 位提交 SHA")
+    parser.add_argument("--archive-sha256",help="发行指针中的 source_archive_sha256；GitHub 安装必填")
+    parser.add_argument("--archive-file",type=Path,help="已有官方 ZIP，仍须指定 repo、commit 与 archive-sha256")
     parser.add_argument("--source-dir",type=Path,help="仅用于明确可信的本地工程/离线验收")
     parser.add_argument("--install-root",type=Path)
     parser.add_argument("--data-dir",type=Path)
     parser.add_argument("--port",type=int,default=18376)
     parser.add_argument("--no-browser",action="store_true",help="仅用于无桌面验收，不自动打开浏览器")
+    parser.add_argument("--download-worker",nargs=2,metavar=("URL","TARGET"),help=argparse.SUPPRESS)
     args=parser.parse_args()
-    if args.source_dir and (args.repo or args.commit):
-        parser.error("--source-dir 与 --repo/--commit 二选一。")
+    if args.download_worker:
+        try:
+            _download_worker(args.download_worker[0], Path(args.download_worker[1]))
+            print(json.dumps({"status":"downloaded"},ensure_ascii=True))
+            return 0
+        except Exception as exc:
+            print(json.dumps({"error":_download_failure(exc).diagnostic()},ensure_ascii=True))
+            return 1
+    del args.download_worker
+    if args.source_dir and (args.repo or args.commit or args.archive_file or args.archive_sha256):
+        parser.error("--source-dir 与 GitHub 版本及源码包参数二选一。")
     try:
         result=install(**vars(args))
-        print(json.dumps(result,ensure_ascii=False,indent=2))
-        return 2 if result["status"]=="restart_required" else 0
+        print(json.dumps(result,ensure_ascii=True,indent=2))
+        return {"restart_required":2,"background_required":3}.get(result["status"],0)
     except (InstallError,OSError,ValueError,zipfile.BadZipFile,subprocess.TimeoutExpired) as exc:
-        print(json.dumps({"error":{"code":"install_failed","message":str(exc)}},ensure_ascii=False),file=sys.stderr)
+        error = exc.diagnostic() if isinstance(exc, InstallError) else {"code":"install_failed","message":str(exc)}
+        print(json.dumps({"error":error},ensure_ascii=True),file=sys.stderr)
         return 1
 
 if __name__=="__main__":

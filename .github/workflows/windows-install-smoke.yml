@@ -1,0 +1,54 @@
+name: Windows installation acceptance
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - codex/windows-install-dev6-20261110
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-install-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  native-windows:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.12']
+    env:
+      PYTHONUTF8: '1'
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Installer and launcher regressions
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path "$env:RUNNER_TEMP/fagao-windows-receipts" -Force | Out-Null
+          python -m unittest discover -s tests -p test_bootstrap.py -v *> "$env:RUNNER_TEMP/fagao-windows-receipts/bootstrap-tests.log"
+          if ($LASTEXITCODE -ne 0) { Get-Content "$env:RUNNER_TEMP/fagao-windows-receipts/bootstrap-tests.log"; exit $LASTEXITCODE }
+          python -m unittest discover -s tests -p test_launch.py -v *> "$env:RUNNER_TEMP/fagao-windows-receipts/launch-tests.log"
+          if ($LASTEXITCODE -ne 0) { Get-Content "$env:RUNNER_TEMP/fagao-windows-receipts/launch-tests.log"; exit $LASTEXITCODE }
+      - name: Native install and real Job Object lifetimes
+        shell: pwsh
+        run: |
+          python scripts/windows_install_smoke.py --receipt "$env:RUNNER_TEMP/fagao-windows-receipts/windows-install-smoke.json"
+          exit $LASTEXITCODE
+      - name: Preserve synthetic acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-install-smoke-${{ matrix.python }}
+          path: ${{ runner.temp }}/fagao-windows-receipts/
+          if-no-files-found: error
+          retention-days: 7
