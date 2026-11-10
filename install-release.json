@@ -2,20 +2,53 @@
   "schema_version": 1,
   "status": "published",
   "app": "fagao-scan-workbench",
-  "app_version": "0.7.0-dev.7",
+  "app_version": "0.7.0-dev.8",
   "repository": "ShiQi-Han03/fagao-scan-workbench",
-  "source_commit": "b769cbb1a440f29c73f592c87758f9ecb63b317f",
-  "release_tag": "v0.7.0-dev.7",
-  "installer_url": "https://raw.githubusercontent.com/ShiQi-Han03/fagao-scan-workbench/b769cbb1a440f29c73f592c87758f9ecb63b317f/scripts/bootstrap.py",
+  "source_commit": "9b571475c67e34d0f4d001366b4436fee1a920d8",
+  "release_tag": "v0.7.0-dev.8",
+  "installer_url": "https://raw.githubusercontent.com/ShiQi-Han03/fagao-scan-workbench/9b571475c67e34d0f4d001366b4436fee1a920d8/scripts/bootstrap.py",
   "installer_sha256": "f9289d2d4557f2a943823768d71f6a9273d1dc82aaeba3a65c76a663eec41a52",
-  "source_archive_url": "https://codeload.github.com/ShiQi-Han03/fagao-scan-workbench/zip/b769cbb1a440f29c73f592c87758f9ecb63b317f",
-  "source_archive_sha256": "0621ed3807c0c5ca956062251066235684d2f853b406650ad56610cc91f8c0b0",
+  "source_archive_url": "https://codeload.github.com/ShiQi-Han03/fagao-scan-workbench/zip/9b571475c67e34d0f4d001366b4436fee1a920d8",
+  "source_archive_sha256": "c1f10f75dff527546b30f9799bc2fa1422e4ee879e4a0cc0b70f9087956d3d01",
   "source_archive_sha256_purpose": "Required SHA-256 of the pinned source archive; bootstrap rejects missing or mismatched digests before extraction or installation.",
   "minimum_python": "3.10",
-  "verified_at": "2026-11-10T13:01:58.958498+00:00",
+  "verified_at": "2026-11-10T13:46:30.689709+00:00",
   "channel": "experimental",
   "verification": {
-    "python_tests": 681,
+    "theme_ui_checks": 20,
+    "theme_modes": [
+      "dark",
+      "eye-care",
+      "light",
+      "system"
+    ],
+    "theme_visual_browser": "Chrome 157.0.0.0",
+    "theme_visual_platform": "macOS",
+    "theme_visual_viewports": [
+      {
+        "id": "desktop",
+        "width": 1440,
+        "height": 1000
+      },
+      {
+        "id": "mobile",
+        "width": 390,
+        "height": 844
+      }
+    ],
+    "theme_visual_check_count": 7,
+    "theme_visual_screenshot_count": 6,
+    "theme_evidence_sha256": "210b3cca8a868e88b2b9cbcf514f64ea83ff4b01b1625ae0a8c5a01972035f00",
+    "theme_log_sha256": "624b95f18b419e56effb0174cd0907dabde9c868aed7a7f7428db9d29a60f879",
+    "theme_source_sha256": {
+      "web/index.html": "b006a56dead2a5c369562f481fe3a6ae981729bef2476d069a129b8ad18df1c6",
+      "web/theme.js": "4e363454eea42de0e655bfbbbe422dfde20e5223c51920114878683d79645d5c",
+      "web/styles.css": "762acbe0900fa4c9f8a337c662e60270c469aa22f98bbcd3edce61d39f59d03d",
+      "web/app.js": "07e4574ba419ff4352b4d83c91f938442232085ea631365916578d6c25833a59"
+    },
+    "theme_visual_synthetic": true,
+    "theme_windows_visual_tested": false,
+    "python_tests": 682,
     "membership_ui_checks": 46,
     "domestic_ui_checks": 146,
     "overseas_ui": "passed",
@@ -29,11 +62,11 @@
     ],
     "windows_install_tested": true,
     "windows_native_ci_tested": true,
-    "windows_ci_run_url": "https://github.com/ShiQi-Han03/fagao-scan-workbench/actions/runs/42820512799",
+    "windows_ci_run_url": "https://github.com/ShiQi-Han03/fagao-scan-workbench/actions/runs/42827177006",
     "windows_jobs": [
       {
         "python": "3.11.9",
-        "job_id": 129844583954,
+        "job_id": 129867434566,
         "native_checks": 14,
         "unit_tests": {
           "bootstrap-tests": {
@@ -41,7 +74,7 @@
             "skipped": 2
           },
           "launch-tests": {
-            "ran": 22,
+            "ran": 23,
             "skipped": 0
           }
         },
@@ -55,7 +88,7 @@
       },
       {
         "python": "3.12.10",
-        "job_id": 129844584424,
+        "job_id": 129867434065,
         "native_checks": 14,
         "unit_tests": {
           "bootstrap-tests": {
@@ -63,7 +96,7 @@
             "skipped": 2
           },
           "launch-tests": {
-            "ran": 22,
+            "ran": 23,
             "skipped": 0
           }
         },
