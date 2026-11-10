@@ -1,23 +1,22 @@
 # GitHub 发行回读记录
 
-版本：`0.7.0-dev.4`。发行仓库：[ShiQi-Han03/fagao-scan-workbench](https://github.com/ShiQi-Han03/fagao-scan-workbench)。原始来源为 hanyyyou/fagao-scan-workbench，原仓库没有被本轮修改。
+版本：`0.7.0-dev.5`。发行仓库：[ShiQi-Han03/fagao-scan-workbench](https://github.com/ShiQi-Han03/fagao-scan-workbench)。原始来源为 hanyyyou/fagao-scan-workbench，原仓库未被本轮修改。
 
-源码固定提交：`4eb6d16ec55b21b70a5f5171a47650b173d19bb4`。公开下载核验时间：`2026-11-10T05:16:30.762642+00:00`。当前安装指针见默认分支的 [install-release.json](../install-release.json)。固定源码提交先于本次指针发布，可能包含上次发行记录；安装时按 INSTALL.md 从默认分支读取当前指针，不能用归档内的旧指针替代。
+固定源码：`8bc355c7e64c8a8099d159af59136da39a2cd690`。公开下载核验时间：`2026-11-10T06:52:54.923581+00:00`。安装时始终读取默认分支的 [install-release.json](../install-release.json)，源码归档里的旧指针不能替代当前发行指针。
 
-安装器：[https://raw.githubusercontent.com/ShiQi-Han03/fagao-scan-workbench/4eb6d16ec55b21b70a5f5171a47650b173d19bb4/scripts/bootstrap.py](https://raw.githubusercontent.com/ShiQi-Han03/fagao-scan-workbench/4eb6d16ec55b21b70a5f5171a47650b173d19bb4/scripts/bootstrap.py)。SHA-256：`41d3f3de190ee27086f2b86d6c4c56a92f668330829b2fd01fd35cc83c9b501d`。
+安装器：[固定源码安装器](https://raw.githubusercontent.com/ShiQi-Han03/fagao-scan-workbench/8bc355c7e64c8a8099d159af59136da39a2cd690/scripts/bootstrap.py)，SHA-256：`41d3f3de190ee27086f2b86d6c4c56a92f668330829b2fd01fd35cc83c9b501d`。
+源码归档：[固定源码 ZIP](https://codeload.github.com/ShiQi-Han03/fagao-scan-workbench/zip/8bc355c7e64c8a8099d159af59136da39a2cd690)，SHA-256：`04e184763b2488206f53cab5cbd4cfd088e6b3e37363d42fa7ed7fed87cccbca`。归档校验值为发行方匿名下载回读证据；安装器固定 Git 提交并检查解压安全。
 
-源码归档：[https://codeload.github.com/ShiQi-Han03/fagao-scan-workbench/zip/4eb6d16ec55b21b70a5f5171a47650b173d19bb4](https://codeload.github.com/ShiQi-Han03/fagao-scan-workbench/zip/4eb6d16ec55b21b70a5f5171a47650b173d19bb4)。本次下载 SHA-256：`7c1b1d66f33c13644859fc8cb12fffb4c126a170cc0288caaba850df8edafb08`。归档校验值是发行方本次匿名下载的回读证据；现有 bootstrap 固定 Git 提交并检查解压安全，未新增读取该哈希字段的执行逻辑。
+## 已验证
 
-## 实际完成
+- 匿名 raw 与 codeload 下载成功，归档 98 个文件与固定 Git 提交一致。
+- 隔离 macOS 目录的首次、重复安装均返回 ready；健康接口版本、源码目录和资料目录一致。
+- 重复安装复用原服务与固定入口，合成旧资料保留，未连接账号不能读取受保护资料。
+- 测试服务已关闭，未改动用户原安装。
+- Python 586 项、会员 UI 46 项、国内 UI 109 项及海外 UI 专项通过。
 
-- 未使用 GitHub 登录凭据，实际通过公开 raw 与 codeload 下载；下载的安装器与提交内容一致，归档 97 个文件与该提交文件清单一致。
-- 在隔离 macOS 目录实际执行下载后的安装器，通过 `--repo` 和完整 `--commit` 首次安装及重复安装，均返回 ready。
-- 本机健康接口核对应用版本、资料目录和源码目录；重复安装复用同一个服务及固定入口，预置的合成旧资料原样保留。
-- 固定 WorkBuddy 项目说明和源码维护文档存在；未登录状态不能读取受保护资料。测试服务完成后已关闭，未修改现有用户安装。
-- Python 测试 574 项、会员 UI 37 项、国内 UI 109 项及海外 UI 专项通过。本版精简账号状态文案，授权判断、到期只读与已有资料保护保持不变。
+本版接收官网免费体验、字数包续期和会员使用权益，保持真实会员期限、设备限制与到期历史只读。到期页面使用现有发糕娘素材，付款返回后刷新资格。资格和期限由官网决定，客户端安装成功不代表已领取体验或获得使用权。
 
-## 本次验证边界
+## 验证边界
 
-没有操作真实 WorkBuddy 客户端界面、Windows 电脑或真实会员登录；没有调用真实榜单采集。源码下载不需要 GitHub 登录，工作台会员资格仍须由用户在官网自行登录并确认。安装 ready 只表示对应本机服务和依赖就绪，不代表所有第三方平台都已可访问。
-
-官网会员、订单、支付和实验规则未因本轮客户端发行改动。主站私有代码、账号名单、服务器配置和用户资料不在这个仓库中。此前发行的固定提交和标签保留。
+未操作真实 WorkBuddy 界面、Windows 电脑、真实账号付款或真实榜单采集。官网权益、支付与发布另行维护；主站私有源码、配置、账号和数据不在本仓库。此前固定提交与标签保留。
