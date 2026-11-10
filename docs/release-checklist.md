@@ -9,9 +9,9 @@
 - `docs/integration-results.json` 仅含公开来源地址、样本数及验证状态，可随源码发布；它不包含原始作品正文或用户数据。
 - `THIRD_PARTY_NOTICES.md` 保留 Oh Story 参考提交及其完整 MIT 许可，说明 Playwright 的 Apache-2.0 许可。
 
-## 会员候选发布状态
+## GitHub 发行状态
 
-当前为 `0.7.0-dev.2` 实验授权版。官网实验服务状态、客户端分发链接及校验值，以同版生产发布回执为准。候选验收记录见 [acceptance.md](acceptance.md)；v1 测试结果不能冒充 v2 已通过。需核实本轮官网实验规则及可信发布包，再公布对应安装话术；仓库写权限未确认时可交付带校验值的可安装 ZIP，但不得宣称已推送 GitHub。
+当前客户端为 `0.7.0-dev.3`，使用既有官网实验授权接口。发行仓库为 ShiQi-Han03/fagao-scan-workbench，保留 hanyyyou 原始来源。默认分支 install-release.json 指向通过公开下载和隔离安装核验的固定源码提交；只有发布回读后才能将其状态标为 published。官网当前账号资格由接口实时返回。验收记录见 [acceptance.md](acceptance.md)，旧版本记录保留为历史，不代替本版验证。
 
 ## 每次发布前
 

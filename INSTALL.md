@@ -2,32 +2,30 @@
 
 这是给执行安装的助手看的说明。用户的目标是“发来一句话，最后看到工作台”。自行完成可执行的步骤，不把下面的终端操作转交给普通用户。官网登录、授权确认以及第三方平台登录需要用户本人完成。
 
-本文件随 `0.7.0-dev.2` 实验授权版交付。官网实验服务状态、实际分发链接及校验值，以同版生产发布回执为准；本轮开发使用的公开客户端基线是 `0.6.2`。不能从浮动 `main` 下载旧版后声称已经安装本轮实验版。维护者本地预演和可信 ZIP 安装方式见 [会员使用说明](docs/membership.md)。
+本文件供 WorkBuddy 执行安装和升级。发布版本与校验值由发行仓库默认分支的 `install-release.json` 提供；不要求用户提供私有生产回执。账号资格以安装后官网实际返回为准，客户端安装成功不代表已经登录或取得使用资格。
 
 ## 1. 确认来源并固定版本
 
-本项目的公开仓库是 [hanyyyou/fagao-scan-workbench](https://github.com/hanyyyou/fagao-scan-workbench)。用户复制 README 的安装话术时，`owner/repo` 为 `hanyyyou/fagao-scan-workbench`。若用户明确指定另一个来源，先核对该来源及用途；不要擅自切换到其他仓库，也不把参考项目 Oh Story 当成安装对象。公开仓库无需 GitHub 登录。
+当前发行仓库是 [ShiQi-Han03/fagao-scan-workbench](https://github.com/ShiQi-Han03/fagao-scan-workbench)，原始来源为 [hanyyyou/fagao-scan-workbench](https://github.com/hanyyyou/fagao-scan-workbench)。本流程的 `--repo` 使用 `ShiQi-Han03/fagao-scan-workbench`，不回退到原始仓库的旧版本。公开仓库下载无需 GitHub 登录，也不要求用户自己下载压缩包。
 
-先读取仓库 `INSTALL.md`、`AGENTS.md`、`README.md` 与 `docs/membership.md`。核对正式发布说明中的版本和对应官网实验授权启用状态，再通过 GitHub 确认对应完整 40 位提交 SHA；不要将开发分支或浮动 `main` 直接当作正式版本。若用户指定版本，按该版本核验；若实验客户端既未公开发布，也未交付可信候选包，报告真实状态并保留原安装。下载已确认 SHA 下的安装器：
+首次安装或用户明确要求更新时，由助手完成以下步骤：
 
-```text
-https://raw.githubusercontent.com/OWNER/REPO/FULL_SHA/scripts/bootstrap.py
-```
+1. 读取发行仓库默认分支的 `install-release.json`。当前固定入口为 `https://raw.githubusercontent.com/ShiQi-Han03/fagao-scan-workbench/main/install-release.json`。此文件是发行指针；安装源码归档可能先于指针提交，因此归档内没有这个文件时仍从上述公开地址读取。不要把本地旧副本当成当前发行状态。
+2. 必须确认 `status` 为 `published`，`source_commit` 为完整的 40 位十六进制提交，`installer_sha256` 为完整的 64 位 SHA-256。检查该提交在发行仓库可获取，核对公开发布元数据中的版本。字段缺失、状态不符、无法获取或校验不符时，如实报告具体原因并保留原安装；不猜测链接、不改用浮动源码、不回退到旧版冒充完成。
+3. 读取该 `source_commit` 对应的 `INSTALL.md`、`AGENTS.md`、`README.md` 与 `docs/membership.md`。再从同一提交下载 `scripts/bootstrap.py` 到临时目录。下载地址为：
 
-这里的大写名称是执行时替换的参数，不是可直接访问的地址。将安装器保存到临时目录并阅读，确认与所选项目一致。**安装器和工程归档必须使用同一个 SHA**，不要混用浮动分支与旧版本脚本。工程归档由安装器从 GitHub codeload 下载，不要求 Git。
+   ```text
+   https://raw.githubusercontent.com/ShiQi-Han03/fagao-scan-workbench/SOURCE_COMMIT/scripts/bootstrap.py
+   ```
 
-### 官网实验包
+   将 `SOURCE_COMMIT` 替换为已经核验的 `source_commit`。计算下载文件的 SHA-256，必须与 `installer_sha256` 一致；随后阅读安装器，确认与本工程一致再执行。
+4. 按第 2 节确认 Python，用第 3 节的 `--repo` 和 `--commit` 方式安装。安装器自动下载同一提交的完整工程、检查归档并建立固定入口。安装器与工程源码必须使用同一 `source_commit`，不能混用默认分支安装器和旧源码。
 
-本轮可以通过官网 HTTPS 提供与候选源码一致的安装 ZIP，公共仓库写入状态与官网包发布状态分别记录。本文件不固定下载地址与包校验值；执行前取得同版生产发布回执中实际回读验证过的官网 HTTPS 地址、版本 `0.7.0-dev.2` 和 SHA-256。没有回执时不猜测下载路径，也不把本地文件存在称为官网发布成功。
+`install-release.json` 的 `published` 表示发行方已发布并核验对应客户端来源；它不代表当前电脑已经装好、外站均可访问或当前用户具有会员资格。按第 3、4、6、7 节完成本机检查、账号连接和资料保护。只要公开发布元数据与固定提交可核验，就不再要求用户提供服务器发布记录、账号清单或其他私有材料。
 
-由执行安装的助手完成：
+### 用户已提供完整源码包时
 
-1. 从回执指定的发糕官网 HTTPS 地址下载 ZIP，核对完整 SHA-256；与回执不符就停止并保留原安装。
-2. 检查包内目录，拒绝路径穿越、链接、异常文件和运行资料；确认包含对应版本的 `README.md`、`AGENTS.md`、`INSTALL.md` 与 `scripts/bootstrap.py`，再解压到独立源码目录。不要覆盖已有程序或资料目录。
-3. 阅读该包的安装器，用第 2 节确认的解释器执行 `scripts/bootstrap.py --source-dir ABSOLUTE_EXTRACTED_SOURCE --data-dir EXISTING_OR_SELECTED_DATA_DIR`。大写项为真实绝对路径；新装使用标准资料目录，升级使用已经核验的原资料目录。不要同时传 `--repo` 或 `--commit`，不新增下载绕过参数。
-4. 按第 3、4、6、7 节检查就绪状态、真实服务版本、浏览器页面、固定入口、账号授权及资料保留。安装器建立固定入口后，普通用户不需要逐项解压或手动部署。
-
-这个路径使用与公开仓库安装相同的本地安装器与授权机制；官网 ZIP 成功交付不代表 GitHub 已推送。回执中的下载地址与校验值必须在实际发布并下载回读后填写。
+仍先读取发行指针，核对该包的来源和版本。仅在用户明确指定了可信源码包且具有相应校验记录时，才使用该包自己的 `scripts/bootstrap.py --source-dir ABSOLUTE_EXTRACTED_SOURCE`；同时保留原有安装根目录和资料目录。不要直接覆盖已经安装的 release，不同时传 `--repo` 或 `--commit`。普通的一句话安装优先使用上述固定 GitHub 提交流程，无需用户转交附件。
 
 ## 2. 准备 Python
 
@@ -47,8 +45,10 @@ https://raw.githubusercontent.com/OWNER/REPO/FULL_SHA/scripts/bootstrap.py
 使用已经验证的 Python 执行下载的安装器（实际调用请使用参数数组或对应 shell 的正确引用，兼容中文和空格路径）：
 
 ```text
-PYTHON_ABSOLUTE_PATH bootstrap.py --repo OWNER/REPO --commit FULL_SHA
+PYTHON_ABSOLUTE_PATH bootstrap.py --repo ShiQi-Han03/fagao-scan-workbench --commit SOURCE_COMMIT
 ```
+
+将 `SOURCE_COMMIT` 替换为第 1 节已核验的 `source_commit`，`PYTHON_ABSOLUTE_PATH` 替换为第 2 节确认的解释器绝对路径。已有安装时先核对并复用原 `install_root` 与 `data_dir`；路径曾自定义时显式传入 `--install-root` 和 `--data-dir`，不要另建空资料目录代替升级。
 
 普通安装不要传 `--no-browser`。不用启动第二个示例服务器，也不要改动线上发糕主站。默认服务只绑定 `127.0.0.1:18376`。
 
@@ -60,7 +60,7 @@ PYTHON_ABSOLUTE_PATH bootstrap.py --repo OWNER/REPO --commit FULL_SHA
 - 运行项目启动器，核对健康响应中的应用身份、资料目录、源码版本目录。
 - 通过健康检查后写入 `current.json`、固定启动入口和供 WorkBuddy 使用的固定项目目录。
 
-读取安装器的 JSON 返回值。只有 `status=ready` 且 `readiness.status=ready` 才表示该版本的本地环境和服务已就绪。`readiness.features` 分别标明三家榜单与番茄正文的 `local_ready`，以及黑岩的 `external_link`。`network_verified=false` 表示这里没有替用户登录或验证外站网络，不把依赖自检当成全部平台可用。记录 `url`、`data_dir`、`release_dir`、`project_dir`、`interpreter`、`shortcut`。
+读取安装器的 JSON 返回值。只有 `status=ready` 且 `readiness.status=ready` 才表示该版本的本地环境和服务已就绪。 GitHub 安装还须核对返回的 `release_id` 等于已选定的 `source_commit`，本机 `/api/health` 的 `version` 等于发行指针的 `app_version`、`source_root` 等于返回的 `release_dir`，且 `data_dir` 为预期资料目录。`readiness.features` 分别标明三家榜单与番茄正文的 `local_ready`，以及黑岩的 `external_link`。`network_verified=false` 表示这里没有替用户登录或验证外站网络，不把依赖自检当成全部平台可用。记录 `url`、`data_dir`、`release_dir`、`project_dir`、`interpreter`、`shortcut`。
 
 `browser_opened=true` 只表示系统接受了打开请求；若助手拥有浏览器能力，还要检查窗口是否实际出现、页面是否是工作台。`browser_opened=false` 时，用宿主的打开网页能力访问返回的本机 URL。不要把远程服务器上的 localhost 地址当成用户电脑的工作台。
 
@@ -97,7 +97,7 @@ PYTHON_ABSOLUTE_PATH bootstrap.py --repo OWNER/REPO --commit FULL_SHA
 
 v0.6.1 起，长驻服务与采集 CLI 自动隔离父进程的临时代理，默认使用系统手动代理/直连。不要为服务复制 WorkBuddy 终端的 `HTTP_PROXY` 等变量。固定代理由应用自己的 `network-config` 配置，诊断方式见 [网络维护](docs/network.md)。升级后核对真实服务版本与选定的正式发布版本一致，并确认 `network.policy=isolated-system-proxy-v1`，不要用旧进程的健康响应判定修复完成。后台网络探测失败不阻止打开已有资料。
 
-“打开”优先运行固定入口，不每次下载新版本。“更新”才重新解析目标版本并执行安装器。同版本会复用服务；原快照、收藏、正文、报告、账号会话保持在原 `data_dir`。
+“打开”优先运行固定入口，不每次下载新版本。“更新”才重新读取默认分支的 `install-release.json`，按第 1 节核验目标版本并执行安装器。同版本会复用服务；原快照、收藏、正文、报告、账号会话保持在原 `data_dir`。
 
 若返回 `restart_required`，表示新代码已备好但未切换。先核对现有服务身份、PID、源码路径和资料目录；只停止明确属于本工作台的旧进程，再执行同一安装命令。不能仅凭过期的 PID 文件结束进程。旧实例退出前不要宣称更新完成。
 
@@ -105,4 +105,4 @@ v0.6.1 起，长驻服务与采集 CLI 自动隔离父进程的临时代理，�
 
 发布者按实际渠道验证：公开仓库固定提交下载，或官网实验 ZIP 下载并回读 SHA-256 → 新目录安装 → 服务健康 → 用户浏览器实际显示界面 → 再次打开复用 → 更新后资料保留。本版还需验证官网真实登录授权、3 台设备上限及移除、有效四档会员（付费/赠送/测试）更新、独立实验授权开启及手动关闭、其他账号到期历史只读、续费恢复、退款/封禁/停用/撤销失效、退出与换号隔离、旧资料明确认领与保留。确认实验账号的真实会员截止仍保持原值，未伪造永久会员或付款记录。在 Windows、macOS 与 WorkBuddy 客户端分别记录实测情况。任一步未完成都保留具体状态；合成账号和本地联调不能替代上述验收。
 
-用户最终收到实际可用的仓库版本或已验证官网实验包链接、校验回执与一段安装话术。下载、校验、解压和固定入口安装由助手完成，不让普通用户逐个文件部署。
+用户最终只需复制 README 中的一句话。助手通过公开发行指针取得固定版本与校验值，自行完成下载、校验、解压和固定入口安装；用户本人完成官网登录与授权确认。验收依据记录在公开发布说明或验收文档中，不把这些维护步骤转交给普通用户。

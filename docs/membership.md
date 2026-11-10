@@ -1,6 +1,6 @@
 # 会员使用说明
 
-本文件对应 **`0.7.0-dev.2` 实验授权版**。官网实验服务的生效状态、分发链接与校验值，以同版生产发布回执为准。本轮开发使用的公开客户端基线为 `0.6.2`；旧版下载成功不等于完成本版安装。当前实测状态见 [验收记录](acceptance.md)。
+本文件对应 **`0.7.0-dev.3` 实验授权版**。客户端发行版本和校验值见 ShiQi-Han03/fagao-scan-workbench 默认分支的 `install-release.json`，由安装助手按 [INSTALL.md](../INSTALL.md) 获取并核验。账号资格以官网当前返回为准，不要求普通用户提供生产发布回执。当前实测状态见 [验收记录](acceptance.md)。
 
 ## 账号与资格
 
@@ -79,11 +79,13 @@ PYTHON_ABSOLUTE_PATH -m fagao --data-dir DATA_DIR legacy skip --confirm
 
 访问受保护的本机数据需携带当前状态返回的 `X-Fagao-Account` 和 `X-Fagao-Generation`，阻止旧窗口在换号后读写新账号。认领及跳过使用 POST，另带 `X-Fagao-Request: 1` 与 `Content-Type: application/json`，JSON 为 `{"confirmed":true}`，并要求官网确认的当前使用资格。不要把状态端点、健康检查通过或历史读取许可当作新任务授权。
 
-## 候选安装与实验开放顺序
+## 客户端安装
 
-客户端分发渠道以同版生产发布回执为准。可先用可信本地源码完成隔离验收；如公共仓库暂不能发布，可交付同一经过检查的源码 ZIP、SHA-256 和安装说明。只有实际交付并核验后，才能称为可安装包；不能用一个文档中的路径冒充下载链接，也不能把 ZIP 交付称为已推送 GitHub。
+普通用户复制 README 中的一句话即可。执行安装的助手按 [INSTALL.md](../INSTALL.md) 读取公开 `install-release.json`，核验固定提交和安装器 SHA-256，再使用 `--repo` 与 `--commit` 安装。无需用户手动下载 ZIP，不索取私有生产回执，不重新部署官网。已有安装复用原资料目录和固定入口。
 
-执行安装的助手先核验发行来源、文件 SHA-256 和包内版本；检查归档不含链接、路径穿越、运行数据或凭据，再解压到独立程序目录。随后使用已确认的 Python 3.10+，把该真实目录作为 `--source-dir`，由同一安装器建立固定入口。隔离预演命令为：
+## 维护者的隔离预演与官网开放检查
+
+以下仅用于维护者发布或调整服务的验证，不是普通安装的前置材料要求。维护者使用可信本地源码预演时，先核验来源、文件清单和版本；检查归档不含链接、路径穿越、运行数据或凭据，再解压到独立目录。使用已确认的 Python 3.10+ 和同包安装器。隔离预演命令为：
 
 ```text
 PYTHON_ABSOLUTE_PATH scripts/bootstrap.py --source-dir ABSOLUTE_CANDIDATE_SOURCE --install-root ISOLATED_TEST_INSTALL --data-dir ISOLATED_TEST_DATA --port UNUSED_LOOPBACK_PORT --no-browser
@@ -91,7 +93,7 @@ PYTHON_ABSOLUTE_PATH scripts/bootstrap.py --source-dir ABSOLUTE_CANDIDATE_SOURCE
 
 所有大写项是待替换参数。源目录、测试资料目录和安装目录不能互相覆盖。这个命令验证安装与本地服务，仍需单独验证授权与页面；本地测试夹具不能用于普通用户安装，不提供绕过授权参数。实际用户安装时复用其既有资料目录和固定入口，不用新的空目录冒充资料保留；普通安装移除 `--no-browser` 并核对真实页面。
 
-本轮开放顺序：
+维护者发布或调整官网实验规则时的检查顺序：
 
 1. 核对同版生产发布回执中的官网实验配置、页面及回读结果，不能用旧版健康检查代替本版实验规则生效验证。
 2. 验证四档当前有效的付费、赠送、测试权益可用；指定实验账号的独立资格与管理员关闭行为正确，真实会员记录没有被改写。其他到期账号保持历史只读。

@@ -6,6 +6,7 @@ import json
 import os
 import re
 import sqlite3
+import time
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -137,31 +138,56 @@ class Store:
         try: self.directory.chmod(0o700)
         except OSError: pass
         self.db = self.directory / 'workbench.sqlite3'
+        self._enable_wal()
         with self.connect() as c:
-            c.executescript('''
-                PRAGMA journal_mode=WAL;
-                CREATE TABLE IF NOT EXISTS snapshots(id TEXT PRIMARY KEY, created_at TEXT NOT NULL, body TEXT NOT NULL);
-                CREATE TABLE IF NOT EXISTS snapshot_metadata(id TEXT PRIMARY KEY, created_at TEXT NOT NULL, body TEXT NOT NULL);
-                CREATE TABLE IF NOT EXISTS kv(key TEXT PRIMARY KEY, body TEXT NOT NULL);
-                CREATE TABLE IF NOT EXISTS favorites(platform TEXT, book_id TEXT, snapshot_id TEXT, created_at TEXT, PRIMARY KEY(platform,book_id));
-                CREATE TABLE IF NOT EXISTS history(id INTEGER PRIMARY KEY AUTOINCREMENT, snapshot_id TEXT, book_id TEXT, selected_at TEXT);
-                CREATE TABLE IF NOT EXISTS texts(id TEXT PRIMARY KEY, snapshot_id TEXT, book_id TEXT, created_at TEXT, body TEXT, content TEXT);
-                CREATE TABLE IF NOT EXISTS tasks(id TEXT PRIMARY KEY, created_at TEXT, body TEXT);
-                CREATE TABLE IF NOT EXISTS reports(id TEXT PRIMARY KEY, created_at TEXT, body TEXT, content TEXT);
-                CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY, created_at TEXT, body TEXT);
-            ''')
+            # executescript() would implicitly commit BEGIN IMMEDIATE and let
+            # another process enter halfway through initialization/migration.
+            for statement in (
+                'CREATE TABLE IF NOT EXISTS snapshots(id TEXT PRIMARY KEY, created_at TEXT NOT NULL, body TEXT NOT NULL)',
+                'CREATE TABLE IF NOT EXISTS snapshot_metadata(id TEXT PRIMARY KEY, created_at TEXT NOT NULL, body TEXT NOT NULL)',
+                'CREATE TABLE IF NOT EXISTS kv(key TEXT PRIMARY KEY, body TEXT NOT NULL)',
+                'CREATE TABLE IF NOT EXISTS favorites(platform TEXT, book_id TEXT, snapshot_id TEXT, created_at TEXT, PRIMARY KEY(platform,book_id))',
+                'CREATE TABLE IF NOT EXISTS history(id INTEGER PRIMARY KEY AUTOINCREMENT, snapshot_id TEXT, book_id TEXT, selected_at TEXT)',
+                'CREATE TABLE IF NOT EXISTS texts(id TEXT PRIMARY KEY, snapshot_id TEXT, book_id TEXT, created_at TEXT, body TEXT, content TEXT)',
+                'CREATE TABLE IF NOT EXISTS tasks(id TEXT PRIMARY KEY, created_at TEXT, body TEXT)',
+                'CREATE TABLE IF NOT EXISTS reports(id TEXT PRIMARY KEY, created_at TEXT, body TEXT, content TEXT)',
+                'CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY, created_at TEXT, body TEXT)',
+            ):
+                c.execute(statement)
             c.execute('INSERT OR IGNORE INTO kv VALUES (?,?)',('config',dumps({'main_site':'https://www.fagaochuangzuo.com/','points_site':''})))
             c.execute('INSERT OR IGNORE INTO kv VALUES (?,?)',('active_mode',dumps('long')))
             self._repair_download_integrity(c)
         try: self.db.chmod(0o600)
         except OSError: pass
 
+    def _enable_wal(self):
+        # Changing journal mode must run outside a transaction. SQLite may
+        # return BUSY immediately during this lock upgrade, bypassing its busy
+        # timeout. Retry only that pragma, never an initialization or user write.
+        deadline = time.monotonic() + 15
+        c = sqlite3.connect(self.db, timeout=0)
+        try:
+            while True:
+                try:
+                    c.execute('PRAGMA journal_mode=WAL').fetchone()
+                    return
+                except sqlite3.OperationalError as exc:
+                    code = getattr(exc, 'sqlite_errorcode', None)
+                    busy = ((code & 0xff) == getattr(sqlite3, 'SQLITE_BUSY', 5) if code is not None
+                            else str(exc) == 'database is locked')
+                    remaining = deadline - time.monotonic()
+                    if not busy or remaining <= 0:
+                        raise
+                    time.sleep(min(.025, remaining))
+        finally:
+            c.close()
+
     @contextmanager
     def connect(self):
         c = sqlite3.connect(self.db, timeout=15)
         c.row_factory = sqlite3.Row
-        c.execute('BEGIN IMMEDIATE')
         try:
+            c.execute('BEGIN IMMEDIATE')
             yield c
             c.commit()
         except Exception:
