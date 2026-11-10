@@ -353,10 +353,12 @@ def installed_service(result, data, port):
 
 def run_smoke(args):
     need(os.name == "nt", "This acceptance fixture requires actual Windows, not platform mocks")
-    base = Path(tempfile.mkdtemp(prefix="发糕 Windows 验证 "))
+    raw_base = Path(tempfile.mkdtemp(prefix="发糕 Windows 验证 "))
+    base = raw_base.resolve()
     owned, jobs, fixture_services = [], [], []
     report = {"status": "running", "platform": platform.platform(), "python": platform.python_version(),
               "source_commit": args.commit, "repository": args.repo, "checks": CHECKS,
+              "synthetic_fixture_paths": {"created": str(raw_base), "canonical": str(base)},
               "real_account_used": False, "real_payment_performed": False,
               "workbuddy_client_exercised": False, "cleanup": {"completed": False}}
     try:
@@ -444,7 +446,10 @@ def run_smoke(args):
         update_argv = update_resume["argv"]
         need(update_argv[0] == sys.executable and "--archive-file" in update_argv, "version update would repeat network download")
         saved_archive = Path(update_argv[update_argv.index("--archive-file") + 1])
-        need(saved_archive.resolve().is_relative_to(app) and saved_archive.is_file(), "pending update archive not owned by this install")
+        report["pending_update_archive_paths"] = {"returned": str(saved_archive), "canonical": str(saved_archive.resolve()),
+                                                  "install_root": str(app), "canonical_install_root": str(app.resolve())}
+        need(saved_archive.is_file(), "pending update archive is missing")
+        need(saved_archive.resolve().is_relative_to(app.resolve()), "pending update archive not owned by this install")
         need(hashlib.sha256(saved_archive.read_bytes()).hexdigest() == archive_sha, "pending update archive differs")
         new_server.close()
         code, upgraded = run_in_job(update_argv, base / "version update resumed", allow_breakaway=True,
