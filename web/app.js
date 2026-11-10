@@ -141,15 +141,12 @@
     const expiry=account && membership.membership_expires_at?new Date(membership.membership_expires_at):null;
     const expiryLabel=expiry && Number.isFinite(expiry.getTime())?expiry.toLocaleString('zh-CN',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}):'';
     const accountExperiment=membership.allowed && membership.access_basis==='experimental_account';
-    const memberExperiment=membership.allowed && membership.access_basis==='experimental_membership';
-    const activeLabel=accountExperiment?'实验授权 · 管理员关闭后停用':(memberExperiment?'实验会员有效':'会员有效')+(expiryLabel?' · '+expiryLabel+' 到期':'');
+    const activeLabel=accountExperiment?'已连接':'会员有效'+(expiryLabel?' · '+expiryLabel+' 到期':'');
     const historyOnlyLabel=membership.reason==='not_eligible'?'当前权益仅可查看历史资料':'会员已到期 · 历史资料只读';
     $('#membership-account').innerHTML=account?`<div class="membership-account-text"><strong>${escape(account.display_name || '已连接账号')}</strong><small>${membership.allowed?escape(activeLabel):membership.can_read_history?historyOnlyLabel:escape(info[0])}</small></div><button class="quiet-button membership-check" data-action="membership-refresh" aria-label="重新确认会员状态" ${membershipBusy?'disabled':''}>↻</button><button class="quiet-button" data-action="membership-logout" ${membershipBusy?'disabled':''}>退出</button>`:'<span class="membership-unconnected">'+(membership.reason==='checking'?'正在确认账号':'尚未连接账号')+'</span>';
-    $('#membership-notice').hidden=!membership.can_read_history && !accountExperiment && !memberExperiment;
+    $('#membership-notice').hidden=!membership.can_read_history;
     const priorPaidEnd=membership.history_membership_expires_at?new Date(membership.history_membership_expires_at).toLocaleString('zh-CN',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}):'';
     $('#membership-notice').innerHTML=membership.can_read_history?`<div><strong>${membership.reason==='not_eligible'?'当前会员权益不含新任务，历史资料可以继续查看':'会员已到期，历史资料可以继续查看'}</strong><span>${membership.reason==='not_eligible'?`此前付费权益截止 ${escape(priorPaidEnd)}。当前主站会员截止${expiryLabel?' '+escape(expiryLabel):'时间以官网为准'}；这段权益不作为扫榜付费资格。`:'已有榜单、收藏、正文和报告保留；续费后恢复更新与新任务。'}</span></div><a class="button secondary small" href="${MEMBER_SITE}" target="_blank" rel="noopener noreferrer">前往官网续费 ↗</a>`:'';
-    if(accountExperiment)$('#membership-notice').innerHTML='<div><strong>实验授权 · 管理员关闭后停用</strong><span>当前账号已获实验使用授权。授权关闭后，工作台会按账号实际权益恢复限制；本机已有资料保留。</span></div>';
-    else if(memberExperiment)$('#membership-notice').innerHTML=`<div><strong>当前会员已获实验使用资格</strong><span>会员真实截止时间为 ${escape(expiryLabel)}。实验模式关闭后，按账号实际权益确认工作台资格。</span></div>`;
     applyReadOnlyControls();
     if(readable())return;
     const checking=membership.reason==='checking', reconnect=['not_authenticated','device_revoked','device_limit'].includes(membership.reason);

@@ -247,7 +247,7 @@ async function locked(dom) {
         finally {dom.window.close();}
       }
     }],
-    ['explicit experimental account grants are revocable and do not use membership expiry', async () => {
+    ['account grants show a quiet connected state without invented expiry or internal labels', async () => {
       const expiries = [null, new Date(Date.now() - 86400000).toISOString(), new Date(Date.now() + 86400000).toISOString()];
       for (const [index, expiry] of expiries.entries()) {
         const account = index === 1 ? 'account-b' : 'account-a';
@@ -255,22 +255,25 @@ async function locked(dom) {
         try {
           await unlocked(dom);
           const label = dom.window.document.querySelector('#membership-account').textContent;
-          assert.match(label, /实验授权 · 管理员关闭后停用/);
+          assert.match(label, /已连接/);
           assert.doesNotMatch(label, /会员有效|到期|永久|\d{4}[\/年-]/, 'Account exemption displayed a membership expiry or permanence promise.');
+          assert.doesNotMatch(dom.window.document.body.textContent, /实验|管理员|永久/, 'Internal authorization details leaked into the customer UI.');
+          assert.equal(dom.window.document.querySelector('#membership-notice').hidden, true, 'A usable account received an unnecessary status banner.');
           assert.equal(dom.control.calls.some(call => call.url === '/api/state'), true);
         } finally {dom.window.close();}
       }
     }],
-    ['experimental membership displays its actual finite membership expiry', async () => {
+    ['current membership displays its actual expiry without experiment labels or banners', async () => {
       const grant = member('account-b', {access_basis: 'experimental_membership'});
       const dom = await open(grant);
       try {
         await unlocked(dom);
         const label = dom.window.document.querySelector('#membership-account').textContent;
-        assert.match(label, /实验会员/);
+        assert.match(label, /会员有效/);
         assert.match(label, /到期/);
         assert(label.includes(String(new Date(grant.membership_expires_at).getFullYear())), 'Experimental membership omitted its actual expiry.');
-        assert.doesNotMatch(label, /实验授权 · 管理员关闭后停用|永久/);
+        assert.doesNotMatch(dom.window.document.body.textContent, /实验|管理员|永久/, 'Internal authorization details leaked into the customer UI.');
+        assert.equal(dom.window.document.querySelector('#membership-notice').hidden, true, 'A usable membership received an unnecessary status banner.');
       } finally {dom.window.close();}
     }],
     ['active grants reject unknown bases and permits outside their finite policy bounds', async () => {
