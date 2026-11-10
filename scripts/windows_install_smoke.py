@@ -10,6 +10,7 @@ documented, host-managed foreground fallback.
 from __future__ import annotations
 
 import argparse
+from contextlib import closing
 import ctypes
 from ctypes import wintypes
 import hashlib
@@ -409,9 +410,10 @@ def run_smoke(args):
 
         # These are synthetic local data, never a real account's store.
         preserved = data / "资料 保留.sqlite"
-        with sqlite3.connect(preserved) as db:
+        with closing(sqlite3.connect(preserved)) as db:
             db.execute("CREATE TABLE fixture(value TEXT)")
             db.execute("INSERT INTO fixture VALUES (?)", ("原收藏与正文应保留",))
+            db.commit()
         setting = data / "保留 设置.json"
         setting.write_text('{"fixture":"原设置"}', encoding="utf-8")
         server.close()
@@ -425,7 +427,7 @@ def run_smoke(args):
         new_source, new_server, _ = installed_service(updated, data, port)
         owned.append(new_server)
         independent_probe(port, data, new_source)
-        with sqlite3.connect(preserved) as db:
+        with closing(sqlite3.connect(preserved)) as db:
             need(db.execute("SELECT value FROM fixture").fetchone() == ("原收藏与正文应保留",), "existing data changed")
         need(setting.read_text(encoding="utf-8") == '{"fixture":"原设置"}', "existing settings changed")
         need(source.is_dir(), "prior release removed")
@@ -452,7 +454,7 @@ def run_smoke(args):
         restored_source, restored_server, _ = installed_service(upgraded, data, port)
         owned.append(restored_server)
         independent_probe(port, data, restored_source)
-        with sqlite3.connect(preserved) as db:
+        with closing(sqlite3.connect(preserved)) as db:
             need(db.execute("SELECT value FROM fixture").fetchone() == ("原收藏与正文应保留",), "remote update changed existing data")
         need(setting.read_text(encoding="utf-8") == '{"fixture":"原设置"}', "remote update changed settings")
         need(new_source.is_dir() and archive.is_file() and not saved_archive.exists(), "update archive cleanup or previous release retention differs")

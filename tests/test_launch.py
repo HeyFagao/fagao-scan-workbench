@@ -76,6 +76,11 @@ class EnvironmentIsolationTests(unittest.TestCase):
             network = {"status": "checking", "policy": "application_owned"}
             healthy = {"app": launch.APP, "source_root": str(launch.ROOT), "data_dir": str(data), "network": network}
             with patch.dict(os.environ, polluted, clear=True), patch.object(launch, "health", side_effect=[None, None, healthy, healthy]), patch.object(launch, "listening", return_value=False), patch.object(launch.subprocess, "Popen", return_value=process) as spawn:
+                # Windows normalizes environment keys; compare the actual
+                # parent environment before/after, not the raw fixture mapping.
+                parent_environment = dict(os.environ)
+                self.assertEqual({key.lower() for key in parent_environment} & launch.PROXY_ENVIRONMENT_KEYS,
+                                 launch.PROXY_ENVIRONMENT_KEYS)
                 result = launch.ensure_running(data, 18376)
                 child_env = spawn.call_args.kwargs["env"]
                 self.assertFalse(set(key.lower() for key in child_env) & launch.PROXY_ENVIRONMENT_KEYS)
@@ -84,7 +89,7 @@ class EnvironmentIsolationTests(unittest.TestCase):
                 self.assertEqual(child_env["FAGAO_DATA_DIR"], str(data))
                 self.assertEqual(child_env["PYTHONUNBUFFERED"], "1")
                 self.assertEqual(child_env["PYTHONIOENCODING"], "utf-8")
-                self.assertEqual(dict(os.environ), polluted)
+                self.assertEqual(dict(os.environ), parent_environment)
             self.assertEqual(result["status"], "started")
             self.assertEqual(result["network"], network)
             self.assertEqual((data / "server.pid").read_text(), "12345")
