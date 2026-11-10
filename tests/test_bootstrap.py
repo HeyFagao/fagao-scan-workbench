@@ -29,6 +29,17 @@ class ArchiveTests(unittest.TestCase):
     def archive_with(self,entries):
         with zipfile.ZipFile(self.archive,'w') as z:
             for name,content in entries:z.writestr(name,content)
+    def archive_with_raw_name(self,name):
+        # ZipInfo normalizes backslashes *while writing* on Windows and strips
+        # NUL on every OS. Replace equal-length ASCII filename bytes in both ZIP
+        # headers so the reader really receives the unsafe name on every OS.
+        raw_name=name.encode('ascii');placeholder='x'*len(raw_name)
+        self.archive_with([(placeholder,'bad')])
+        content=self.archive.read_bytes();encoded=placeholder.encode('ascii')
+        self.assertEqual(content.count(encoded),2)
+        self.archive.write_bytes(content.replace(encoded,raw_name))
+        with zipfile.ZipFile(self.archive) as zipped:
+            self.assertEqual(zipped.infolist()[0].orig_filename,name)
     def test_extracts_one_exact_root(self):
         self.archive_with([('repo-sha/',''),('repo-sha/a/b.txt','hello')])
         bootstrap.extract_archive(self.archive,self.base/'out','repo-sha')
@@ -36,9 +47,31 @@ class ArchiveTests(unittest.TestCase):
     def test_rejects_traversal_absolute_drive_and_backslash(self):
         for name in ['repo-sha/../../escaped','/repo-sha/file','repo-sha/C:/file','repo-sha/a\\file','repo-sha/CON']:
             with self.subTest(name=name):
-                self.archive_with([(name,'bad')])
+                self.archive_with_raw_name(name)
                 with self.assertRaises(bootstrap.InstallError):bootstrap.extract_archive(self.archive,self.base/'out','repo-sha')
+                self.assertFalse((self.base/'out').exists())
         self.assertFalse((self.base/'escaped').exists())
+    def test_rejects_raw_nul_names_before_zipinfo_truncation_can_hide_them(self):
+        for name in ['repo-sha/safe.txt\x00hidden','repo-sha/\x00hidden','repo-sha/a\x00/../../escaped']:
+            with self.subTest(name=name):
+                self.archive_with_raw_name(name)
+                with zipfile.ZipFile(self.archive) as zipped:
+                    member=zipped.infolist()[0]
+                    self.assertNotEqual(member.orig_filename,member.filename)
+                with self.assertRaises(bootstrap.InstallError):
+                    bootstrap.extract_archive(self.archive,self.base/'out','repo-sha')
+                self.assertFalse((self.base/'out').exists())
+        self.assertFalse((self.base/'escaped').exists())
+    def test_rejects_original_backslash_even_when_zipinfo_normalizes_windows_separator(self):
+        self.archive_with_raw_name('repo-sha/a\\file')
+        with patch.object(zipfile.os,'sep','\\'):
+            with zipfile.ZipFile(self.archive) as zipped:
+                member=zipped.infolist()[0]
+                self.assertEqual(member.orig_filename,'repo-sha/a\\file')
+                self.assertEqual(member.filename,'repo-sha/a/file')
+            with self.assertRaises(bootstrap.InstallError):
+                bootstrap.extract_archive(self.archive,self.base/'out','repo-sha')
+        self.assertFalse((self.base/'out').exists())
     def test_rejects_symlink_and_special_files(self):
         for file_type in [stat.S_IFLNK,stat.S_IFIFO]:
             info=zipfile.ZipInfo('repo-sha/link');info.create_system=3;info.external_attr=(file_type|0o777)<<16

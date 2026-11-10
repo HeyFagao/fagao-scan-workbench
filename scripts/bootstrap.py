@@ -125,7 +125,13 @@ def extract_archive(archive: Path, destination: Path, expected_root: str) -> Non
         seen = set()
         accepted = []
         for member in members:
-            path = safe_member(member.filename)
+            # ZipInfo normalizes Windows separators and truncates at NUL when
+            # constructing filename. Check the original archive bytes' decoded
+            # name first so platform normalization cannot hide an unsafe path.
+            original_name = member.orig_filename
+            path = safe_member(original_name)
+            if original_name != member.filename:
+                raise InstallError("压缩包文件名被解析器改写，已拒绝。")
             if not path.parts or path.parts[0] != expected_root:
                 raise InstallError("压缩包根目录与指定仓库版本不符。")
             mode = member.external_attr >> 16
