@@ -506,7 +506,7 @@ class TextDownloadJobsTest(unittest.TestCase):
         snap=self.store.save_snapshot(self.snapshot())
         for count,start,all_flag in [(0,1,False),(5001,1,False),(True,1,False),(3,0,False),(3,1,'yes')]:
             with self.assertRaises(AppError): self.manager.start_text(snap['id'],'book-a',count,start,all_flag)
-        other=self.store.save_snapshot(self.snapshot('qidian'))
+        other=self.store.save_snapshot(self.snapshot('royalroad'))
         with self.assertRaises(AppError): self.manager.start_text(other['id'],'book-a')
         self.assertEqual(self.store.state()['jobs'],[])
 

@@ -176,7 +176,7 @@ class CollectorTests(unittest.TestCase):
     def test_unimplemented_text_platform_does_not_request_fanqie(self):
         with patch('fagao.fanqie_content.fetch_book_text') as fetch:
             with self.assertRaisesRegex(CollectorError,'尚未接入'):
-                fetch_text('qidian','123456','/unused')
+                fetch_text('royalroad','123456','/unused')
         fetch.assert_not_called()
 
     def test_page_ceiling_defaults_to_100_without_fixed_book_cap(self):

@@ -1,0 +1,2 @@
+# Preserve the pinned upstream distribution byte-for-byte, including whitespace.
+fagao/_vendor/pyaes/** -whitespace linguist-vendored

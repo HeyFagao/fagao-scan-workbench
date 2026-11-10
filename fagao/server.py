@@ -442,7 +442,12 @@ class JobManager:
         if isinstance(start_chapter,bool) or not isinstance(start_chapter,int) or not 1<=start_chapter<=5000: raise AppError('invalid_range','起始章节应为 1 到 5000 的整数。')
         if not all_chapters and (isinstance(chapters,bool) or not isinstance(chapters,int) or not 1<=chapters<=5000): raise AppError('invalid_range','下载章节数应为 1 到 5000 的整数。')
         snapshot,book=self.store.book(sid,bid)
-        if snapshot['platform']!='fanqie': raise AppError('unsupported_text_source','此平台暂未接入自动取文，可导入原文。')
+        if snapshot['platform'] not in ('fanqie','qidian','ciweimao'): raise AppError('unsupported_text_source','此平台暂未接入自动取文，可导入原文。')
+        if snapshot['platform'] in ('qidian','ciweimao'):
+            from .opening_content import validate_range
+            from .collectors import CollectorError
+            try: validate_range(snapshot['platform'],None if all_chapters else chapters,start_chapter)
+            except CollectorError as exc: raise AppError('invalid_range',str(exc)) from exc
         options={'start_chapter':start_chapter,'chapters':None if all_chapters else chapters,'all':all_chapters}
         key='text:'+hashlib.sha256(json.dumps([snapshot['id'],book['id'],options],sort_keys=True).encode()).hexdigest()
         with self.lock:
@@ -463,10 +468,10 @@ class JobManager:
                 if self.store.job(job['id'])['status'] in ('cancelling','cancelled'): raise AppError('cancelled','已暂停本次正文下载。')
                 job.update(status='running',message=str(message),updated_at=now()); self.store.save_job(job)
         try:
-            from .fanqie_content import fetch_book_text
+            from .collectors import fetch_text
             progress('正在读取选定作品的公开章节目录')
             options=job['options']
-            raw=fetch_book_text(job['book_id'],self.store.directory,max_chapters=options['chapters'],start_chapter=options['start_chapter'],progress=progress)
+            raw=fetch_text(job['platform'],job['book_id'],self.store.directory,max_chapters=options['chapters'],start_chapter=options['start_chapter'],progress=progress)
             if not isinstance(raw,dict): raise AppError('invalid_text_result','正文结果格式不正确。')
             try: self._require()
             except AppError as exc:
@@ -857,12 +862,11 @@ class Handler(BaseHTTPRequestHandler):
             return store.translation_context(reference=data.get('query','翻译这本'),session=data.get('session','default'),snapshot_id=data.get('snapshot_id'),book_id=data.get('book_id'))
         if path=='/api/catalog':
             snapshot,book=store.book(data.get('snapshot_id'),data.get('book_id'))
-            if snapshot['platform']!='fanqie': raise AppError('unsupported_text_source','此平台暂未接入在线目录，可导入原文。')
-            from .fanqie_content import catalog
-            from .collectors import CollectorError
-            try: result=catalog(book['id'],store.directory)
+            if snapshot['platform'] not in ('fanqie','qidian','ciweimao'): raise AppError('unsupported_text_source','此平台暂未接入在线目录，可导入原文。')
+            from .collectors import CollectorError, fetch_catalog
+            try: result=fetch_catalog(snapshot['platform'],book['id'],store.directory)
             except CollectorError as exc: raise AppError('catalog_unavailable',str(exc)[:1200],502) from exc
-            if str(result.get('book_id'))!=book['id'] or result.get('platform')!='fanqie': raise AppError('text_identity_mismatch','目录作品身份不一致，未采用。')
+            if str(result.get('book_id'))!=book['id'] or result.get('platform')!=snapshot['platform']: raise AppError('text_identity_mismatch','目录作品身份不一致，未采用。')
             return {**result,'snapshot_id':snapshot['id'],'book_id':book['id'],'total':result.get('catalog_chapters',len(result.get('chapters',[]))),'source_url':result.get('source','')}
         if path=='/api/fetch-text': return self._jobs.start_text(data.get('snapshot_id'),data.get('book_id'),data.get('chapters',3),data.get('start_chapter',1),data.get('all',False))
         if path=='/api/insights':

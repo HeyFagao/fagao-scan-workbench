@@ -973,8 +973,23 @@ def collect(platform, options, data_dir, progress=None):
 
 def fetch_text(platform, book_id, data_dir, max_chapters=3, start_chapter=1, progress=None):
     """Read a fixed range of public chapters through the shared content adapter."""
+    if platform in ("qidian", "ciweimao"):
+        from .opening_content import fetch_book_text
+        return fetch_book_text(platform, book_id, data_dir, max_chapters=max_chapters,
+                               start_chapter=start_chapter, progress=progress)
     if platform != "fanqie":
         raise CollectorError("此平台正文自动获取尚未接入，请导入可用原文。")
     from .fanqie_content import fetch_book_text
     return fetch_book_text(book_id, data_dir, max_chapters=max_chapters,
                            start_chapter=start_chapter, progress=progress)
+
+
+def fetch_catalog(platform, book_id, data_dir=None):
+    """One catalog dispatch for GUI and CLI; each source keeps its own limits."""
+    if platform in ("qidian", "ciweimao"):
+        from .opening_content import catalog
+        return catalog(platform, book_id, data_dir)
+    if platform == "fanqie":
+        from .fanqie_content import catalog
+        return catalog(book_id, data_dir)
+    raise CollectorError("此平台尚未接入章节目录，可导入原文。", "unsupported_text_source")

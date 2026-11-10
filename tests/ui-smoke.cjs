@@ -21,13 +21,14 @@ async function open({stale=false,freshSnapshot=null,history=false,expiredHeiyan=
   control.moreRequests=[];control.collectionJob=null;control.collectionPolls=0;
   control.overviewPolls=0;control.overviewReads=0;control.overviewJob=lateOverview?{id:'qa-overview-late',kind:'overview',status:'completed',message:'直采检查完成',public_source:{status:'running',snapshot_count:0,updated_at:'2026-11-09T12:00:00Z'}}:null;
   control.catalogRequests=[];control.textRequests=[];control.textAssets=[];control.textJob=null;control.textPolls=0;control.cancelCalls=0;control.downloadRequests=[];control.downloads=[];
+  const contentOptions=typeof contentFixture==='object'?contentFixture:{};
   const blobs=new Map();
   dom.window.URL.createObjectURL=blob=>{const url='blob:'+base+'/synthetic-'+(blobs.size+1);blobs.set(url,blob);return url;};
   dom.window.URL.revokeObjectURL=url=>blobs.delete(url);
   const anchorClick=dom.window.HTMLAnchorElement.prototype.click;
   dom.window.HTMLAnchorElement.prototype.click=function(){if(this.href.startsWith('blob:')){control.downloads.push({filename:this.download,blob:blobs.get(this.href)});return;}return anchorClick.call(this);};
   control.finishText=({cancelled=false,fragmented=false}={})=>{
-    const job=control.textJob, asset={id:'qa-asset-'+control.textRequests.length,snapshot_id:job.snapshot_id,book_id:job.book_id,title:job.title,platform:'fanqie',scope:'第 1—3 章；实际取得第 1、3 章，缺失第 2 章',chapters:[{index:1,title:'第一章'},{index:3,title:'第三章'}],missing:[{index:2,chapter:'第二章',reason:'平台暂未提供正文'}],coverage_complete:false,complete:false,cancelled,characters:66,created_at:'2026-11-09T12:00:00Z',acquisition:'public_download',integrity:{version:1,status:'verified',actual_characters:66,declared_book_word_count:99,reason:'已核对取得章节字数。'}};
+    const job=control.textJob, asset={id:'qa-asset-'+control.textRequests.length,snapshot_id:job.snapshot_id,book_id:job.book_id,title:job.title,platform:job.platform,scope:'第 1—3 章；实际取得第 1、3 章，缺失第 2 章',chapters:[{index:1,title:'第一章'},{index:3,title:'第三章'}],missing:[{index:2,chapter:'第二章',reason:'平台暂未提供正文'}],coverage_complete:false,complete:false,cancelled,characters:66,created_at:'2026-11-09T12:00:00Z',acquisition:'public_download',integrity:{version:1,status:'verified',actual_characters:66,declared_book_word_count:99,reason:'已核对取得章节字数。'}};
     if(fragmented)Object.assign(asset,{scope:'公开片段；目录第 1 项，共 1 章',chapters:[{index:1,title:'第一章',integrity:{version:1,status:'partial',declared_word_count:13325,actual_characters:4439,reason:'章节正文少于标注字数。'}}],missing:[],characters:4439,complete:true,coverage_complete:true,integrity:{version:1,status:'partial',actual_characters:4439,declared_book_word_count:13325,reason:'单章正文少于平台标注字数，已保存公开片段。'}});
     control.textAssets.unshift(asset);control.textJob={...job,status:cancelled?'cancelled':'completed',message:cancelled?'已暂停，已取得内容已保存':fragmented?'公开片段已保存，实际正文 4,439 字符':'正文已保存，缺失 1 章',partial:true,finished_at:'2026-11-09T12:00:00Z',text_id:asset.id,text:asset};
   };
@@ -53,12 +54,13 @@ async function open({stale=false,freshSnapshot=null,history=false,expiredHeiyan=
     if(pathname==='/api/catalog'){
       if(!contentFixture)throw new Error('Catalog must be intercepted in UI tests.');
       const body=JSON.parse(init.body);control.catalogRequests.push(body);
-      return Response.json({...body,platform:'fanqie',title:'测试作品乙',total:12,catalog_chapters:12,collected_at:'2026-11-09T12:00:00Z',source_url:'https://fanqienovel.com/page/fixture',chapters:Array.from({length:12},(_,i)=>({index:i+1,item_id:'chapter-'+(i+1),title:'第 '+(i+1)+' 章'+(i===0?' <script>unsafe</script>':''),is_locked:i===6}))});
+      const total=contentOptions.total ?? 12;
+      return Response.json({...body,platform:contentOptions.platform || 'fanqie',title:'测试作品乙',total,catalog_chapters:total,...(contentOptions.platform?{download_limit:10,download_start:1}:{}),collected_at:'2026-11-09T12:00:00Z',source_url:'https://example.invalid/catalog-fixture',chapters:Array.from({length:contentOptions.chapterCount ?? total},(_,i)=>({index:i+1,item_id:'chapter-'+(i+1),title:'第 '+(i+1)+' 章'+(i===0?' <script>unsafe</script>':''),is_locked:i===6,unavailable_reason:i===6?'此章节需要平台权限':''}))});
     }
     if(pathname==='/api/fetch-text'){
       if(!contentFixture)throw new Error('Text downloads must be intercepted in UI tests.');
       const body=JSON.parse(init.body);control.textRequests.push(body);
-      control.textJob={id:'qa-text-'+control.textRequests.length,kind:'text',platform:'fanqie',snapshot_id:body.snapshot_id,book_id:body.book_id,title:body.book_id==='qa-b'?'测试作品乙':'测试作品甲',options:body,status:'pending',message:'正在读取选定作品的正文'};
+      control.textJob={id:'qa-text-'+control.textRequests.length,kind:'text',platform:contentOptions.platform || 'fanqie',snapshot_id:body.snapshot_id,book_id:body.book_id,title:contentOptions.title || (body.book_id==='qa-b'?'测试作品乙':'测试作品甲'),options:body,status:'pending',message:'正在读取选定作品的正文'};
       return Response.json({status:'started',job_id:control.textJob.id,job:control.textJob});
     }
     if(pathname.startsWith('/api/jobs/qa-text-')){control.textPolls++;return Response.json(control.textJob);}
@@ -98,6 +100,8 @@ async function open({stale=false,freshSnapshot=null,history=false,expiredHeiyan=
   await wait(()=>dom.window.document.querySelector('[data-action="select-book"]') || dom.window.document.querySelector('#heiyan-booklist'),'books did not render');await pause(100);return dom;
 }
 (async()=>{
+ let favoriteChecks=0,openingChecks=0;
+ const favoriteCheck=check=>{check();favoriteChecks++;},openingCheck=check=>{check();openingChecks++;};
  let dom=await open({startHome:true}), d=dom.window.document;
  assert(d.querySelector('.overview-tabs'),'homepage overview missing');assert.equal(d.querySelector('[data-section="overview"]').getAttribute('aria-current'),'true');assert.equal(d.querySelectorAll('.overview-tabs button').length,3);assert.match(d.querySelector('.overview-scope').textContent,/仅新书榜/);assert.equal(collections.length,0,'homepage started category-specific scan');await wait(()=>overviewUpdates.length>0,'homepage did not request aggregate update');assert.equal(overviewUpdates[0].automatic,true);dom.window.close();
  dom=await open();d=dom.window.document;
@@ -115,7 +119,13 @@ async function open({stale=false,freshSnapshot=null,history=false,expiredHeiyan=
  await wait(()=>d.querySelector('.detail h2')?.textContent==='测试作品乙','select failed');
  assert.match(d.querySelector('.positions').textContent,/原榜第 14 名/);
  let r=await api('/api/resolve',{query:'分析第二本'});assert.equal(r.book_id,'qa-b');
+ favoriteCheck(()=>{assert.match(d.querySelector('.detail .text-status').textContent,/先点右上角“收藏”/);assert.equal(d.querySelector('.bridge'),null,'unfavorited book claimed ready for WorkBuddy');});
  d.querySelector('[data-action="favorite"]').click();await wait(()=>d.querySelector('#favorite-count').textContent==='1','favorite failed');
+ favoriteCheck(()=>{assert.match(d.querySelector('.detail .text-status').textContent,/已加入我的收藏，目前只有书目和简介/);assert.match(d.querySelector('.bridge').textContent,/分析我收藏的番茄小说《测试作品乙》书名和简介/);assert(!d.querySelector('.bridge').textContent.includes('开头'),'metadata-only favorite promised opening analysis');});
+ r=await api('/api/resolve',{query:d.querySelector('.bridge-main p').textContent});favoriteCheck(()=>{assert.equal(r.book_id,'qa-b');assert.equal(r.book.title,'测试作品乙');});
+ d.querySelector('[data-action="favorite"]').click();await wait(()=>d.querySelector('#favorite-count').textContent==='0','unfavorite failed');
+ favoriteCheck(()=>{assert.match(d.querySelector('.detail .text-status').textContent,/先点右上角“收藏”/);assert.equal(d.querySelector('.bridge'),null,'unfavorited book retained saved-analysis prompt');});
+ d.querySelector('[data-action="favorite"]').click();await wait(()=>d.querySelector('#favorite-count').textContent==='1','re-favorite failed');
  d.querySelector('#sort').value='rank_desc';d.querySelector('#sort').dispatchEvent(new dom.window.Event('change',{bubbles:true}));
  await wait(async()=>((await api('/api/state')).views.long.filters.sort==='rank_desc'),'sort not saved');
  r=await api('/api/resolve',{query:'番茄新书榜第14名'});assert.equal(r.book_id,'qa-b');
@@ -200,6 +210,7 @@ async function open({stale=false,freshSnapshot=null,history=false,expiredHeiyan=
  assert.equal(d.querySelector('.detail h2').textContent,'测试作品甲','text completion replaced selected book');assert(!d.querySelector('.saved-text-assets'),'text asset attached to wrong book');
  d.querySelectorAll('.book-row')[1].click();await wait(()=>d.querySelector('.saved-text-assets'),'saved text did not attach to original work');
  assert.match(d.querySelector('.saved-text-assets').textContent,/实际取得/);
+ favoriteCheck(()=>{assert.match(d.querySelector('.bridge').textContent,/分析我收藏的番茄小说《测试作品乙》已保存的正文，按实际保存的范围分析/);assert.match(d.querySelector('.detail .text-status').textContent,/已保存的正文/);});
  const firstDownload=d.querySelector('.saved-text-assets [data-action="download-text"]');assert.equal(firstDownload.dataset.id,'qa-asset-1');firstDownload.click();
  await wait(()=>dom.control.downloads.length===1,'Saved TXT was not downloaded through the authenticated API');assert.match(dom.control.downloadRequests[0].path,/\/api\/texts\/qa-asset-1\/download$/);assert.match(await dom.control.downloads[0].blob.text(),/实际取得部分正文/);assert.match(dom.control.downloads[0].filename,/qa-asset-1\.txt$/);
  d.querySelector('[data-action="catalog"]').click();await wait(()=>d.querySelector('.chapter-saved-result') && d.querySelector('#chapter-download-form'),'saved result not visible');
@@ -223,6 +234,47 @@ async function open({stale=false,freshSnapshot=null,history=false,expiredHeiyan=
  // bodies cannot be reconstructed. That count must keep its actual basis.
  Object.assign(dom.control.textAssets[0],{scope:'旧下载文本，完整性待重新核验',complete:false,coverage_complete:false,integrity:{version:1,status:'unverified',actual_characters:4439,actual_characters_basis:'saved_text_including_headings',declared_book_word_count:null,reason:'旧记录未保存章节字数核验信息。'}});
  d.querySelector('[data-action="close-dialog"]').click();d.querySelector('.saved-text-item [data-action="preview-text"]').click();await wait(()=>d.querySelector('#dialog').open && d.querySelector('.chapter-integrity')?.textContent.includes('含章节标题'),'legacy preview missing');assert.match(d.querySelector('.chapter-integrity').textContent,/已保存文本 4,439 字符（不含空白，含章节标题）/);assert(!d.querySelector('.chapter-integrity').textContent.includes('实际正文'),'legacy stored text count claimed to exclude chapter headings');dom.window.close();
+ // Both new readers expose only the opening. Even forged form controls cannot
+ // request chapter 11, a later starting chapter, or a whole book.
+ const openingSnapshots={};
+ for(const platform of ['qidian','ciweimao'])openingSnapshots[platform]=await api('/api/import/snapshot',{snapshot:{platform,channel:platform==='qidian'?'男频':'综合',category:'全部',board:'月票榜',books:[{id:'qa-b',title:platform+' 测试作品',rank:1,summary:'仅用于前十章与收藏流程验收'},{id:'qa-a',title:platform+' 另一作品',rank:2,summary:'固定对象验收'}]}});
+ for(const platform of ['qidian','ciweimao']){
+   const pinned=openingSnapshots[platform],other=platform==='qidian'?'ciweimao':'qidian';
+   await api('/api/view',{mode:'long',platform,snapshot_id:pinned.id,selected_id:'qa-b',filters:{query:'',sort:'source',favorites:false}});
+   dom=await open({contentFixture:{platform,total:20,chapterCount:12,title:platform+' 测试作品'}});d=dom.window.document;
+   openingCheck(()=>{assert.match(d.querySelector('.detail .text-status').textContent,/先点右上角“收藏”/);assert.equal(d.querySelector('.bridge'),null,'same ID on a different platform inherited a favorite');assert(d.querySelector('[data-action="catalog"]'),'new platform lacks catalog entry');});
+   d.querySelector('[data-action="favorite"]').click();await wait(()=>d.querySelector('[data-action="favorite"]')?.getAttribute('aria-pressed')==='true','new platform favorite not saved');
+   openingCheck(()=>{assert.match(d.querySelector('.detail .text-status').textContent,/目前只有书目和简介/);assert(d.querySelector('.bridge').textContent.includes(`《${platform} 测试作品》书名和简介`));});
+   const favoriteRef=await api('/api/resolve',{query:d.querySelector('.bridge-main p').textContent});openingCheck(()=>{assert.equal(favoriteRef.book.title,platform+' 测试作品');assert.equal(favoriteRef.snapshot_id,pinned.id);assert.equal(favoriteRef.book_id,'qa-b');});
+   d.querySelector('[data-action="catalog"]').click();await wait(()=>d.querySelectorAll('.chapter-row').length===10,'new platform did not cap directory at ten');
+   openingCheck(()=>{assert.deepEqual(dom.control.catalogRequests[0],{snapshot_id:pinned.id,book_id:'qa-b'});assert.equal(dom.control.textRequests.length,0);assert.equal(d.querySelector('[data-action="chapter-all"]'),null);assert.equal(d.querySelector('[data-count="30"]'),null);assert.equal(d.querySelector('#chapter-start'),null);assert.equal(d.querySelector('#chapter-range-mode'),null);assert.equal(d.querySelector('[data-action="choose-chapter"]'),null);assert.match(d.querySelector('.chapter-scope-note').textContent,/不会自动购买/);assert.match(d.querySelector('.chapter-list').textContent,/此章节需要平台权限/);assert(!d.querySelector('#dialog script'));});
+   for(const [id,value] of [['chapter-count','11'],['chapter-start','2'],['chapter-range-mode','all']]){
+     const forged=d.createElement('input');forged.id=id;forged.value=value;d.querySelector('#chapter-download-form').append(forged);
+     d.querySelector('#chapter-download-form').dispatchEvent(new dom.window.Event('submit',{bubbles:true,cancelable:true}));
+     openingCheck(()=>{assert.equal(dom.control.textRequests.length,0,`${platform} accepted forged ${id}`);assert.match(d.querySelector('.chapter-error').textContent,/最多读取前 10 章/);});
+     const requests=dom.control.catalogRequests.length;d.querySelector('[data-action="reload-catalog"]').click();await wait(()=>dom.control.catalogRequests.length>requests && !d.querySelector('.chapter-loading'),'limited catalog did not reset');
+   }
+   for(const action of ['chapter-all','choose-chapter','chapter-preset']){
+     const forged=d.createElement('button');forged.type='button';forged.dataset.action=action;forged.dataset.index='11';forged.dataset.count='30';d.querySelector('#chapter-download-form').append(forged);forged.click();
+     openingCheck(()=>{assert.equal(dom.control.textRequests.length,0,`${platform} accepted forged ${action}`);assert.match(d.querySelector('.chapter-error').textContent,/最多读取前 10 章/);});
+   }
+   d.querySelector('#chapter-download-form').dispatchEvent(new dom.window.Event('submit',{bubbles:true,cancelable:true}));await wait(()=>dom.control.textRequests.length===1 && d.querySelector('.text-job'),'opening download did not start');
+   openingCheck(()=>assert.deepEqual(dom.control.textRequests[0],{snapshot_id:pinned.id,book_id:'qa-b',start_chapter:1,chapters:10}));
+   d.querySelector('[data-action="close-dialog"]').click();d.querySelector(`[data-action="platform"][data-platform="${other}"]`).click();await wait(()=>d.querySelector(`[data-action="platform"][data-platform="${other}"]`)?.getAttribute('aria-current')==='true' && d.querySelector('.book-row'),'cross-platform navigation did not finish');
+   d.querySelector('[data-action="select-book"][data-book="qa-b"]').click();await wait(()=>d.querySelector('.detail h2')?.textContent===other+' 测试作品','cross-platform same ID was not selected');
+   dom.control.finishText();await wait(()=>dom.control.textPolls>0,'opening task was not polled');await pause(120);
+   openingCheck(()=>{assert.equal(d.querySelector('.detail h2').textContent,other+' 测试作品');assert.equal(d.querySelector('.saved-text-assets'),null,'completed text leaked to same book ID on a different platform');});
+   d.querySelector(`[data-action="platform"][data-platform="${platform}"]`).click();await wait(()=>d.querySelector(`[data-action="platform"][data-platform="${platform}"]`)?.getAttribute('aria-current')==='true' && d.querySelector('.book-row'),'original platform did not reopen');d.querySelector('[data-action="select-book"][data-book="qa-b"]').click();await wait(()=>d.querySelector('.saved-text-assets'),'opening text did not remain with original platform');
+   openingCheck(()=>{assert(d.querySelector('.bridge').textContent.includes(`《${platform} 测试作品》已保存的正文`));assert.match(d.querySelector('.saved-text-assets').textContent,/实际取得/);assert(!d.querySelector('.saved-text-assets').textContent.includes('完整正文'));});
+   d.querySelector('[data-action="favorite"]').click();await wait(()=>d.querySelector('[data-action="favorite"]')?.getAttribute('aria-pressed')==='false','opening unfavorite failed');
+   openingCheck(()=>{assert.equal(d.querySelector('.bridge'),null);assert.match(d.querySelector('.detail .text-status').textContent,/先点右上角“收藏”/);assert(d.querySelector('.saved-text-assets'),'unfavoriting deleted saved text');});
+   d.querySelector('[data-action="catalog"]').click();await wait(()=>d.querySelector('.chapter-saved-result') && d.querySelector('#chapter-download-form') && !d.querySelector('.chapter-loading'),'unfavorited result did not reopen');openingCheck(()=>assert.match(d.querySelector('.chapter-workbuddy-note').textContent,/点右上角“收藏”/));
+   dom.window.close();
+ }
+ await api('/api/view',{mode:'long',platform:'qidian',snapshot_id:openingSnapshots.qidian.id,selected_id:'qa-b',filters:{query:'',sort:'source',favorites:false}});
+ dom=await open({contentFixture:{platform:'qidian',total:4}});d=dom.window.document;d.querySelector('[data-action="catalog"]').click();await wait(()=>d.querySelectorAll('.chapter-row').length===4,'short catalog missing');
+ openingCheck(()=>assert.match(d.querySelector('#chapter-download-form [type="submit"]').textContent,/读取前 4 章/));d.querySelector('#chapter-download-form').dispatchEvent(new dom.window.Event('submit',{bubbles:true,cancelable:true}));await wait(()=>dom.control.textRequests.length===1 && d.querySelector('.text-job'),'short catalog task missing');await pause(100);openingCheck(()=>assert.deepEqual(dom.control.textRequests[0],{snapshot_id:openingSnapshots.qidian.id,book_id:'qa-b',start_chapter:1,chapters:4}));dom.window.close();
+ await api('/api/view',{mode:'long',platform:'fanqie',snapshot_id:original,selected_id:'qa-b',filters:{query:'',sort:'source',favorites:false}});
  // A previously customized collection count survives the default expansion.
  const beforeCustom=collections.length;dom=await open({storedOptions:{fanqie:{limit:75,max_pages:25}}});await wait(()=>collections.length>beforeCustom,'custom collection options did not initialize');assert.equal(collections.at(-1).options.limit,75);assert.equal(collections.at(-1).options.max_pages,25);dom.window.close();
  const beforeMigration=collections.length;dom=await open({storedOptions:{fanqie:{limit:1000,max_pages:100}}});await wait(()=>collections.length>beforeMigration,'previous default did not initialize');assert.equal(collections.at(-1).options.limit,10000);dom.window.close();
@@ -340,5 +392,5 @@ async function open({stale=false,freshSnapshot=null,history=false,expiredHeiyan=
  const lateData=(await api('/api/overview')).platforms.find(item=>item.platform==='fanqie').dashboard.views['全部'];
  dashboardCheck(()=>{assert.equal(Number(d.querySelector('[data-kpi="books"] strong').childNodes[0].textContent.replaceAll(',','')),lateData.kpis.books);assert.equal(d.querySelector('[data-action="overview-refresh"]').disabled,false);});
  await pause(80);dom.window.close();
- assert.deepEqual(errors,[]);console.log(JSON.stringify({passed:true,checks:82+dashboardChecks,dashboard_checks:dashboardChecks,layout_verified:false,external_platform_requests:0}));
+ assert.deepEqual(errors,[]);console.log(JSON.stringify({passed:true,checks:82+dashboardChecks+favoriteChecks+openingChecks,dashboard_checks:dashboardChecks,favorite_checks:favoriteChecks,opening_checks:openingChecks,layout_verified:false,external_platform_requests:0}));
 })().catch(e=>{console.error(e);process.exitCode=1;process.exit(1)});

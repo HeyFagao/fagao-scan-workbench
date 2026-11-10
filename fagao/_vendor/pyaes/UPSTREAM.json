@@ -1,0 +1,48 @@
+{
+  "name": "pyaes",
+  "version": "1.6.1",
+  "author": "Richard Moore",
+  "license": "MIT",
+  "project_url": "https://github.com/ricmoo/pyaes",
+  "distribution_url": "https://files.pythonhosted.org/packages/44/66/2c17bae31c906613795711fc78045c285048168919ace2220daa372c7d72/pyaes-1.6.1.tar.gz",
+  "metadata_url": "https://pypi.org/project/pyaes/1.6.1/",
+  "distribution_sha256": "02c1b1405c38d3c370b085fb952dd8bea3fadcee6411ad99f312cc129c536d8f",
+  "files": [
+    {
+      "upstream_path": "pyaes-1.6.1/pyaes/__init__.py",
+      "local_path": "fagao/_vendor/pyaes/__init__.py",
+      "bytes": 2087,
+      "sha256": "e20e2b5dedefe93c7259df8f59f017de1fad737b45f48074a36b09d6010226e7",
+      "unmodified": true
+    },
+    {
+      "upstream_path": "pyaes-1.6.1/pyaes/aes.py",
+      "local_path": "fagao/_vendor/pyaes/aes.py",
+      "bytes": 60310,
+      "sha256": "5dc0ff7ad948704ae9814fc2720f9b479599092a7a46e1fd9d55b78953a1a43f",
+      "unmodified": true
+    },
+    {
+      "upstream_path": "pyaes-1.6.1/pyaes/blockfeeder.py",
+      "local_path": "fagao/_vendor/pyaes/blockfeeder.py",
+      "bytes": 8123,
+      "sha256": "34c550f66d284b4c2866f17130d646bf6c3fc2bf2806203268865782e12e0e44",
+      "unmodified": true
+    },
+    {
+      "upstream_path": "pyaes-1.6.1/pyaes/util.py",
+      "local_path": "fagao/_vendor/pyaes/util.py",
+      "bytes": 2050,
+      "sha256": "b632d6ad0990972eb0969ec1551e8d302baf241476864f86112e40353f02c52f",
+      "unmodified": true
+    },
+    {
+      "upstream_path": "pyaes-1.6.1/LICENSE.txt",
+      "local_path": "fagao/_vendor/pyaes/LICENSE.txt",
+      "bytes": 1081,
+      "sha256": "1efe6c78b28b4203d397ea9b68bdc9c658d21cd9afaf8ae8223def83f2a7ebbd",
+      "unmodified": true
+    }
+  ],
+  "scope": "All four upstream runtime Python files and the upstream license are copied byte-for-byte. No setup.py, installation hooks, dependency downloads, upstream tests, or archive are shipped. The reader adapter uses CBC decryption only."
+}

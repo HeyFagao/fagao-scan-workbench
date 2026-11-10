@@ -744,12 +744,22 @@
     const f = view().filters || {};
     return `<form id="search-form" class="toolbar" role="search"><label class="search"><span aria-hidden="true">⌕</span><input id="query" type="search" name="query" aria-label="搜索书名、作者或简介" placeholder="搜索书名、作者或简介" value="${escape(f.query || '')}" autocomplete="off"></label><select id="sort" aria-label="作品排序"><option value="source" ${(!f.sort||f.sort==='source')?'selected':''}>原始顺序</option><option value="rank" ${['rank','rank_asc'].includes(f.sort)?'selected':''}>原榜名次 ↑</option><option value="rank_desc" ${f.sort==='rank_desc'?'selected':''}>原榜名次 ↓</option><option value="title" ${f.sort==='title'?'selected':''}>书名排序</option></select><label class="checkbox-label"><input id="favorites-filter" type="checkbox" ${f.favorites?'checked':''}>只看收藏</label></form>`;
   }
+  function hasOpeningReader(platform){return ['fanqie','qidian','ciweimao'].includes(platform);}
+  function openingOnly(platform){return ['qidian','ciweimao'].includes(platform);}
+  function favoriteAnalysisPrompt(book,platform,hasText=textAssetsFor(book.id,platform).length>0){
+    return `分析我收藏的${nameOf(platform)}《${book.title}》${hasText?'已保存的正文，按实际保存的范围分析。':'书名和简介，看看故事有什么卖点。'}`;
+  }
+  function favoriteGuide(book){
+    if(!favorite(book))return '先点右上角“收藏”，再回到 WorkBuddy 对话分析这本书。';
+    if(textAssetsFor(book.id).length)return '已加入我的收藏。回到 WorkBuddy，说出书名即可分析已保存的正文。';
+    return `已加入我的收藏，目前只有书目和简介。想分析正文，先${hasOpeningReader(snapshot.platform)?'点“目录与正文”保存可读章节，或导入已有正文':'点“导入正文”添加已有文件'}。`;
+  }
   function renderDetail(visible) {
     const b = (snapshot?.books || []).find((x) => x.id === view().selected_id);
     if (!b) return '<aside class="detail" aria-label="作品详情">'+empty('选一本，进一步了解','点击左侧作品，查看简介和准确的榜单位置。','','▤','compact')+'</aside>';
     const position = visible.findIndex((x) => x.id === b.id)+1, url = safeURL(b.url), metrics = Array.isArray(b.metrics) ? b.metrics : [];
     const reports = state.reports.filter((r) => r.book_id === b.id && (!r.platform || r.platform === snapshot.platform));
-    return `<aside class="detail" aria-label="作品详情" data-book="${escape(b.id)}" data-snapshot="${escape(snapshot.id)}"><div class="detail-top"><span>已选中的作品</span><button class="favorite-button" data-action="favorite" data-book="${escape(b.id)}" aria-pressed="${favorite(b)}">${favorite(b)?'♥ 已收藏':'♡ 收藏'}</button></div>${cover(b,true)}<h2>${escape(b.title)}</h2><p class="author">${escape(b.author || '作者未提供')}${b.status?' · '+escape(b.status):''}</p><div class="positions"><span>${position?'列表第 '+position+' 本':'已被当前筛选隐藏'}</span>${snapshot.platform!=='heiyan' && Number.isFinite(b.rank)?`<span class="original">${mode()==='overseas'?'来源榜单':'原榜'}第 ${b.rank} 名</span>`:''}</div>${mode()==='overseas' && membership.allowed?`<div class="translation-card"><span class="translation-mark" aria-hidden="true">译</span><div><strong>回 WorkBuddy 说“翻译这本”</strong><p>翻译所选作品的英文书名与简介。</p><button class="button secondary small" data-action="translation-context">复制翻译请求</button></div></div>`:''}<p class="summary">${escape(b.summary || '本次来源未提供简介，可在作品原页查看。')}</p>${metrics.length?`<div class="metrics">${metrics.map((m)=>`<span>${escape(m.name)} <strong>${escape(m.value)}</strong>${escape(m.unit || '')}</span>`).join('')}</div>`:''}<div class="detail-actions">${url?`<a class="source-link" href="${escape(url)}" target="_blank" rel="noopener noreferrer">打开作品原页 ↗</a>`:''}${snapshot.platform==='fanqie'?'<button class="button primary small" data-action="catalog">目录与正文</button>':''}<button class="button secondary small" data-action="import-text">导入正文</button></div><p class="text-status">${membership.can_read_history?'当前查看已保存资料，续费后恢复分析与正文获取。':'已选对象已保存，可回到 WorkBuddy 继续分析。'}</p>${renderTextAssets(b)}${reports.map((r)=>`<button class="report-item" data-action="report" data-id="${escape(r.id)}">▤ ${escape(r.title || '拆书报告')}<br><small>${escape(r.scope || '')}</small></button>`).join('')}</aside>`;
+    return `<aside class="detail" aria-label="作品详情" data-book="${escape(b.id)}" data-snapshot="${escape(snapshot.id)}"><div class="detail-top"><span>已选中的作品</span><button class="favorite-button" data-action="favorite" data-book="${escape(b.id)}" aria-pressed="${favorite(b)}">${favorite(b)?'♥ 已收藏':'♡ 收藏'}</button></div>${cover(b,true)}<h2>${escape(b.title)}</h2><p class="author">${escape(b.author || '作者未提供')}${b.status?' · '+escape(b.status):''}</p><div class="positions"><span>${position?'列表第 '+position+' 本':'已被当前筛选隐藏'}</span>${snapshot.platform!=='heiyan' && Number.isFinite(b.rank)?`<span class="original">${mode()==='overseas'?'来源榜单':'原榜'}第 ${b.rank} 名</span>`:''}</div>${mode()==='overseas' && membership.allowed?`<div class="translation-card"><span class="translation-mark" aria-hidden="true">译</span><div><strong>回 WorkBuddy 说“翻译这本”</strong><p>翻译所选作品的英文书名与简介。</p><button class="button secondary small" data-action="translation-context">复制翻译请求</button></div></div>`:''}<p class="summary">${escape(b.summary || '本次来源未提供简介，可在作品原页查看。')}</p>${metrics.length?`<div class="metrics">${metrics.map((m)=>`<span>${escape(m.name)} <strong>${escape(m.value)}</strong>${escape(m.unit || '')}</span>`).join('')}</div>`:''}<div class="detail-actions">${url?`<a class="source-link" href="${escape(url)}" target="_blank" rel="noopener noreferrer">打开作品原页 ↗</a>`:''}${hasOpeningReader(snapshot.platform)?'<button class="button primary small" data-action="catalog">目录与正文</button>':''}<button class="button secondary small" data-action="import-text">导入正文</button></div><p class="text-status">${escape(membership.can_read_history?'当前查看已保存资料，续费后恢复分析与正文获取。':mode()==='overseas'?'已选对象已保存，可回到 WorkBuddy 继续分析。':favoriteGuide(b))}</p>${renderTextAssets(b)}${reports.map((r)=>`<button class="report-item" data-action="report" data-id="${escape(r.id)}">▤ ${escape(r.title || '拆书报告')}<br><small>${escape(r.scope || '')}</small></button>`).join('')}</aside>`;
   }
   function empty(title,text,actions='',symbol='▤',extra='') { return `<div class="empty ${extra}"><div class="empty-symbol" aria-hidden="true">${symbol}</div><h2>${escape(title)}</h2><p>${escape(text)}</p>${actions?`<div class="actions">${actions}</div>`:''}</div>`; }
   function heiyanBooklistCard(compact=false){
@@ -758,8 +768,8 @@
   function renderBridge() {
     if(membership.can_read_history){$('#bridge').innerHTML='';return;}
     const b = snapshot?.books?.find((x)=>x.id===view().selected_id);
-    if (section !== 'browse' || !b) { $('#bridge').innerHTML = ''; return; }
-    $('#bridge').innerHTML = `<section class="bridge" aria-label="WorkBuddy 对话提示"><div class="bridge-main"><div><div class="bridge-label">回到 WorkBuddy，可以说</div><p>${mode()==='overseas'?'“翻译我刚选的这本书名和简介，再分析它的故事卖点。”':'“分析我刚选的这本，重点看开头怎么吸引读者。”'}</p></div><button data-action="context">查看引用 ⌄</button></div><small>已保存：${escape(b.title)} · ${escape(scopeOf())} · ${escape(date(snapshotDate(snapshot)))}</small></section>`;
+    if (section !== 'browse' || !b || (mode()!=='overseas' && !favorite(b))) { $('#bridge').innerHTML = ''; return; }
+    $('#bridge').innerHTML = `<section class="bridge" aria-label="WorkBuddy 对话提示"><div class="bridge-main"><div><div class="bridge-label">回到 WorkBuddy，可以说</div><p>${mode()==='overseas'?'“翻译我刚选的这本书名和简介，再分析它的故事卖点。”':'“'+escape(favoriteAnalysisPrompt(b,snapshot.platform))+'”'}</p></div><button data-action="context">查看引用 ⌄</button></div><small>${mode()==='overseas'?'已保存':'已收藏'}：${escape(b.title)} · ${escape(scopeOf())} · ${escape(date(snapshotDate(snapshot)))}</small></section>`;
   }
   function renderSaved() {
     const labels={favorites:['我的收藏','有价值的参考，留待下一次创作。'],history:['最近记录','回到上次选中的作品，或者继续浏览之前的榜单。'],reports:['拆书报告','从 WorkBuddy 生成的分析结果，会在这里与作品关联。']};
@@ -773,7 +783,7 @@
       html+='<div class="surface-head"><strong>历史榜单与书库</strong></div>';
       html+=state.snapshots.length?'<div class="saved-list">'+state.snapshots.map((s)=>savedRow([nameOf(s.platform),s.board].filter(Boolean).join(' · '),[s.channel,s.category,`${s.books_count ?? s.count ?? '?'} 本`].filter(Boolean).join(' · '),snapshotDate(s),'open-record',{'snapshot':s.id})).join('')+'</div>':empty('还没有采集记录','第一次采集成功后，完整书目将保存在这里。','','▤','compact');
     } else {
-      html+=state.reports.length?'<div class="saved-list">'+state.reports.map((r)=>savedRow(r.title||'拆书报告',r.scope||'阅读范围见报告',r.created_at,'report',{'id':r.id})).join('')+'</div>':empty('还没有拆书报告',membership.can_read_history?'这个账号尚未保存拆书报告。续费后可继续开始新的分析。':'在工作台选一本书，再回到 WorkBuddy 说“分析我刚选的这本”。完成分析并保存报告后，就能在这里继续查看。');
+      html+=state.reports.length?'<div class="saved-list">'+state.reports.map((r)=>savedRow(r.title||'拆书报告',r.scope||'阅读范围见报告',r.created_at,'report',{'id':r.id})).join('')+'</div>':empty('还没有拆书报告',membership.can_read_history?'这个账号尚未保存拆书报告。续费后可继续开始新的分析。':'先收藏想分析的作品，再回到 WorkBuddy 说“分析我收藏的《书名》”。完成分析并保存报告后，就能在这里继续查看。');
     }
     $('#content').innerHTML=html+'</section>';
   }
@@ -982,7 +992,8 @@
   function captureTextRange(){
     if(!contentPanel || $('#dialog').dataset.kind!=='text')return;
     const form=$('#chapter-download-form');if(!form)return;
-    contentPanel.range={mode:$('#chapter-range-mode')?.value || 'first',count:Number($('#chapter-count')?.value || 3),start:Number($('#chapter-start')?.value || 1),end:Number($('#chapter-end')?.value || 3)};
+    const previous=contentPanel.range;
+    contentPanel.range={mode:$('#chapter-range-mode')?.value ?? previous.mode,count:Number($('#chapter-count')?.value ?? previous.count),start:Number($('#chapter-start')?.value ?? previous.start),end:Number($('#chapter-end')?.value ?? previous.end)};
   }
   function catalogTotal(catalog){return Math.max(0,Number(catalog?.total ?? catalog?.catalog_chapters ?? catalog?.chapters?.length) || 0);}
   async function openCatalog(){
@@ -990,10 +1001,11 @@
     while(pendingViewMutations>0)await saving.catch(()=>{});
     assertAccount(epoch);
     const book=snapshot?.books?.find(item=>item.id===view().selected_id);
-    if(!book || snapshot.platform!=='fanqie')return;
-    const panel={sequence:++contentPanelSequence,snapshot_id:snapshot.id,book_id:book.id,platform:'fanqie',title:book.title,loading:true,catalog:null,error:'',range:{mode:'first',count:3,start:1,end:3},visibleChapters:100,job:null,asset:null};
+    if(!book || !hasOpeningReader(snapshot.platform))return;
+    const count=openingOnly(snapshot.platform)?10:3;
+    const panel={sequence:++contentPanelSequence,snapshot_id:snapshot.id,book_id:book.id,platform:snapshot.platform,title:book.title,loading:true,catalog:null,error:'',range:{mode:'first',count,start:1,end:count},visibleChapters:100,job:null,asset:null};
     panel.job=(state.jobs || []).find(job=>job.kind==='text' && job.snapshot_id===panel.snapshot_id && job.book_id===panel.book_id && textJobActive(job)) || null;
-    panel.asset=textAssetsFor(book.id,'fanqie')[0] || null;
+    panel.asset=textAssetsFor(book.id,panel.platform)[0] || null;
     contentPanel=panel;
     showDialog(panel.title,'','目录与正文');$('#dialog').dataset.kind='text';renderContentDialog();
     await loadCatalog(panel);
@@ -1005,6 +1017,11 @@
       const catalog=await api('/api/catalog',{snapshot_id:panel.snapshot_id,book_id:panel.book_id});
       if(contentPanel?.sequence!==panel.sequence)return;
       panel.catalog=catalog;panel.visibleChapters=100;
+      if(openingOnly(panel.platform)){
+        const count=Math.min(10,catalogTotal(catalog),Array.isArray(catalog.chapters)?catalog.chapters.length:0);
+        panel.range={mode:'first',count,start:1,end:count};
+        $('#chapter-download-form')?.remove();
+      }
     }catch(error){if(contentPanel?.sequence===panel.sequence)panel.error=error.message;}
     finally{if(contentPanel?.sequence===panel.sequence){panel.loading=false;renderContentDialog();}}
   }
@@ -1012,14 +1029,19 @@
     const panel=contentPanel;
     if(!panel || !$('#dialog').open || $('#dialog').dataset.kind!=='text')return;
     captureTextRange();
-    const catalog=panel.catalog, chapters=Array.isArray(catalog?.chapters)?catalog.chapters:[], total=catalogTotal(catalog), range=panel.range;
+    const limited=openingOnly(panel.platform), catalog=panel.catalog, entries=Array.isArray(catalog?.chapters)?catalog.chapters:[];
+    const chapters=limited?entries.filter(chapter=>Number.isInteger(Number(chapter.index)) && Number(chapter.index)>=1 && Number(chapter.index)<=10).slice(0,10):entries;
+    const total=catalogTotal(catalog), range=panel.range;
     const running=panel.submitting || textJobActive(panel.job);
     const source=safeURL(catalog?.source_url || catalog?.source), asset=panel.asset;
-    let body=`<div class="chapter-intro"><p>正文会保存在这本作品的资料中。取文完成后，可直接回 WorkBuddy 分析，也可以导出 TXT。</p>${total?`<div class="chapter-catalog-meta"><strong>目录共 ${total.toLocaleString()} 章</strong><span>读取于 ${escape(date(catalog.collected_at || catalog.created_at))}</span>${source?`<a href="${escape(source)}" target="_blank" rel="noopener noreferrer">目录来源 ↗</a>`:''}</div>`:''}</div>`;
+    let body=`<div class="chapter-intro"><p>保存正文后，收藏这本书，再回到 WorkBuddy 对话分析。也可以导出 TXT。</p>${total?`<div class="chapter-catalog-meta"><strong>${limited?`本次查看开头 ${chapters.length} 章`:`目录共 ${total.toLocaleString()} 章`}</strong><span>读取于 ${escape(date(catalog.collected_at || catalog.created_at))}</span>${source?`<a href="${escape(source)}" target="_blank" rel="noopener noreferrer">目录来源 ↗</a>`:''}</div>`:''}</div>`;
     if(panel.loading)body+='<div class="chapter-loading" role="status"><span class="spinner"></span>正在读取作品目录…</div>';
     if(panel.error)body+=`<div class="chapter-error" role="alert">${escape(panel.error)}<button data-action="reload-catalog">重新读取目录</button></div>`;
     if(catalog?.warnings?.length)body+=`<div class="chapter-warning">${catalog.warnings.map(item=>`<p>${escape(readableWarning(item))}</p>`).join('')}</div>`;
-    if(chapters.length){
+    if(limited && chapters.length){
+      const count=Math.min(10,total,chapters.length);
+      body+=`<form id="chapter-download-form"><p class="chapter-scope-note">只读取第 1–${count} 章。遇到付费、登录限制或无法读取的章节会说明原因，不会自动购买，也不会用后续章节补足。</p><div class="chapter-list" aria-label="作品章节目录">${chapters.map(chapter=>`<div class="chapter-row"><span>${Number(chapter.index)}</span><strong>${escape(chapter.title || '未提供章名')}</strong>${chapter.locked || chapter.is_locked || chapter.restricted || chapter.need_pay?`<small>${escape(chapter.unavailable_reason || chapter.reason || '需要原站权限，读取到此停止')}</small>`:''}</div>`).join('')}</div><div class="chapter-download-actions"><small>只保存实际取得的正文与来源信息</small><button class="button primary" type="submit" ${running?'disabled':''}>${running?'正在读取正文…':`读取前 ${count} 章并保存`}</button></div></form>`;
+    }else if(chapters.length){
       const max=Math.max(total,chapters.length), endLimit=Math.min(max,50000), countLimit=Math.min(max,5000);
       body+=`<form id="chapter-download-form"><div class="chapter-presets" aria-label="取文范围快捷选择">${[3,10,30].map(count=>`<button type="button" data-action="chapter-preset" data-count="${count}" aria-pressed="${range.mode==='first' && range.count===count}" ${running?'disabled':''}>前 ${count} 章</button>`).join('')}<button type="button" data-action="chapter-all" aria-pressed="${range.mode==='all'}" ${running?'disabled':''}>全部已发布章节</button></div><div class="chapter-range-fields"><label>范围<select id="chapter-range-mode" ${running?'disabled':''}><option value="first" ${range.mode==='first'?'selected':''}>前 N 章</option><option value="range" ${range.mode==='range'?'selected':''}>指定章节范围</option><option value="all" ${range.mode==='all'?'selected':''}>全部已发布章节</option></select></label><label ${range.mode!=='first'?'hidden':''}>前<input id="chapter-count" type="number" min="1" max="${countLimit}" value="${Math.min(countLimit,Math.max(1,range.count))}" ${running?'disabled':''}>章</label><label ${range.mode!=='range'?'hidden':''}>从第<input id="chapter-start" type="number" min="1" max="${endLimit}" value="${Math.min(endLimit,Math.max(1,range.start))}" ${running?'disabled':''}>章</label><label ${range.mode!=='range'?'hidden':''}>到第<input id="chapter-end" type="number" min="1" max="${endLimit}" value="${Math.min(endLimit,Math.max(1,range.end))}" ${running?'disabled':''}>章</label></div>${range.mode==='all'?'<p class="chapter-scope-note">将按当前目录读取已发布章节；连载作品不会标为“全书完结”。无法取得的章节会明确列出。</p>':''}<div class="chapter-list" aria-label="作品章节目录">${chapters.slice(0,panel.visibleChapters).map(chapter=>`<button type="button" class="chapter-row" data-action="choose-chapter" data-index="${Number(chapter.index)}" ${running?'disabled':''}><span>${Number(chapter.index)}</span><strong>${escape(chapter.title || '未提供章名')}</strong>${chapter.locked || chapter.is_locked || chapter.restricted || chapter.need_pay?'<small>可能需要平台权限</small>':''}</button>`).join('')}</div>${chapters.length>panel.visibleChapters?`<button class="chapter-more" type="button" data-action="more-chapters">展开后续目录（当前 ${panel.visibleChapters} / ${chapters.length}）</button>`:''}<div class="chapter-download-actions"><small>只保存实际取得的正文与来源信息</small><button class="button primary" type="submit" ${running?'disabled':''}>${running?'正在取得正文…':'取得正文并保存'}</button></div></form>`;
     }
@@ -1031,7 +1053,7 @@
     if(asset){
       const missing=Array.isArray(asset.missing)?asset.missing:[], acquired=Array.isArray(asset.chapters)?asset.chapters.length:null;
       const integrity=textIntegrity(asset), chapterLabel=asset.integrity?.status==='partial'?'片段涉及':'实际取得';
-      body+=`<section class="chapter-saved-result"><h3>正文已保存</h3><p class="chapter-saved-scope">${escape(asset.scope || '阅读范围见正文资料')}</p><div class="chapter-saved-meta"><span>${escape(integrity.label)}</span>${acquired!==null?`<span>${chapterLabel} ${acquired} 章</span>`:''}<span>${Number(asset.characters || 0).toLocaleString()} 字符</span>${missing.length?`<span>缺失 ${missing.length} 章</span>`:''}</div>${integrity.detail?`<p class="chapter-integrity" role="note">${escape(integrity.detail)}</p>`:''}${missing.length?`<details class="chapter-missing"><summary>查看未取得的章节</summary><ul>${missing.slice(0,100).map(item=>`<li>${Number.isFinite(item.index)?'第 '+item.index+' 章 · ':''}${escape(item.title || item.chapter || '')} ${escape(item.reason || '未取得正文')}</li>`).join('')}</ul>${missing.length>100?'<p>其余缺章记录已保存在正文资料中。</p>':''}</details>`:''}<div class="chapter-result-actions"><button class="button secondary" data-action="download-text" data-id="${escape(asset.id)}">导出 TXT ↓</button><button class="button secondary" data-action="preview-text" data-id="${escape(asset.id)}">查看已保存正文</button></div><p class="chapter-workbuddy-note">回到 WorkBuddy 可以说：“分析刚才保存的《${escape(panel.title)}》正文。”</p></section>`;
+      body+=`<section class="chapter-saved-result"><h3>正文已保存</h3><p class="chapter-saved-scope">${escape(asset.scope || '阅读范围见正文资料')}</p><div class="chapter-saved-meta"><span>${escape(integrity.label)}</span>${acquired!==null?`<span>${chapterLabel} ${acquired} 章</span>`:''}<span>${Number(asset.characters || 0).toLocaleString()} 字符</span>${missing.length?`<span>缺失 ${missing.length} 章</span>`:''}</div>${integrity.detail?`<p class="chapter-integrity" role="note">${escape(integrity.detail)}</p>`:''}${missing.length?`<details class="chapter-missing"><summary>查看未取得的章节</summary><ul>${missing.slice(0,100).map(item=>`<li>${Number.isFinite(item.index)?'第 '+item.index+' 章 · ':''}${escape(item.title || item.chapter || '')} ${escape(item.reason || '未取得正文')}</li>`).join('')}</ul>${missing.length>100?'<p>其余缺章记录已保存在正文资料中。</p>':''}</details>`:''}<div class="chapter-result-actions"><button class="button secondary" data-action="download-text" data-id="${escape(asset.id)}">导出 TXT ↓</button><button class="button secondary" data-action="preview-text" data-id="${escape(asset.id)}">查看已保存正文</button></div><p class="chapter-workbuddy-note">${favorite({id:panel.book_id},{platform:panel.platform})?'回到 WorkBuddy 可以说：“'+escape(favoriteAnalysisPrompt({id:panel.book_id,title:panel.title},panel.platform,true))+'”':'正文已保存。关闭窗口后，点右上角“收藏”，再回到 WorkBuddy 对话分析。'}</p></section>`;
     }
     const focused=document.activeElement?.id;
     $('#dialog-body').innerHTML=`<div class="dialog-head"><div><h2>${escape(panel.title)}</h2><p>目录与正文</p></div><button class="close-dialog" data-action="close-dialog" aria-label="关闭窗口">×</button></div><div class="dialog-content">${body}</div>`;
@@ -1051,7 +1073,12 @@
     if(!contentPanel || contentPanel.submitting || textJobActive(contentPanel.job))return;
     captureTextRange();const panel=contentPanel, range={...panel.range}, total=catalogTotal(panel.catalog);
     const payload={snapshot_id:panel.snapshot_id,book_id:panel.book_id};
-    if(range.mode==='all')payload.all=true;
+    if(openingOnly(panel.platform)){
+      if(range.mode!=='first' || range.start!==1 || !Number.isInteger(range.count) || range.count<1 || range.count>10 || (total && range.count>total)){
+        panel.error='此平台只能从第 1 章开始，最多读取前 10 章。';renderContentDialog();return;
+      }
+      payload.start_chapter=1;payload.chapters=range.count;
+    }else if(range.mode==='all')payload.all=true;
     else {
       const start=range.mode==='range'?range.start:1, count=range.mode==='range'?range.end-range.start+1:range.count;
       if(!Number.isInteger(start) || !Number.isInteger(count) || start<1 || count<1 || count>5000 || (total && start+count-1>total)){
@@ -1187,14 +1214,20 @@
     if(a==='preview-text'){await previewText(el.dataset.id);return;}
     if(a==='download-text'){await downloadText(el.dataset.id);return;}
     if(a==='chapter-preset'){
-      if(!contentPanel)return;captureTextRange();contentPanel.range={mode:'first',count:Math.min(Number(el.dataset.count),catalogTotal(contentPanel.catalog)),start:1,end:3};
+      if(!contentPanel)return;
+      if(openingOnly(contentPanel.platform) && (!Number.isInteger(Number(el.dataset.count)) || Number(el.dataset.count)<1 || Number(el.dataset.count)>10)){contentPanel.error='此平台最多读取前 10 章。';renderContentDialog();return;}
+      captureTextRange();contentPanel.range={mode:'first',count:Math.min(Number(el.dataset.count),catalogTotal(contentPanel.catalog)),start:1,end:3};
       const form=$('#chapter-download-form');if(form)form.remove();renderContentDialog();return;
     }
     if(a==='chapter-all'){
-      if(!contentPanel)return;captureTextRange();contentPanel.range.mode='all';const form=$('#chapter-download-form');if(form)form.remove();renderContentDialog();return;
+      if(!contentPanel)return;
+      if(openingOnly(contentPanel.platform)){contentPanel.error='此平台最多读取前 10 章。';renderContentDialog();return;}
+      captureTextRange();contentPanel.range.mode='all';const form=$('#chapter-download-form');if(form)form.remove();renderContentDialog();return;
     }
     if(a==='choose-chapter'){
-      if(!contentPanel)return;const index=Number(el.dataset.index);contentPanel.range={mode:'range',start:index,end:index,count:1};const form=$('#chapter-download-form');if(form)form.remove();renderContentDialog();return;
+      if(!contentPanel)return;
+      if(openingOnly(contentPanel.platform)){contentPanel.error='此平台只能从第 1 章开始，最多读取前 10 章。';renderContentDialog();return;}
+      const index=Number(el.dataset.index);contentPanel.range={mode:'range',start:index,end:index,count:1};const form=$('#chapter-download-form');if(form)form.remove();renderContentDialog();return;
     }
     if(a==='more-chapters'){if(contentPanel){contentPanel.visibleChapters+=100;renderContentDialog();}return;}
     if(a==='cancel-text-job'){await api('/api/jobs/cancel',{job_id:el.dataset.id});await refresh();return;}
@@ -1215,7 +1248,7 @@
         ['来源数据日期',snapshot.data_date || '原站未提供'],
         ['采集时间',date(snapshotDate(snapshot))]
       ];
-      showDialog(book.title,`<p>WorkBuddy 已可读取这份选择。回到对话说“分析刚选的这本”，就能继续使用；引用固定到这次榜单，更新后不会换成其他作品。</p><dl style="margin:0;display:grid;grid-template-columns:minmax(90px,30%) minmax(0,1fr);gap:12px 16px;font-size:12px">${rows.map(([label,value])=>`<dt style="color:var(--muted)">${escape(label)}</dt><dd style="margin:0;overflow-wrap:anywhere">${escape(value)}</dd>`).join('')}</dl>${source?`<div class="form-actions"><a class="button secondary" href="${escape(source)}" target="_blank" rel="noopener noreferrer">打开作品原页 ↗</a></div>`:''}`,'当前作品引用');
+      showDialog(book.title,`<p>${mode()==='overseas'?'WorkBuddy 已可读取这份选择。回到对话说“分析刚选的这本”，就能继续使用。':favorite(book)?'回到 WorkBuddy，可以说：“'+escape(favoriteAnalysisPrompt(book,snapshot.platform))+'”':'先点作品右上角“收藏”，再回到 WorkBuddy 对话分析。'}引用固定到这次榜单，更新后不会换成其他作品。</p><dl style="margin:0;display:grid;grid-template-columns:minmax(90px,30%) minmax(0,1fr);gap:12px 16px;font-size:12px">${rows.map(([label,value])=>`<dt style="color:var(--muted)">${escape(label)}</dt><dd style="margin:0;overflow-wrap:anywhere">${escape(value)}</dd>`).join('')}</dl>${source?`<div class="form-actions"><a class="button secondary" href="${escape(source)}" target="_blank" rel="noopener noreferrer">打开作品原页 ↗</a></div>`:''}`,'当前作品引用');
       return;
     }
   }
@@ -1264,7 +1297,7 @@
       const scope=$('#text-scope').value.trim();if(!scope)return;
       const payload={snapshot_id:pendingText.snapshot_id,book_id:pendingText.book_id,text:pendingText.text,scope,complete:$('#text-complete').checked};
       const submit=event.target.querySelector('[type="submit"]');submit.disabled=true;
-      api('/api/import/text',payload).then(()=>{assertAccount(epoch);$('#dialog').close();pendingText=null;toast('正文已保存，可回到 WorkBuddy 继续分析。');return refresh();}).catch(e=>{if(epoch===accountEpoch){notice(e.message);submit.disabled=false;}});
+      api('/api/import/text',payload).then(()=>{assertAccount(epoch);$('#dialog').close();pendingText=null;toast('正文已保存。收藏这本书后，回到 WorkBuddy 对话分析。');return refresh();}).catch(e=>{if(epoch===accountEpoch){notice(e.message);submit.disabled=false;}});
     }
   });
   $('#snapshot-file').addEventListener('change',async(event)=>{

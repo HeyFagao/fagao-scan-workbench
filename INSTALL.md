@@ -87,7 +87,7 @@ PYTHON_ABSOLUTE_PATH bootstrap.py --repo ShiQi-Han03/fagao-scan-workbench --comm
 
 ## 5. 安装时完成依赖检查，不让用户点到功能后报缺项
 
-当前日常功能包括三家长篇榜单、番茄公开正文和黑岩腾讯文档入口。它们不需要 Node 或 Playwright：前三者使用 Python 标准库，黑岩直接打开用户平时使用的浏览器。
+当前日常功能包括三家长篇榜单、番茄公开正文、起点与刺猬猫前 10 章公开正文，以及黑岩腾讯文档入口。它们不需要 Node、Playwright 或额外的 pip 安装：读取功能使用 Python 标准库与随包提供的纯 Python 组件，黑岩直接打开用户平时使用的浏览器。
 
 在启动失败时读取具体原因，由 WorkBuddy 完成修复并重试：
 

@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - codex/windows-install-dev6-20261110
+      - 'codex/release-*'
 
 permissions:
   contents: read
@@ -39,6 +40,15 @@ jobs:
           if ($LASTEXITCODE -ne 0) { Get-Content "$env:RUNNER_TEMP/fagao-windows-receipts/bootstrap-tests.log"; exit $LASTEXITCODE }
           python -m unittest discover -s tests -p test_launch.py -v *> "$env:RUNNER_TEMP/fagao-windows-receipts/launch-tests.log"
           if ($LASTEXITCODE -ne 0) { Get-Content "$env:RUNNER_TEMP/fagao-windows-receipts/launch-tests.log"; exit $LASTEXITCODE }
+      - name: Opening readers and bundled crypto regressions
+        shell: pwsh
+        run: |
+          python -m unittest discover -s tests -p test_reader_crypto.py -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m unittest discover -s tests -p test_opening_content.py -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m unittest discover -s tests -p test_resolver_favorites.py -v
+          exit $LASTEXITCODE
       - name: Native install and real Job Object lifetimes
         shell: pwsh
         run: |

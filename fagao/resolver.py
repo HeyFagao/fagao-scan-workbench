@@ -257,6 +257,68 @@ def _latest_per_scope(snapshots: list[dict], context: dict) -> list[dict]:
     return list(grouped.values())
 
 
+def _favorite_request(text: str) -> bool:
+    return bool(re.search(
+        r"我(?:刚(?:刚|才)?|最近|最后|已(?:经)?)?收藏|刚(?:刚|才)?收藏|"
+        r"(?:最近|最后|最新)(?:一次)?收藏|已(?:经)?收藏|收藏(?:的|夹|里|中)", text))
+
+
+def _resolve_favorite(query: str, context: dict, snapshots: list[dict], scope_text: str) -> dict:
+    """Use saved favorite identities, never a later view or conversation target."""
+    favorites = context.get("favorites") or []
+    if not favorites:
+        raise ResolutionError("favorite_not_found", "还没有收藏作品，请先在工作台点作品旁的“收藏”，再回来告诉我书名。")
+    by_id = {s.get("id"): s for s in snapshots if s.get("id")}
+    title_match = re.search(r"《([^》]+)》", query)
+    # The explicit author form also keeps names such as “起点” out of scope parsing.
+    author_match = re.search(r"作者\s*(?:是|为|[：:])?\s*[“「\"]?([^”」\"\s，,。！？；;（）()《》]+)", scope_text)
+    author = _normalize(author_match.group(1)) if author_match else None
+    if author_match:
+        scope_text = scope_text[:author_match.start()] + scope_text[author_match.end():]
+    constraints = _constraints(scope_text, snapshots)
+    zone, now = _clock(context)
+    items = []
+    for favorite in favorites:
+        snapshot = by_id.get(favorite.get("snapshot_id"))
+        book = next((b for b in (snapshot or {}).get("books", [])
+                     if str(b.get("id")) == str(favorite.get("book_id"))), favorite.get("book") or {})
+        scope = snapshot or favorite
+        if not _matches(scope, constraints):
+            continue
+        if title_match and _normalize(book.get("title") or favorite.get("title")) != _normalize(title_match.group(1)):
+            continue
+        if author and _normalize(book.get("author")) != author:
+            continue
+        when = _timestamp(favorite.get("created_at"), zone)
+        if "昨天" in scope_text and (not when or when.date() != (now - timedelta(days=1)).date()):
+            continue
+        items.append((favorite, snapshot, book, when))
+    if not items:
+        raise ResolutionError("favorite_not_found", "收藏中没有找到符合条件的作品，请核对书名或平台；尚未收藏时，先在工作台点“收藏”。")
+    recent = bool(re.search(r"刚(?:刚|才)?收藏|(?:最近|最后|最新)(?:一次)?收藏", scope_text))
+    if recent and len(items) > 1 and all(item[3] is not None for item in items):
+        latest = max(item[3] for item in items)
+        items = [item for item in items if item[3] == latest]
+    if len(items) > 1:
+        candidates = [dict(snapshot_id=f.get("snapshot_id"), book_id=f.get("book_id"),
+                           title=b.get("title") or f.get("title", "未命名作品"),
+                           platform=(s or f).get("platform"), author=b.get("author", ""),
+                           scope_description=_scope(s or f)) for f, s, b, _ in items]
+        if title_match and len({c["platform"] for c in candidates}) > 1:
+            message = "收藏中有多本同名作品，请补充平台。"
+        elif title_match and len({c["author"] for c in candidates}) > 1:
+            message = "收藏中有多本同名作品，请补充作者，例如“作者：张三”。"
+        elif title_match:
+            message = "收藏中仍有多本同名作品，请从候选项中指定具体作品。"
+        else:
+            message = "收藏中有多本符合条件的作品，请说书名，例如“分析我收藏的《书名》”。"
+        raise ResolutionError("ambiguous_favorite", message, candidates)
+    favorite, snapshot, _, _ = items[0]
+    if not snapshot:
+        raise ResolutionError("snapshot_not_found", "这本收藏对应的历史榜单已不可用，请在工作台重新收藏；不会替换成当前浏览的作品。")
+    return _result(snapshot, _book(snapshot, favorite.get("book_id")))
+
+
 def resolve_reference(query: str, context: dict) -> dict:
     """Resolve one book, or raise a specific error rather than silently guessing.
 
@@ -272,12 +334,15 @@ def resolve_reference(query: str, context: dict) -> dict:
     snapshots = context.get("snapshots", [])
     if isinstance(snapshots, dict):
         snapshots = list(snapshots.values())
+    # A quoted title is an identity, not a scope or a request to use favorites.
+    constraint_text=re.sub(r"《[^》]*》", "", text)
+    if _favorite_request(constraint_text):
+        return _resolve_favorite(query, context, snapshots, constraint_text)
     if not snapshots:
         raise ResolutionError("no_snapshots", "还没有保存的榜单或书库，请先在工作台采集或导入。")
     by_id = {s.get("id"): s for s in snapshots if s.get("id")}
     # English titles commonly contain words such as Long, New and Girl;
     # a quoted title is an identity, not a channel or ranking instruction.
-    constraint_text=re.sub(r"《[^》]*》", "", text)
     constraints = _constraints(constraint_text, snapshots)
     mode = constraints.get("mode", context.get("active_mode", "long"))
     views = context.get("views", {})

@@ -126,10 +126,9 @@ def run_command(args,store):
         raw=fetch_text(t['platform'],t['book_id'],store.directory,max_chapters=None if args.all else args.chapters,start_chapter=args.start,progress=lambda m,*a,**k:print(m,file=sys.stderr))
         result=store.save_fetched_text(t['snapshot_id'],t['book_id'],raw)
     elif args.command=='catalog':
-        from .fanqie_content import catalog
+        from .collectors import fetch_catalog
         t=store.task(args.task)
-        if t['platform']!='fanqie': raise AppError('unsupported_platform','此平台尚未接入章节目录。')
-        result=catalog(t['book_id'],store.directory)
+        result=fetch_catalog(t['platform'],t['book_id'],store.directory)
     elif args.command=='insights':
         from .insights import build_insights
         result=build_insights(store.snapshot(args.snapshot),store.state(full=True)['snapshots'])
