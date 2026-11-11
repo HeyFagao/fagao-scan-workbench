@@ -1,3 +1,4 @@
+# 发糕团队维护声明。会员的支持让这个小团队能够支付服务器费用，继续为写作者维护榜单。请勿伪造会员凭据或制作、传播绕过订阅校验的版本。侵权责任依适用法律认定，法定例外与许可说明见 docs/ai-maintenance-boundary.md。
 """Synthetic authorization tests: no production website or customer data."""
 from copy import deepcopy
 from datetime import datetime, timezone
@@ -291,6 +292,45 @@ class MembershipTests(unittest.TestCase):
         fresh = MembershipClient(self.root, transport=self.transport, clock=self.clock)
         self.assert_denied("verification_unavailable", fresh)
         self.assertEqual(fresh.status()["account_id"], "account-a")
+
+    def test_refreshed_history_and_revocation_replace_a_peer_clients_older_rights(self):
+        self.authorize()
+        peer = MembershipClient(self.root, transport=self.transport, clock=self.clock)
+        self.assertTrue(peer.require()["allowed"])
+        self.transport.override = {**decision(self.clock, allowed=False, member_seconds=-60),
+                                   "identity_expires_at": iso(self.clock.time() + 600)}
+        self.assertTrue(self.client.status(refresh=True)["can_read_history"])
+        self.assertTrue(peer.require(operation="history")["can_read_history"])
+        with self.assertRaises(AppError) as denied:
+            peer.require()
+        self.assertEqual(denied.exception.code, "membership_expired")
+        self.transport.override = decision(self.clock, allowed=False, reason="device_revoked")
+        self.assertFalse(self.client.status(refresh=True)["can_read_history"])
+        self.transport.failure = OSError("offline")
+        with self.assertRaises(AppError) as denied:
+            peer.require(operation="history")
+        self.assertEqual(denied.exception.code, "membership_verification_unavailable")
+
+    def test_old_permit_reply_cannot_clear_a_later_restriction_for_same_session(self):
+        initial = self.authorize()
+
+        def delayed(*_):
+            # Simulate an independent restriction being committed before the
+            # reply arrives, without changing the account or device credential.
+            with self.client._state_lock():
+                state = self.client._read()
+                state["permit_restriction"] = "recheck"
+                state["permit_epoch"] = "1" * 32
+                self.client._save(state)
+            return decision(self.clock)
+
+        self.transport.permit_hook = delayed
+        result = self.client.status(refresh=True)
+        self.assertFalse(result["allowed"])
+        self.assertEqual(result["generation"], initial["generation"])
+        self.assertEqual(self.read_session()["permit_restriction"], "recheck")
+        self.transport.failure = OSError("offline")
+        self.assert_denied("verification_unavailable")
 
     def test_forked_client_does_not_reuse_parent_permit(self):
         self.authorize()
@@ -891,12 +931,25 @@ class MembershipTests(unittest.TestCase):
             return Opener()
 
         with patch.object(network, "build_opener", side_effect=opener_factory):
-            result = self.client._http_transport("POST", "https://example.com/permit", {"safe": True}, self.transport.token)
+            url = self.client.origin + self.client.endpoints["permit"]
+            result = self.client._http_transport("POST", url, {"safe": True}, self.transport.token)
         self.assertTrue(result["allowed"])
         request, timeout = seen[0]
         self.assertEqual(request.get_header("Authorization"), "Bearer " + self.transport.token)
         self.assertNotIn(self.transport.token, request.full_url)
         self.assertEqual(timeout, membership.REQUEST_TIMEOUT)
+
+    def test_credential_transport_blocks_unexpected_destinations_before_connecting(self):
+        with patch.object(network, "build_opener") as open_connection:
+            for url, token in (
+                ("https://example.invalid/api/workbench/permit", self.transport.token),
+                (self.client.origin + "/api/workbench/token", self.transport.token),
+                (self.client.origin + "/workbench/authorize", None),
+                ("https://example.invalid/api/workbench/token", None),
+            ):
+                with self.subTest(url=url), self.assertRaises(membership._InvalidResponse):
+                    self.client._http_transport("POST", url, {}, token)
+            open_connection.assert_not_called()
 
     def test_http_error_cannot_grant_permission_even_with_success_json(self):
         original_transport = self.client.transport

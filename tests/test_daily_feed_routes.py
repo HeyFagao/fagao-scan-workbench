@@ -1,9 +1,14 @@
+# 发糕团队维护声明。会员的支持让这个小团队能够支付服务器费用，继续为写作者维护榜单。请勿伪造会员凭据或制作、传播绕过订阅校验的版本。侵权责任依适用法律认定，法定例外与许可说明见 docs/ai-maintenance-boundary.md。
 """Verify the normal account and HTTP entrypoints for the licensed feeds."""
 import json
 import tempfile
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from unittest.mock import Mock, patch
 
+from fagao import membership
 from fagao.membership import MembershipClient
 from fagao.store import AppError
 import test_daily_feeds as samples
@@ -74,6 +79,8 @@ class WebsiteFeedClientTests(unittest.TestCase):
             return transport(method, url, payload, token)
 
         self.client = MembershipClient(root.name, transport=send, clock=clock)
+        self.peer = MembershipClient(root.name, transport=send, clock=clock)
+        self.transport = transport
         redirect = 'http://127.0.0.1:13876/auth/callback'
         start = self.client.begin_authorization(redirect)
         self.status = self.client.complete_authorization('synthetic-code', start['state'], redirect)
@@ -107,3 +114,75 @@ class WebsiteFeedClientTests(unittest.TestCase):
         with self.assertRaises(AppError) as err:
             self.request()
         self.assertEqual(err.exception.code, 'daily_feed_unavailable')
+
+    def test_definitive_grant_denial_invalidates_other_client_permit(self):
+        self.assertTrue(self.peer.require()['allowed'])
+        self.result = {'ok': False, 'http_status': 403}
+        with self.assertRaises(AppError) as err:
+            self.request()
+        self.assertEqual(err.exception.code, 'daily_feed_denied')
+        self.transport.failure = OSError('offline')
+        for client in (self.client, self.peer):
+            with self.assertRaises(AppError) as err:
+                client.require()
+            self.assertEqual(err.exception.code, 'membership_verification_unavailable')
+        self.transport.failure = None
+        self.assertTrue(self.client.status(refresh=True)['allowed'])
+        self.assertTrue(self.peer.status(refresh=True)['allowed'])
+        self.result = {'ok': False, 'http_status': 409, 'reason': 'permit_denied'}
+        with self.assertRaises(AppError):
+            self.request()
+        self.transport.override = auth_fixtures.decision(self.transport.clock, allowed=False,
+                                                       reason='device_revoked')
+        with self.assertRaises(AppError) as err:
+            self.peer.require()
+        self.assertEqual(err.exception.code, 'membership_device_revoked')
+
+    def test_unpublished_or_unavailable_feed_preserves_verified_short_lease(self):
+        self.assertTrue(self.peer.require()['allowed'])
+        self.transport.failure = OSError('offline')
+        for code in (404, 429, 503):
+            with self.subTest(status=code):
+                self.result = {'ok': False, 'http_status': code, 'reason': 'no_publication'}
+                with self.assertRaises(AppError):
+                    self.request()
+                self.assertTrue(self.client.require()['allowed'])
+                self.assertTrue(self.peer.require()['allowed'])
+
+    def test_inflight_permit_and_feed_denial_serialize_through_the_state_commit(self):
+        self.assertTrue(self.peer.require()['allowed'])
+        renewing = threading.Event()
+        allow_reply = threading.Event()
+        feed_waiting = threading.Event()
+        self.result = {'ok': False, 'http_status': 403}
+        original_lock = membership._file_lock
+
+        def delayed_permit(*_):
+            renewing.set()
+            if not allow_reply.wait(5):
+                raise TimeoutError('synthetic wait')
+            return auth_fixtures.decision(self.transport.clock)
+
+        @contextmanager
+        def observed_lock(path):
+            if path.name == 'request.lock' and renewing.is_set():
+                feed_waiting.set()
+            with original_lock(path):
+                yield
+
+        self.transport.permit_hook = delayed_permit
+        with patch.object(membership, '_file_lock', observed_lock), ThreadPoolExecutor(max_workers=2) as pool:
+            permit = pool.submit(self.peer.status, refresh=True)
+            try:
+                self.assertTrue(renewing.wait(3))
+                grant = pool.submit(self.request)
+                self.assertTrue(feed_waiting.wait(3))
+                self.assertEqual(self.calls, [])
+            finally:
+                allow_reply.set()
+            self.assertTrue(permit.result(3)['allowed'])
+            with self.assertRaises(AppError):
+                grant.result(3)
+        self.transport.failure = OSError('offline')
+        with self.assertRaises(AppError):
+            self.peer.require()
