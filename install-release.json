@@ -2,27 +2,32 @@
   "schema_version": 1,
   "status": "published",
   "app": "fagao-scan-workbench",
-  "app_version": "0.7.0-dev.11",
+  "app_version": "0.7.0-dev.12",
   "repository": "ShiQi-Han03/fagao-scan-workbench",
-  "source_commit": "d5413211ebfbe0eb6beaa883e45225f3a645683b",
-  "release_tag": "v0.7.0-dev.11",
-  "installer_url": "https://raw.githubusercontent.com/ShiQi-Han03/fagao-scan-workbench/d5413211ebfbe0eb6beaa883e45225f3a645683b/scripts/bootstrap.py",
-  "installer_sha256": "f9289d2d4557f2a943823768d71f6a9273d1dc82aaeba3a65c76a663eec41a52",
-  "source_archive_url": "https://codeload.github.com/ShiQi-Han03/fagao-scan-workbench/zip/d5413211ebfbe0eb6beaa883e45225f3a645683b",
-  "source_archive_sha256": "4c3ae3ae8683f6a20ab8e05ab23786e9232addd8b5b868f7fed9049492d6d2a2",
+  "source_commit": "0529ddd44b84b581cdf296fe4aa140edb2c9382f",
+  "release_tag": "v0.7.0-dev.12",
+  "installer_url": "https://raw.githubusercontent.com/ShiQi-Han03/fagao-scan-workbench/0529ddd44b84b581cdf296fe4aa140edb2c9382f/scripts/bootstrap.py",
+  "installer_sha256": "47c2bb1472f78006aa4a2f3262e30559843bd32af0161bfe05129a821f6b15c5",
+  "source_archive_url": "https://codeload.github.com/ShiQi-Han03/fagao-scan-workbench/zip/0529ddd44b84b581cdf296fe4aa140edb2c9382f",
+  "source_archive_sha256": "f6efbdc826a8dc0e493dc82feeec6ec672f8f23cc9e78a9a9d66c1dc3a858c00",
   "source_archive_sha256_purpose": "Required SHA-256 of the pinned source archive; bootstrap rejects missing or mismatched digests before extraction or installation.",
   "minimum_python": "3.10",
-  "verified_at": "2026-11-11T12:39:46.513162+00:00",
+  "verified_at": "2026-11-11T13:41:40.874898+00:00",
   "channel": "experimental",
   "verification": {
+    "security": {
+      "revocation_and_transport_cases": 6,
+      "source_notices_checked": 84,
+      "credential_scan_run_url": "https://github.com/ShiQi-Han03/fagao-scan-workbench/actions/runs/43031178955"
+    },
     "daily_boards": {
-      "source_tree": "52bb5fe8e8f76eca390f411ec2f0ffa124908a6f",
-      "backend_tests": 19,
+      "source_tree": "0f12313da45eb885581a4646aec72729a6604bf1",
+      "backend_tests": 22,
       "ui_checks": 13,
       "synthetic_ui": true,
       "external_ui_requests": 0
     },
-    "python_tests": 701,
+    "python_tests": 707,
     "membership_ui_checks": 46,
     "domestic_ui_checks": 146,
     "overseas_ui": "passed",
@@ -36,11 +41,11 @@
     ],
     "windows_install_tested": true,
     "windows_native_ci_tested": true,
-    "windows_ci_run_url": "https://github.com/ShiQi-Han03/fagao-scan-workbench/actions/runs/43022021050",
+    "windows_ci_run_url": "https://github.com/ShiQi-Han03/fagao-scan-workbench/actions/runs/43031178882",
     "windows_jobs": [
       {
         "python": "3.11.9",
-        "job_id": 130527286664,
+        "job_id": 130558323716,
         "native_checks": 14,
         "unit_tests": {
           "bootstrap-tests": {
@@ -52,11 +57,12 @@
             "skipped": 0
           },
           "daily-feed-tests": {
-            "ran": 19,
+            "ran": 22,
             "skipped": 0
           }
         },
         "required_workflow_steps": {
+          "Check first-party source notices": "success",
           "Installer and launcher regressions": "success",
           "Opening readers and bundled crypto regressions": "success",
           "Native install and real Job Object lifetimes": "success",
@@ -67,7 +73,7 @@
       },
       {
         "python": "3.12.10",
-        "job_id": 130527287259,
+        "job_id": 130558323339,
         "native_checks": 14,
         "unit_tests": {
           "bootstrap-tests": {
@@ -79,11 +85,12 @@
             "skipped": 0
           },
           "daily-feed-tests": {
-            "ran": 19,
+            "ran": 22,
             "skipped": 0
           }
         },
         "required_workflow_steps": {
+          "Check first-party source notices": "success",
           "Installer and launcher regressions": "success",
           "Opening readers and bundled crypto regressions": "success",
           "Native install and real Job Object lifetimes": "success",

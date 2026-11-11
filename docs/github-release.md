@@ -1,23 +1,25 @@
 # GitHub 发行回读记录
 
-版本：`0.7.0-dev.11`。发行仓库：[ShiQi-Han03/fagao-scan-workbench](https://github.com/ShiQi-Han03/fagao-scan-workbench)。原始来源为 hanyyyou/fagao-scan-workbench，原仓库未被本轮修改。
+版本：`0.7.0-dev.12`。发行仓库：[ShiQi-Han03/fagao-scan-workbench](https://github.com/ShiQi-Han03/fagao-scan-workbench)。原始来源为 hanyyyou/fagao-scan-workbench，原仓库未被本轮修改。
 
-固定源码：`d5413211ebfbe0eb6beaa883e45225f3a645683b`。macOS 下载核验时间：`2026-11-11T12:38:25.880005+00:00`；Windows CI 核验时间：`2026-11-11T12:39:46.513162+00:00`。安装时读取默认分支的 [install-release.json](../install-release.json)，源码归档中的旧指针不能替代当前发行指针。
+固定源码：`0529ddd44b84b581cdf296fe4aa140edb2c9382f`。macOS 下载核验时间：`2026-11-11T13:41:09.497788+00:00`；Windows CI 核验时间：`2026-11-11T13:41:40.874898+00:00`。安装时读取默认分支的 [install-release.json](../install-release.json)，源码归档中的旧指针不能替代当前发行指针。
 
-安装器：[固定源码安装器](https://raw.githubusercontent.com/ShiQi-Han03/fagao-scan-workbench/d5413211ebfbe0eb6beaa883e45225f3a645683b/scripts/bootstrap.py)，SHA-256：`f9289d2d4557f2a943823768d71f6a9273d1dc82aaeba3a65c76a663eec41a52`。
-源码归档：[固定源码 ZIP](https://codeload.github.com/ShiQi-Han03/fagao-scan-workbench/zip/d5413211ebfbe0eb6beaa883e45225f3a645683b)，SHA-256：`4c3ae3ae8683f6a20ab8e05ab23786e9232addd8b5b868f7fed9049492d6d2a2`。此哈希是安装器必填的强制校验值：缺失或不匹配时拒绝解压和安装。
+安装器：[固定源码安装器](https://raw.githubusercontent.com/ShiQi-Han03/fagao-scan-workbench/0529ddd44b84b581cdf296fe4aa140edb2c9382f/scripts/bootstrap.py)，SHA-256：`47c2bb1472f78006aa4a2f3262e30559843bd32af0161bfe05129a821f6b15c5`。
+源码归档：[固定源码 ZIP](https://codeload.github.com/ShiQi-Han03/fagao-scan-workbench/zip/0529ddd44b84b581cdf296fe4aa140edb2c9382f)，SHA-256：`f6efbdc826a8dc0e493dc82feeec6ec672f8f23cc9e78a9a9d66c1dc3a858c00`。此哈希是安装器必填的强制校验值：缺失或不匹配时拒绝解压和安装。
 
 ## 这一版的变化
 
-- 五个授权榜单的页面已移除“网文大数据”外跳链接。
-- 无已发布期次且本地没有快照时显示“本榜尚未发布”。
+- 官网明确拒绝授权后，同台电脑的工作台与命令行会在下次操作前重新核验。先前较晚返回的成功响应无法恢复已经收回的许可；临时断网仍沿用有效短许可。
+- 设备授权信息只发送给工作台配置的官网授权接口。
+- 项目加入只读的 GitHub 凭据扫描和统一的第一方源码维护声明。
 
 ## 已验证
 
-- macOS 匿名 raw 与 codeload 下载、固定提交全部 119 个文件核对、安装器归档强制校验、首次及重复安装、版本和目录身份、资料保留、未登录资料隔离与测试服务关闭，11 项通过。
-- 本地 Python 完整回归 701 项、会员 UI 46 项、国内 UI 146 项和海外 UI 专项通过；UI 外部平台请求为 0。
-- [Windows 原生 CI](https://github.com/ShiQi-Han03/fagao-scan-workbench/actions/runs/43022021050) 的 Python 3.11 和 3.12 两个 job 均成功，每个 job 的 14 项场景与冻结源码逐项一致，测试进程和隔离目录均已清理。
-- 冻结源码的导航与榜单界面专项通过 13 项；完整 Python 回归含 19 项五榜数据读取与授权检查。
+- macOS 匿名 raw 与 codeload 下载、固定提交全部 122 个文件核对、安装器归档强制校验、首次及重复安装、版本和目录身份、资料保留、未登录资料隔离与测试服务关闭，11 项通过。
+- 本地 Python 完整回归 707 项、会员 UI 46 项、国内 UI 146 项和海外 UI 专项通过；UI 外部平台请求为 0。
+- [Windows 原生 CI](https://github.com/ShiQi-Han03/fagao-scan-workbench/actions/runs/43031178882) 的 Python 3.11 和 3.12 两个 job 均成功，每个 job 的 14 项场景与冻结源码逐项一致，测试进程和隔离目录均已清理。
+- 冻结源码的导航与榜单界面专项通过 13 项；完整 Python 回归含 22 项五榜数据读取与授权检查。
+- 官网撤权、许可响应乱序、设备凭据传输等新增回归 6 项通过，84 个第一方源码和配置的声明通过检查。[提交历史和发行文件凭据扫描通过](https://github.com/ShiQi-Han03/fagao-scan-workbench/actions/runs/43031178955)。
 - Windows 场景实际覆盖中文及空格路径、独立命令后的存活、固定 `.bat` 入口、运行中升级及旧资料保留、允许与拒绝 Job Object 脱离、原生后台托管恢复。证书失败由夹具注入，随后真实调用系统 Schannel curl 下载并校验官方归档。
 
 | Windows Python | 原生检查 | 安装器测试：运行 / 跳过 | 启动器测试：运行 / 跳过 | 清理 |
