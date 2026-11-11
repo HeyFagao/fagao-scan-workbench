@@ -213,7 +213,8 @@ def ensure_running(data_dir: Path, port: int, timeout: float = 30) -> dict:
     return _ensure_running(data_dir, port, timeout)[0]
 
 
-def _ensure_running(data_dir: Path, port: int, timeout: float = 30, *, foreground: bool = False) -> tuple[dict, object | None]:
+def _ensure_running(data_dir: Path, port: int, timeout: float = 30, *, foreground: bool = False,
+                    submissions: bool = False) -> tuple[dict, object | None]:
     current = health(port)
     url = f"http://127.0.0.1:{port}/"
     if matching_health(current, data_dir):
@@ -267,7 +268,8 @@ def _ensure_running(data_dir: Path, port: int, timeout: float = 30, *, foregroun
         options = {"cwd": str(ROOT), "env": environment, "stdin": subprocess.DEVNULL}
         with log_path.open("ab") as log:
             process = spawn_service(
-                [sys.executable, "-m", "fagao.server", "--port", str(port), "--data-dir", str(data_dir)],
+                [sys.executable, "-m", "fagao.server", "--port", str(port), "--data-dir", str(data_dir)]
+                + (["--defer-network-probe"] if submissions else []),
                 {**options, "stdout": log, "stderr": subprocess.STDOUT}, data_dir, port,
                 foreground=foreground,
             )
@@ -298,9 +300,12 @@ def _ensure_running(data_dir: Path, port: int, timeout: float = 30, *, foregroun
         lock_path.unlink(missing_ok=True)
 
 
-def run_foreground(data_dir: Path, port: int, readiness: dict) -> int:
+def run_foreground(data_dir: Path, port: int, readiness: dict, *, submissions: bool = False) -> int:
     """Hold the service inside a native host background task; never detach it."""
-    result, process = _ensure_running(data_dir, port, foreground=True)
+    options = {"submissions": True} if submissions else {}
+    result, process = _ensure_running(data_dir, port, foreground=True, **options)
+    if submissions:
+        result["url"] = result["url"].rstrip("/") + "/submissions.html"
     readiness["network"] = result["network"]
     result.update(readiness=readiness, browser_opened=False)
     if process is None:
@@ -319,6 +324,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="启动或唤起发糕扫榜工作台")
     parser.add_argument("--data-dir", type=Path, default=default_data_dir())
     parser.add_argument("--port", type=int, default=18376)
+    parser.add_argument("--submissions", action="store_true", help="打开本地小说投稿，无需连接官网")
     parser.add_argument("--no-browser", action="store_true", help="只启动服务，不自动打开浏览器")
     parser.add_argument("--check", action="store_true", help="只检查本地依赖和必要文件，不启动服务或浏览器")
     parser.add_argument("--foreground", action="store_true", help="由宿主后台任务管理服务，保持当前命令运行，不自动打开浏览器")
@@ -333,8 +339,14 @@ def main() -> int:
             emit_json({"status": "checked", "readiness": readiness})
             return 0
         if args.foreground:
+            if args.submissions:
+                return run_foreground(args.data_dir.expanduser().resolve(), args.port, readiness, submissions=True)
             return run_foreground(args.data_dir.expanduser().resolve(), args.port, readiness)
-        result = ensure_running(args.data_dir.expanduser().resolve(), args.port)
+        if args.submissions:
+            result, _ = _ensure_running(args.data_dir.expanduser().resolve(), args.port, submissions=True)
+            result["url"] = result["url"].rstrip("/") + "/submissions.html"
+        else:
+            result = ensure_running(args.data_dir.expanduser().resolve(), args.port)
         readiness["network"] = result["network"]
         result["readiness"] = readiness
         result["browser_opened"] = False if args.no_browser else bool(webbrowser.open(result["url"], new=2))
@@ -343,6 +355,9 @@ def main() -> int:
             print("工作台已经运行，浏览器未能自动打开。请访问：" + result["url"], file=sys.stderr)
         return 0
     except NativeBackgroundRequired as error:
+        if args.submissions:
+            error.result["action"]["argv"].append("--submissions")
+            error.result["url"] = error.result["url"].rstrip("/") + "/submissions.html"
         emit_json({**error.result, "readiness": readiness})
         return 3
     except (OSError, RuntimeError) as error:

@@ -20,6 +20,10 @@ from .store import AppError, Store, now, PLATFORMS
 
 WEB = Path(__file__).resolve().parent.parent / 'web'
 MAX_BODY = 30 * 1024 * 1024
+SUBMISSION_GET = frozenset(('/api/submissions/drafts', '/api/submissions/draft',
+                            '/api/submissions/component'))
+SUBMISSION_POST = frozenset(('/api/submissions/save', '/api/submissions/delete',
+                             '/api/submissions/open'))
 
 AUTO_FRESH_SECONDS = 15 * 60
 AUTO_FAILURE_COOLDOWN_SECONDS = 5 * 60
@@ -707,22 +711,37 @@ class Handler(BaseHTTPRequestHandler):
         try:
             path=urlsplit(self.path).path
             callback=(not write and path=='/auth/callback' and self.server.runtime is not None)
-            navigation=(not write and path in ('/','/index.html')
+            navigation=(not write and path in ('/','/index.html','/submissions.html')
                         and self.headers.get('Sec-Fetch-Mode')=='navigate'
                         and self.headers.get('Sec-Fetch-Dest')=='document')
             self._guard(write,callback=callback,navigation=navigation)
             if callback:
                 self._authorization_callback()
                 return
+            submission_route = path in (SUBMISSION_POST if write else SUBMISSION_GET)
+            if submission_route:
+                # Require a non-simple request even for reads of local manuscripts.
+                # Requests from a different loopback port/origin cannot share this entry.
+                origin = self.headers.get('Origin')
+                if (self.headers.get_all('X-Fagao-Request', []) != ['1']
+                        or len(self.headers.get_all('Host', [])) != 1
+                        or len(self.headers.get_all('Origin', [])) > 1
+                        or (origin is not None and origin != 'http://' + self.headers['Host'])
+                        or self.headers.get('Sec-Fetch-Site') not in (None, 'none', 'same-origin')):
+                    raise AppError('submission_origin', '请在本机工作台中打开投稿。', 403)
             data={}
             if write:
                 if self.headers.get('Content-Type','').split(';')[0]!='application/json': raise AppError('invalid_content_type','需要 JSON 请求。',415)
                 try: length=int(self.headers.get('Content-Length','0'))
                 except ValueError: raise AppError('invalid_length','请求长度不正确。')
-                if length<0 or length>MAX_BODY: raise AppError('too_large','请求文件过大。',413)
+                if length<0 or length>(1024 * 1024 if submission_route else MAX_BODY):
+                    raise AppError('too_large','请求文件过大。',413)
                 try: data=json.loads(self.rfile.read(length))
                 except (ValueError,UnicodeDecodeError): raise AppError('invalid_json','JSON 格式无效。')
                 if not isinstance(data,dict): raise AppError('invalid_body','请求必须是对象。')
+            if submission_route:
+                self._send(200, self._submission_action(path, data))
+                return
             if self.server.runtime is not None and (
                     not write and path=='/api/legacy-data/status' or
                     write and path in ('/api/legacy-data/claim','/api/legacy-data/skip')):
@@ -756,6 +775,32 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self._send(500,{'error':{'code':'internal_error','message':'处理未完成，请重试或查看诊断。'}})
                 import traceback; traceback.print_exc()
+
+    def _submission_action(self, path, data):
+        from .submissions import SubmissionDrafts, invalid
+        drafts = SubmissionDrafts(self.server.directory)
+        query = urlsplit(self.path).query
+        if path == '/api/submissions/draft':
+            try:
+                params = parse_qs(query, keep_blank_values=True, strict_parsing=True, max_num_fields=1)
+            except ValueError as exc:
+                raise invalid('草稿编号不正确。') from exc
+            if set(params) != {'id'} or len(params['id']) != 1:
+                raise invalid('草稿编号不正确。')
+            return {'draft': drafts.read({'id': params['id'][0]})}
+        if query:
+            raise invalid()
+        if path == '/api/submissions/drafts':
+            return {'drafts': drafts.summaries()}
+        if path == '/api/submissions/save':
+            return {'draft': drafts.save(data)}
+        if path == '/api/submissions/delete':
+            drafts.delete(data)
+            return {'deleted': True}
+        if path == '/api/submissions/open':
+            return drafts.handoff(data)
+        from .submission_component import component_status
+        return component_status(self.server.directory)
 
     @property
     def _store(self):
@@ -927,12 +972,15 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     parser=argparse.ArgumentParser(description='发糕扫榜本地服务')
     parser.add_argument('--port',type=int,default=18376); parser.add_argument('--data-dir')
+    parser.add_argument('--defer-network-probe',action='store_true',
+                        help='直接打开本机投稿时无需联系榜单来源。')
     args=parser.parse_args()
     from .runtime import WorkbenchRuntime
     runtime=WorkbenchRuntime(args.data_dir,recover_jobs=True)
     network.configure(runtime.root_dir)
     server=WorkbenchServer(('127.0.0.1',args.port),runtime=runtime)
-    server.start_network_probe()
+    if not args.defer_network_probe:
+        server.start_network_probe()
     print(f'发糕扫榜已启动：http://127.0.0.1:{server.server_address[1]}',flush=True)
     try: server.serve_forever()
     except KeyboardInterrupt: pass

@@ -1,0 +1,94 @@
+<!doctype html>
+<!-- 发糕团队维护声明。会员的支持让这个小团队能够支付服务器费用，继续为写作者维护榜单。请勿伪造会员凭据或制作、传播绕过订阅校验的版本。侵权责任依适用法律认定，法定例外与许可说明见 docs/ai-maintenance-boundary.md。 -->
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>小说投稿 · 发糕写作</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <script src="/theme.js"></script>
+  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/submissions.css">
+  <script src="/submissions.js" defer></script>
+</head>
+<body class="submission-page">
+  <a class="skip-link" href="#main">跳转到草稿编辑</a>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="发糕扫榜工作台首页">
+      <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 32 32" fill="none"><path d="M7 14h18v11H7z" fill="currentColor" opacity=".16"/><path d="M6 15c0-2 2-3 4-3s3 2 6 2 4-2 6-2 4 1 4 3v3c-2 2-4 2-6 0-2 2-5 2-7 0-2 2-5 2-7 0v-3Z" fill="currentColor"/><path d="M8 20v6h16v-6M5 27h22M16 12V8" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><path d="M16 3c-3 3-2 5 0 5s3-2 0-5Z" fill="currentColor"/></svg></span>
+      <span><strong>发糕写作</strong><small>小说投稿</small></span>
+    </a>
+    <div class="top-links">
+      <details id="appearance-picker" class="appearance-picker">
+        <summary class="appearance-trigger" aria-label="外观，当前跟随系统" aria-expanded="false" aria-controls="appearance-panel">
+          <svg class="appearance-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="8" stroke="currentColor" stroke-width="1.6"/><path d="M12 4a8 8 0 0 1 0 16V4Z" fill="currentColor"/></svg>
+          <span>外观</span>
+        </summary>
+        <div id="appearance-panel" class="appearance-panel" role="group" aria-label="外观主题">
+          <label class="appearance-choice" data-theme-choice="light"><input type="radio" name="fagao-appearance" value="light"><span class="appearance-swatch" data-theme-preview="light" aria-hidden="true"></span><span class="appearance-label">浅色</span><span class="appearance-check" aria-hidden="true">✓</span></label>
+          <label class="appearance-choice" data-theme-choice="eye-care"><input type="radio" name="fagao-appearance" value="eye-care"><span class="appearance-swatch" data-theme-preview="eye-care" aria-hidden="true"></span><span class="appearance-label">护眼</span><span class="appearance-check" aria-hidden="true">✓</span></label>
+          <label class="appearance-choice" data-theme-choice="dark"><input type="radio" name="fagao-appearance" value="dark"><span class="appearance-swatch" data-theme-preview="dark" aria-hidden="true"></span><span class="appearance-label">深色</span><span class="appearance-check" aria-hidden="true">✓</span></label>
+          <label class="appearance-choice" data-theme-choice="system"><input type="radio" name="fagao-appearance" value="system" checked><span class="appearance-swatch" data-theme-preview="system" aria-hidden="true"></span><span class="appearance-label">跟随系统</span><span class="appearance-check" aria-hidden="true">✓</span></label>
+          <p class="appearance-hint">在当前浏览器记住你的选择</p>
+        </div>
+      </details>
+      <a class="button secondary" href="/" data-return>返回扫榜工作台</a>
+    </div>
+  </header>
+  <main class="submission-workspace" id="main" tabindex="-1">
+    <header class="submission-heading">
+      <div>
+        <h1>小说投稿</h1>
+        <p>在本机写好投稿信，再选编辑、加附件。</p>
+      </div>
+      <button type="button" id="open-assistant" class="button secondary" title="查看编辑、投稿记录和回信" aria-describedby="assistant-hint" disabled>打开投稿助手 <span aria-hidden="true">↗</span></button>
+    </header>
+    <p id="assistant-hint" class="assistant-hint" hidden></p>
+    <div id="submission-notice" class="submission-notice" role="alert" hidden>
+      <span id="notice-message"></span>
+      <div id="conflict-actions" hidden>
+        <button class="button small secondary" id="save-copy" type="button">另存为新草稿</button>
+        <button class="button small secondary" id="load-latest" type="button">读取最新版本</button>
+      </div>
+      <button class="button small secondary" id="retry-loading" type="button" hidden>重试</button>
+    </div>
+    <div class="submission-columns">
+      <aside class="draft-shelf" aria-labelledby="shelf-label">
+        <div class="shelf-heading">
+          <h2 id="shelf-label">我的草稿</h2>
+          <button type="button" id="new-draft" class="button small secondary" disabled><span aria-hidden="true">＋</span> 新建</button>
+        </div>
+        <nav id="draft-list" aria-labelledby="shelf-label"></nav>
+        <p id="shelf-empty" class="shelf-empty">正在读取草稿…</p>
+      </aside>
+      <form class="draft-editor" id="draft-form" autocomplete="off">
+        <div class="editor-heading">
+          <h2 id="editor-title">写投稿信</h2>
+          <span id="draft-status" role="status" aria-live="polite"></span>
+        </div>
+        <fieldset id="draft-fields" disabled>
+          <legend class="visually-hidden">投稿草稿内容</legend>
+          <div class="draft-identities">
+            <label for="work-title">作品名<input id="work-title" name="work_title" maxlength="300" placeholder="作品名称" autocomplete="off"></label>
+            <label for="pen-name">笔名<input id="pen-name" name="pen_name" maxlength="100" placeholder="你的笔名" autocomplete="off"></label>
+          </div>
+          <label for="mail-subject">邮件主题<input id="mail-subject" name="subject" maxlength="500" placeholder="编辑在收件箱中看到的标题"></label>
+          <label for="mail-body">投稿信<textarea id="mail-body" name="body" maxlength="200000" rows="10" placeholder="向编辑介绍你的作品…"></textarea></label>
+        </fieldset>
+        <div class="editor-actions">
+          <div class="draft-secondary-actions">
+            <button type="button" id="delete-draft" class="quiet-button delete-draft" hidden>删除草稿</button>
+            <button type="button" id="restore-draft" class="quiet-button" hidden>还原修改</button>
+          </div>
+          <div class="save-actions">
+            <button type="submit" id="save-draft" class="button secondary" disabled>保存草稿</button>
+            <button type="button" id="open-draft" class="button primary" disabled>带入投稿助手 <span aria-hidden="true">→</span></button>
+          </div>
+        </div>
+        <p id="editor-feedback" role="status" aria-live="polite" class="editor-feedback"></p>
+      </form>
+    </div>
+  </main>
+</body>
+</html>
