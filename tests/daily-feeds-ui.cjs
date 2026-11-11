@@ -10,7 +10,6 @@ const {JSDOM, VirtualConsole} = require(process.env.FAGAO_QA_NODE_MODULES
   ? path.join(process.env.FAGAO_QA_NODE_MODULES, 'jsdom') : 'jsdom');
 const web = path.resolve(__dirname, '../web');
 const origin = 'http://127.0.0.1:18376';
-const entry = '[data-section="daily-boards"]';
 const boardButton = id => `[data-action="daily-board"][data-board="${id}"]`;
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 function deferred() {
@@ -60,6 +59,15 @@ async function fixture(t, active, onFeed) {
   const w = dom.window;
   const d = w.document;
   const ctx = {membership: membership('member-a', active), calls: [], d, content: () => d.querySelector('#content').textContent};
+  const state = {
+    active_mode: 'long',
+    views: {long: {platform: 'fanqie'}, short: {platform: 'heiyan'}},
+    platforms: [
+      {id: 'fanqie', name: '番茄小说', mode: 'long'},
+      {id: 'heiyan', name: '黑岩故事会', mode: 'short', status: 'external'},
+      {id: 'fanqie_short', name: '番茄短故事', mode: 'short', status: 'unavailable'},
+    ],
+  };
   w.HTMLDialogElement.prototype.close = function () {this.open = false;};
   w.HTMLDialogElement.prototype.showModal = function () {this.open = true;};
   w.fetch = async (input, init = {}) => {
@@ -68,7 +76,13 @@ async function fixture(t, active, onFeed) {
       assert.equal(target, origin, 'The client must not send the account binding to an external site.');
       if (pathname === '/api/membership/status' || pathname === '/api/membership/refresh') return response(ctx.membership);
       if (pathname === '/api/legacy-data/status') return response({available: false, decision_required: false, can_claim: false, can_skip: true, original_preserved: true, counts: {}});
-      if (pathname === '/api/state') return response({active_mode: 'long', views: {long: {platform: 'fanqie'}}, platforms: []});
+      if (pathname === '/api/state') return response(state);
+      if (pathname === '/api/view') {
+        const update = JSON.parse(init.body);
+        state.active_mode = update.mode;
+        state.views[update.mode] = {...state.views[update.mode], ...update};
+        return response(state);
+      }
       if (pathname === '/api/overview') return response({platforms: []});
       if (pathname === '/api/overview/refresh') return response({status: 'fresh', retry_after_seconds: 900});
       assert(['/api/daily-boards', '/api/daily-boards/sync'].includes(pathname), 'Unexpected request to ' + pathname);
@@ -98,20 +112,78 @@ async function fixture(t, active, onFeed) {
   ctx.click = selector => {
     const element = d.querySelector(selector);
     assert(element, 'Missing control ' + selector);
+    assert(!element.closest('[hidden]'), 'Hidden control ' + selector);
     element.click();
+  };
+  ctx.openBoard = async id => {
+    if (['zhihu', 'fanqie_story'].includes(id) && !d.querySelector('#platforms ' + boardButton(id))) {
+      ctx.click('[data-action="mode"][data-mode="short"]');
+      await eventually(() => d.querySelector('#platforms ' + boardButton(id)), 'Short story platform list missing');
+    }
+    const selected = d.querySelector(boardButton(id));
+    if (!selected.matches('[aria-current="true"],[aria-current="page"],[aria-pressed="true"]')) {
+      ctx.click(boardButton(id));
+    }
   };
   return ctx;
 }
 
-test('opening shows the account cache before updating and offers all five boards', async t => {
+test('short stories and drama have distinct sidebar groups with one entry per source', async t => {
+  const ctx = await fixture(t, false, ({board}) => response(payload(board, '保存的' + board)));
+  const d = ctx.d;
+  assert.equal(d.querySelector('[data-section="daily-boards"]'), null);
+  assert(!d.querySelector('.sidebar').textContent.includes('行业榜单'));
+  const drama = d.querySelector('#drama-platforms');
+  assert(drama && !drama.closest('[hidden]'));
+  assert.equal(drama.parentElement.querySelector('h2').textContent.trim(), '漫剧');
+  const follows = d.defaultView.Node.DOCUMENT_POSITION_FOLLOWING;
+  assert(d.querySelector('.overseas-navigation').compareDocumentPosition(drama) & follows);
+  assert(drama.compareDocumentPosition(d.querySelector('.personal-nav')) & follows);
+  assert.deepEqual([...drama.querySelectorAll('button')].map(el => el.dataset.board), ['douyin', 'hongguo', 'adapt']);
+  assert.equal(d.querySelector('#platforms ' + boardButton('zhihu')), null);
+
+  ctx.click('[data-action="mode"][data-mode="short"]');
+  await eventually(() => ctx.content().includes('保存的fanqie_story'), 'Short mode did not open the current Fanqie board');
+  const shorts = d.querySelector('#platforms');
+  const sources = [...shorts.querySelectorAll('button')];
+  assert.deepEqual(sources.map(el => el.dataset.board || el.dataset.platform), ['zhihu', 'fanqie_story', 'heiyan']);
+  ['知乎短篇', '番茄短故事', '黑岩故事会'].forEach((label, i) => assert(sources[i].textContent.includes(label)));
+  assert(!shorts.textContent.includes('待接入'));
+  for (const id of ['zhihu', 'fanqie_story', 'douyin', 'hongguo', 'adapt']) {
+    assert.equal(d.querySelectorAll(boardButton(id)).length, 1, 'Duplicate board control ' + id);
+  }
+  assert.equal(d.querySelector('#content h1').textContent, '番茄短故事');
+  assert.equal(d.querySelector('#content [data-action="daily-board"]'), null);
+  assert.equal(shorts.querySelector(boardButton('fanqie_story')).getAttribute('aria-current'), 'true');
+});
+
+test('switching between a short story, drama, and favorites clears the previous selection', async t => {
+  const ctx = await fixture(t, false, ({board}) => response(payload(board, '作品-' + board)));
+  const {d} = ctx;
+  await ctx.openBoard('zhihu');
+  await eventually(() => ctx.content().includes('作品-zhihu'), 'Short story feed missing');
+  await ctx.openBoard('adapt');
+  await eventually(() => ctx.content().includes('作品-adapt'), 'Adaptation feed missing');
+  assert.equal(d.querySelector('#content h1').textContent, '小说改编漫剧榜');
+  assert.deepEqual([...d.querySelectorAll('.sidebar [data-action="daily-board"][aria-current="true"]')].map(e => e.dataset.board), ['adapt']);
+  ctx.click('[data-section="favorites"]');
+  await eventually(() => d.querySelector('#content h1')?.textContent === '我的收藏', 'Favorites did not open');
+  assert.equal(d.querySelector('.sidebar [data-action="daily-board"][aria-current="true"]'), null);
+  ctx.click('[data-action="mode"][data-mode="short"]');
+  await eventually(() => ctx.content().includes('作品-zhihu'), 'Returning to short stories lost the chosen source');
+  ctx.click('#platforms [data-platform="heiyan"]');
+  await eventually(() => d.querySelector('#heiyan-booklist'), 'Heiyan no longer opens its original source');
+  assert.equal(d.querySelector('.sidebar [data-action="daily-board"][aria-current="true"]'), null);
+});
+
+test('opening a drama board directly shows the account cache before updating', async t => {
   const pending = deferred();
   const ctx = await fixture(t, true, async ({board, method}) => method === 'GET'
     ? response(payload(board, '已存作品')) : pending.promise);
   assert.deepEqual(ctx.calls, []);
-  ctx.click(entry);
+  await ctx.openBoard('douyin');
   await eventually(() => ctx.calls.length === 2 && ctx.content().includes('已存作品'), 'No cache while syncing');
   assert.deepEqual(ctx.calls.map(({method, board}) => [method, board]), [['GET', 'douyin'], ['POST', 'douyin']]);
-  for (const id of ['douyin', 'hongguo', 'zhihu', 'fanqie_story', 'adapt']) assert(ctx.d.querySelector(boardButton(id)), id);
   pending.resolve(response(payload('douyin', '刚发布的作品')));
   await eventually(() => ctx.content().includes('刚发布的作品'), 'New snapshot was not displayed');
   assert(!ctx.content().includes('已存作品'));
@@ -121,7 +193,7 @@ test('pagination keeps source ranks, literal titles, units, and source/observati
   const unsafeTitle = '<img data-injected="yes" src="x">';
   const rows = Array.from({length: 52}, (_, i) => [String(11 + 4 * i), i === 0 ? unsafeTitle : `样本-${i}`, '3.6亿']);
   const ctx = await fixture(t, true, ({board}) => response(payload(board, '', {rows})));
-  ctx.click(entry);
+  await ctx.openBoard('douyin');
   await eventually(() => ctx.d.querySelectorAll('#content tbody tr').length === 50, 'Expected first 50 rows');
   const cells = () => [...ctx.d.querySelector('#content tbody tr').querySelectorAll('td')].map(cell => cell.textContent);
   assert.deepEqual(cells(), ['11', unsafeTitle, '3.6亿']);
@@ -138,7 +210,7 @@ test('local filtering retains the source rank given to each result', async t => 
     columns: ['排名', '剧名', '视频类型'],
     rows: [['11', '未来之城', '3D动态漫'], ['24', '海边来信', 'AI真人演绎剧'], ['39', '古城来信', '3D动态漫']],
   })));
-  ctx.click(entry);
+  await ctx.openBoard('douyin');
   await eventually(() => ctx.d.querySelector('#daily-query') && ctx.d.querySelectorAll('#content tbody tr').length === 3,
     'Missing filter for loaded board');
   const search = ctx.d.querySelector('#daily-query');
@@ -156,27 +228,27 @@ test('local filtering retains the source rank given to each result', async t => 
 
 test('expired members can switch saved boards without sending a sync', async t => {
   const ctx = await fixture(t, false, ({board}) => response(payload(board, board + '-历史')));
-  ctx.click(entry);
+  await ctx.openBoard('douyin');
   await eventually(() => ctx.content().includes('douyin-历史'), 'Read-only account cannot read saved board');
-  ctx.click(boardButton('zhihu'));
+  await ctx.openBoard('zhihu');
   await eventually(() => ctx.content().includes('zhihu-历史'), 'Saved short story board did not open');
   const refresh = ctx.d.querySelector('[data-action="daily-refresh"]');
   if (refresh) {assert(refresh.disabled || refresh.hidden);refresh.click();}
-  assert.deepEqual(ctx.calls.map(({method, board}) => [method, board]), [['GET', 'douyin'], ['GET', 'zhihu']]);
+  assert.deepEqual(ctx.calls.map(({method, board}) => [method, board]), [['GET', 'douyin'], ['GET', 'fanqie_story'], ['GET', 'zhihu']]);
 });
 
 test('sync failure leaves the cached snapshot and exposes a recovery status', async t => {
   const ctx = await fixture(t, true, ({method, board}) => method === 'GET'
     ? response(payload(board, '最后一份可读资料'))
     : response({error: {code: 'feed_unavailable', message: '暂时无法读取榜单。'}}, 503));
-  ctx.click(entry);
+  await ctx.openBoard('douyin');
   await eventually(() => ctx.calls.length === 2 && ctx.content().includes('最后一份可读资料')
     && /暂时无法|上次|未更新|缓存|已保存/.test(ctx.content()), 'No cached fallback status');
 });
 
 test('a board with no published or cached snapshot shows an empty state', async t => {
   const ctx = await fixture(t, false, ({board}) => response({board, status: 'empty', snapshot: null}));
-  ctx.click(entry);
+  await ctx.openBoard('douyin');
   await eventually(() => ctx.calls.length === 1 && /还没有|暂无|尚无|尚未/.test(ctx.content()), 'Missing empty state');
   assert.equal(ctx.d.querySelector('#content tbody tr'), null);
   assert(!ctx.calls.some(call => call.method === 'POST'));
@@ -186,9 +258,9 @@ test('a late sync for the previous board cannot replace the current table', asyn
   const pending = deferred();
   const ctx = await fixture(t, true, ({method, board}) => method === 'POST' && board === 'douyin'
     ? pending.promise : response(payload(board, '作品-' + board)));
-  ctx.click(entry);
+  await ctx.openBoard('douyin');
   await eventually(() => ctx.calls.some(c => c.board === 'douyin' && c.method === 'POST'), 'No initial sync request');
-  ctx.click(boardButton('hongguo'));
+  await ctx.openBoard('hongguo');
   await eventually(() => ctx.content().includes('作品-hongguo'), 'Current board did not load');
   pending.resolve(response(payload('douyin', '迟到的抖音作品')));
   await pause(15);
@@ -200,12 +272,12 @@ test('account switching drops previous board state even if the old transport ign
   const pending = deferred();
   const ctx = await fixture(t, true, ({method, account, board}) => account === 'member-a' && method === 'POST'
     ? pending.promise : response(payload(board, account + '专属历史')));
-  ctx.click(entry);
+  await ctx.openBoard('douyin');
   await eventually(() => ctx.calls.some(c => c.account === 'member-a' && c.method === 'POST'), 'Initial sync missing');
   ctx.membership = membership('member-b');
   ctx.click('[data-action="membership-refresh"]');
   await eventually(() => ctx.d.querySelector('.overview-tabs'), 'New account did not reset old view');
-  ctx.click(entry);
+  await ctx.openBoard('douyin');
   await eventually(() => ctx.content().includes('member-b专属历史'), 'New account data missing');
   pending.resolve(response(payload('douyin', '旧账号迟到资料')));
   await pause(15);
@@ -224,7 +296,7 @@ test('switching to an older revision makes an account-bound history read only', 
       {revision: oldRevision, source_date: '2026-11-07', observed_at: '2026-11-07T06:00:00Z', row_count: 1}];
     return response(result);
   });
-  ctx.click(entry);
+  await ctx.openBoard('douyin');
   await eventually(() => ctx.content().includes('最近版本作品'), 'Current saved edition unavailable');
   const select = ctx.d.querySelector('#daily-history');
   assert(select && [...select.options].some(option => option.value === oldRevision), 'Historical edition not selectable');

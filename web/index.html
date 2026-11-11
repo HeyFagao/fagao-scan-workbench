@@ -38,10 +38,7 @@
   </header>
   <div class="shell">
     <aside class="sidebar" aria-label="工作台导航">
-      <nav class="board-navigation" aria-label="榜单总览">
-        <button class="home-navigation" data-action="section" data-section="overview" aria-current="true"><span class="nav-icon" aria-hidden="true">▦</span>数据总览</button>
-        <button class="home-navigation" data-action="section" data-section="daily-boards" aria-current="false"><span class="nav-icon" aria-hidden="true">▥</span>行业榜单</button>
-      </nav>
+      <button class="home-navigation" data-action="section" data-section="overview" aria-current="true"><span class="nav-icon" aria-hidden="true">▦</span>数据总览</button>
       <div class="sidebar-label">按平台浏览</div>
       <div class="mode-switch" aria-label="作品类型">
         <button data-action="mode" data-mode="long" aria-pressed="true">长篇</button>
@@ -52,6 +49,10 @@
         <button id="overseas-navigation" class="overseas-heading" data-action="mode" data-mode="overseas" aria-pressed="false" aria-expanded="false" aria-controls="overseas-platforms"><span class="nav-icon globe-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="12" cy="12" r="9"/><ellipse cx="12" cy="12" rx="4" ry="9"/><path d="M3 12h18M5 7h14M5 17h14"/></svg></span><span>海外网文</span><span class="navigation-chevron" aria-hidden="true">›</span></button>
         <nav id="overseas-platforms" class="platforms overseas-platforms" aria-label="海外作品平台" hidden></nav>
       </section>
+      <div class="drama-navigation">
+        <h2 class="drama-label" id="drama-label">漫剧</h2>
+        <nav id="drama-platforms" class="platforms drama-platforms" aria-labelledby="drama-label"></nav>
+      </div>
       <nav class="personal-nav" aria-label="我的资料">
         <button data-action="section" data-section="favorites"><span class="nav-icon" aria-hidden="true">♡</span>我的收藏<span class="count" id="favorite-count">0</span></button>
         <button data-action="section" data-section="history"><span class="nav-icon" aria-hidden="true">◷</span>最近记录</button>

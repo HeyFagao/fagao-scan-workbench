@@ -27,12 +27,10 @@
   const HEIYAN_BOOKLIST='https://docs.qq.com/sheet/DYVNwaVJZV2ZxTWl3?tab=q1ans7';
   let searchTimer, activeRequest = false, savedOptions = {}, pendingSnapshotImport = null;
   const AUTO_TTL = 15 * 60 * 1000;
-  const dailyBoardGroups = [
-    ['剧集热榜', [['douyin', '抖音漫剧日榜'], ['hongguo', '红果热播榜']]],
-    ['短篇小说', [['zhihu', '知乎短篇'], ['fanqie_story', '番茄短故事']]],
-    ['小说改编', [['adapt', '小说改编漫剧榜']]]
-  ];
-  const dailyBoardLabels = new Map(dailyBoardGroups.flatMap(([, entries]) => entries));
+  const shortBoards = [['zhihu','知乎短篇'], ['fanqie_story','番茄短故事']];
+  const dramaBoards = [['douyin','抖音漫剧日榜'], ['hongguo','红果热播榜'], ['adapt','小说改编漫剧榜']];
+  const dailyBoardLabels = new Map([...shortBoards, ...dramaBoards]);
+  let lastShortEntry = 'fanqie_story';
   const dailyPageSize = 50;
   const dailyNextCheck = new Map();
   const newDailyView = board => ({board, revision: '', history: [], snapshot: null, page: 1, query: '', videoType: '', busy: false, error: ''});
@@ -102,7 +100,7 @@
     state=null;snapshot=null;pendingText=null;pendingSnapshotImport=null;contentPanel=null;
     saving=Promise.resolve();pendingViewMutations=0;activeRequest=false;loadingMore=false;
     overview=null;overviewLoading=false;overviewError='';overviewRefreshing=false;overviewNextAt=0;overviewPollKey='';
-    section='overview';domesticMode='long';overviewPlatform='fanqie';overviewChannel='全部';dashboardCategoryMetric='primary_median';
+    section='overview';domesticMode='long';lastShortEntry='fanqie_story';overviewPlatform='fanqie';overviewChannel='全部';dashboardCategoryMetric='primary_median';
     listWindow={key:'',count:20};lastListScrollAt=0;
     nextAutoAt.clear();autoMessages.clear();latestResults.clear();snapshotJobs.clear();
     historyViews={};savedOptions={};storageAccount=null;
@@ -110,7 +108,7 @@
     $('#bridge').replaceChildren();$('#content').replaceChildren();$('#content').classList.remove('overseas-content');
     $('#dialog').close();$('#dialog-body').replaceChildren();$('#dialog').dataset.kind='';$('#dialog').dataset.snapshot='';
     $('#notice').hidden=true;$('#notice').replaceChildren();$('#toast').hidden=true;$('#toast').textContent='';
-    $('#platforms').replaceChildren();$('#overseas-platforms').replaceChildren();$('#overseas-platforms').hidden=true;
+    $('#platforms').replaceChildren();$('#drama-platforms').replaceChildren();$('#overseas-platforms').replaceChildren();$('#overseas-platforms').hidden=true;
     $('#favorite-count').textContent='0';$('#report-count').textContent='0';$('#snapshot-file').value='';$('#text-file').value='';
     $('#main-site').href=MEMBER_SITE;$('#points-entry').innerHTML='<button class="soon" disabled>积分站 <span>即将上线</span></button>';
   }
@@ -435,6 +433,7 @@
   function acceptState(next) {
     if(!readable())return;
     if (next?.views) {
+      if(!state && next.active_mode === 'short')domesticMode='short';
       const retained=(state?.jobs || []).filter(job=>(['queued','running','pending','cancelling'].includes(job.status) || job.paused_for_demand) && !(next.jobs || []).some(item=>item.id===job.id));
       state=next;state.jobs=[...(next.jobs || []),...retained];
     }
@@ -499,14 +498,35 @@
     if (filters.sort === 'rank' || filters.sort === 'rank_asc') result.sort((a,b) => (a.rank ?? Infinity)-(b.rank ?? Infinity));
     return result;
   }
+  function setPlatformButtons(nav, html) {
+    if(nav.innerHTML === html)return;
+    const focused = nav.contains(document.activeElement) ? document.activeElement : null;
+    nav.innerHTML = html;
+    if(focused?.tagName === 'BUTTON'){
+      const match = [...nav.children].find(button => button.dataset.action === focused.dataset.action
+        && button.dataset.board === focused.dataset.board && button.dataset.platform === focused.dataset.platform);
+      match?.focus({preventScroll:true});
+    }
+  }
   function renderNavigation() {
-    if(mode()!=='overseas')domesticMode=mode();
-    document.querySelectorAll('[data-action="mode"]').forEach((el) => el.setAttribute('aria-pressed',String(el.dataset.mode === mode())));
-    const platformButton=p=>`<button class="platform-button" data-action="platform" data-platform="${escape(p.id)}" aria-current="${section === 'browse' && platformID() === p.id}"><span class="platform-mark">${escape((p.name || '')[0])}</span><span class="platform-name">${escape(p.name)}${['planned','unavailable','pending'].includes(p.status) ? '<small>待接入 · 支持导入</small>' : ''}</span></button>`;
-    $('#platforms').innerHTML = platforms().filter(p=>p.mode===domesticMode).map(platformButton).join('');
-    const overseasActive=mode()==='overseas';
+    const feedOpen = section === 'daily-boards';
+    if(section === 'browse' && mode() !== 'overseas')domesticMode = mode();
+    const overseasActive = !feedOpen && mode() === 'overseas';
+    const shownMode = overseasActive ? 'overseas' : domesticMode;
+    document.querySelectorAll('[data-action="mode"]').forEach(button => {
+      button.setAttribute('aria-pressed', String(button.dataset.mode === shownMode));
+    });
+    const platformButton = p => `<button class="platform-button" data-action="platform" data-platform="${escape(p.id)}" aria-current="${section === 'browse' && platformID() === p.id}"><span class="platform-mark" aria-hidden="true">${escape((p.name || '')[0])}</span><span class="platform-name">${escape(p.name)}${['planned','unavailable','pending'].includes(p.status) ? '<small>待接入 · 支持导入</small>' : ''}</span></button>`;
+    const boardButton = ([id, label]) => {
+      const selected = feedOpen ? dailyView.board === id : section === 'browse' && platformID() === 'fanqie_short' && id === 'fanqie_story';
+      return `<button class="platform-button" data-action="daily-board" data-board="${id}" aria-current="${selected}"><span class="platform-mark" aria-hidden="true">${escape(label[0])}</span><span class="platform-name">${escape(label)}</span></button>`;
+    };
+    const registered = platforms().filter(p => p.mode === domesticMode && p.id !== 'fanqie_short');
+    const shorts = domesticMode === 'short' ? shortBoards.map(boardButton).join('') : '';
+    setPlatformButtons($('#platforms'), shorts + registered.map(platformButton).join(''));
+    setPlatformButtons($('#drama-platforms'), dramaBoards.map(boardButton).join(''));
     $('#overseas-platforms').hidden=!overseasActive;
-    $('#overseas-platforms').innerHTML=overseasActive ? platforms().filter(p=>p.mode==='overseas').map(platformButton).join('') : '';
+    setPlatformButtons($('#overseas-platforms'), overseasActive ? platforms().filter(p=>p.mode==='overseas').map(platformButton).join('') : '');
     $('#overseas-navigation').setAttribute('aria-expanded',String(overseasActive));
     $('#overseas-navigation').setAttribute('aria-current',String(overseasActive && section==='browse'));
     $('#content').classList.toggle('overseas-content',overseasActive && section==='browse');
@@ -592,8 +612,6 @@
     const cursor=active?.id==='daily-query'?[active.selectionStart,active.selectionEnd]:null;
     const sameTable=wrap.querySelector('.daily-boards')?.dataset.board===target.board;
     const previousOffset=sameTable?wrap.querySelector('.daily-table-wrap')?.scrollLeft:0;
-    const controls=dailyBoardGroups.map(([group,entries])=>`<div class="daily-board-group" role="group" aria-label="${escape(group)}">
-      <span class="daily-group-name">${escape(group)}</span><div>${entries.map(([id,label])=>`<button type="button" data-action="daily-board" data-board="${id}" aria-pressed="${target.board===id}">${escape(label)}</button>`).join('')}</div></div>`).join('');
     const refresh=membership.allowed && !target.revision?`<button class="button secondary small" data-action="daily-refresh" ${target.busy?'disabled':''}>${target.busy?'检查更新中…':'更新榜单'}</button>`:'';
     let body='';
     if(target.error)body+=`<p class="daily-feedback" role="status">${target.snapshot?'更新未完成，正在显示已保存的榜单。':''}${escape(target.error)}</p>`;
@@ -627,8 +645,8 @@
       body+=`<div class="daily-empty"><h3>暂无已保存的榜单</h3><p>${hint}</p></div>`;
       if(target.revision)body+='<button class="button secondary" data-action="daily-latest">返回最新一期</button>';
     }
-    wrap.innerHTML=`<section class="daily-boards" data-board="${target.board}"><h1>行业榜单</h1><nav class="daily-board-picker" aria-label="选择行业榜单">${controls}</nav>
-      <div class="daily-title"><h2>${escape(dailyBoardLabels.get(target.board))}</h2>${refresh}</div>${body}</section>`;
+    wrap.innerHTML=`<section class="daily-boards" data-board="${target.board}">
+      <div class="daily-title"><h1>${escape(dailyBoardLabels.get(target.board))}</h1>${refresh}</div>${body}</section>`;
     renderDailyResults();
     const table=wrap.querySelector('.daily-table-wrap');
     if(previousOffset && table)table.scrollLeft=previousOffset;
@@ -1307,6 +1325,19 @@
     if(request!==navigationGeneration || generation!==viewGeneration)return false;
     acceptState(next);return true;
   }
+  async function openDailyBoard(board) {
+    if(!dailyBoardLabels.has(board))return;
+    navigationGeneration++;
+    if(shortBoards.some(([id]) => id === board)){
+      domesticMode = 'short';
+      lastShortEntry = board;
+    }
+    if(section === 'daily-boards' && dailyView.board === board && !dailyView.revision)return;
+    section = 'daily-boards';
+    dailyView = newDailyView(board);
+    render();
+    await loadDailyBoard();
+  }
   async function dispatch(el) {
     const a=el.dataset.action,epoch=accountEpoch;
     if(a==='dismiss-notice'){$('#notice').hidden=true;return;}
@@ -1321,37 +1352,38 @@
     if(legacyBlocked()){renderLegacy();return;}
     if(membership.can_read_history && writeActions.has(a)){notice('当前权益仅支持查看历史资料，账号恢复工作台权益后可更新与开始新任务。');return;}
     if(a==='mode') {
-      if(!await syncNavigationState())return;assertAccount(epoch);section='browse';const target=el.dataset.mode, previous=state.views[target] || {}, id=previous.platform || firstPlatform[target];
-      const matching=bestSnapshotForScope(id,{...defaultsFor(id),...savedOptions[id]});
-      await updateView(previous.snapshot_id?{mode:target}:{mode:target,platform:id,snapshot_id:matching?.id || null,selected_id:null});await maybeAutoCollect();return;
+      const target = el.dataset.mode;
+      if(target === 'short' && lastShortEntry !== 'heiyan'){
+        await openDailyBoard(lastShortEntry);
+        return;
+      }
+      if(!await syncNavigationState())return;
+      assertAccount(epoch);
+      section='browse';
+      const previous = state.views[target] || {};
+      const id = target === 'short' ? 'heiyan' : previous.platform || firstPlatform[target];
+      const matching = bestSnapshotForScope(id,{...defaultsFor(id),...savedOptions[id]});
+      const restore = previous.platform === id && previous.snapshot_id;
+      await updateView(restore ? {mode:target} : {mode:target,platform:id,snapshot_id:matching?.id || null,selected_id:null});
+      await maybeAutoCollect();
+      return;
     }
     if(a==='platform') {
       if(!await syncNavigationState())return;
       assertAccount(epoch);
       section='browse';const id=el.dataset.platform,targetMode=platformMode(id),existing=bestSnapshotForScope(id,optionsFor(id));setHistory(null,targetMode);
+      if(id === 'heiyan')lastShortEntry = id;
       if(id===platformID() && view().snapshot_id){await loadSnapshot();await maybeAutoCollect();return;}
       await updateView({mode:targetMode,platform:id,snapshot_id:existing?.id || null,selected_id:null,page:1,filters:{query:'',sort:'source',favorites:false}});await maybeAutoCollect();return;
     }
     if(a==='section'){
       navigationGeneration++;
       section=el.dataset.section;
-      if(section==='daily-boards'){
-        dailyView=newDailyView(dailyView.board);
-        render();
-        await loadDailyBoard();
-      }else{
-        render();
-        if(section==='overview'){await loadOverview();await maybeAutoOverview();}
-      }
+      render();
+      if(section==='overview'){await loadOverview();await maybeAutoOverview();}
       return;
     }
-    if(a==='daily-board' && section==='daily-boards' && dailyBoardLabels.has(el.dataset.board)){
-      if(el.dataset.board!==dailyView.board){
-        dailyView=newDailyView(el.dataset.board);
-        await loadDailyBoard();
-      }
-      return;
-    }
+    if(a==='daily-board'){await openDailyBoard(el.dataset.board);return;}
     if(a==='daily-refresh' && section==='daily-boards'){await loadDailyBoard(true);return;}
     if(a==='daily-latest' && section==='daily-boards'){dailyView=newDailyView(dailyView.board);await loadDailyBoard();return;}
     if(a==='daily-page' && section==='daily-boards'){

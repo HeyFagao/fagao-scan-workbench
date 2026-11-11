@@ -39,6 +39,10 @@ async function open({stale=false,freshSnapshot=null,history=false,expiredHeiyan=
       assert.equal(init.headers?.['X-Fagao-Account'],identity.account.id,'Protected UI request lacks account binding');
       assert.equal(init.headers?.['X-Fagao-Generation'],identity.generation,'Protected UI request lacks session binding');
     }
+    if (pathname === '/api/daily-boards' || pathname === '/api/daily-boards/sync') {
+      const board = init.method === 'POST' ? JSON.parse(init.body).board : new URL(path, base).searchParams.get('board');
+      return Response.json({board, status: 'empty', snapshot: null, history: []});
+    }
     if(pathname==='/api/view' && control.viewPending && !control.viewPending.captured){const held=control.viewPending;held.captured=true;await held.promise;}
     if(pathname==='/api/overview/refresh'){overviewUpdates.push(JSON.parse(init.body));return Response.json({status:'fresh',retry_after_seconds:900});}
     if(pathname==='/api/jobs/qa-overview-late'){control.overviewPolls++;return Response.json(control.overviewJob);}
@@ -97,6 +101,10 @@ async function open({stale=false,freshSnapshot=null,history=false,expiredHeiyan=
   await wait(()=>!dom.window.document.querySelector('.overview-collection-status')?.textContent.includes('正在读取本机'),'homepage did not finish loading');
   if(startHome){await pause(100);return dom;}
   const initialState=await api('/api/state');dom.window.document.querySelector(`[data-action="mode"][data-mode="${initialState.active_mode}"]`).click();
+  if (initialState.active_mode === 'short' && initialState.views.short.platform === 'heiyan') {
+    await wait(() => dom.window.document.querySelector('#platforms [data-platform="heiyan"]'), 'Short story sources missing');
+    dom.window.document.querySelector('#platforms [data-platform="heiyan"]').click();
+  }
   await wait(()=>dom.window.document.querySelector('[data-action="select-book"]') || dom.window.document.querySelector('#heiyan-booklist'),'books did not render');await pause(100);return dom;
 }
 (async()=>{
@@ -131,7 +139,10 @@ async function open({stale=false,freshSnapshot=null,history=false,expiredHeiyan=
  r=await api('/api/resolve',{query:'番茄新书榜第14名'});assert.equal(r.book_id,'qa-b');
  const q=d.querySelector('#query');q.value='独有简介';q.dispatchEvent(new dom.window.Event('input',{bubbles:true}));
  await wait(()=>d.querySelectorAll('[data-action="select-book"]').length===1,'summary filter failed');
- d.querySelector('[data-mode="short"]').click();await wait(()=>d.querySelector('#heiyan-booklist'),'heiyan sheet entry missing');assert.equal(d.querySelector('#heiyan-booklist').href,'https://docs.qq.com/sheet/DYVNwaVJZV2ZxTWl3?tab=q1ans7');assert.equal(d.querySelector('#heiyan-booklist').target,'_blank');assert(!d.querySelector('[data-action="login"]'),'old backend login still exposed');
+ d.querySelector('[data-mode="short"]').click();
+ await wait(()=>d.querySelector('#platforms [data-platform="heiyan"]'),'short story sources missing');
+ d.querySelector('#platforms [data-platform="heiyan"]').click();
+ await wait(()=>d.querySelector('#heiyan-booklist'),'heiyan sheet entry missing');assert.equal(d.querySelector('#heiyan-booklist').href,'https://docs.qq.com/sheet/DYVNwaVJZV2ZxTWl3?tab=q1ans7');assert.equal(d.querySelector('#heiyan-booklist').target,'_blank');assert(!d.querySelector('[data-action="login"]'),'old backend login still exposed');
  assert(!d.querySelector('.positions'),'library cannot inherit rank');
  d.querySelector('[data-mode="long"]').click();await wait(()=>d.querySelector('.detail h2')?.textContent==='测试作品乙','long state not restored');
  dom.window.close();dom=await open();d=dom.window.document;
@@ -189,6 +200,14 @@ async function open({stale=false,freshSnapshot=null,history=false,expiredHeiyan=
  assert(d.querySelector('#heiyan-booklist'),'saved book list must retain TencentDocs entry');assert(!d.querySelector('.reconnect-card'),'old backend dependency/login exposed');assert.equal(d.querySelectorAll('.book-row').length,1);assert.equal(collections.length,beforeLibrary,'Heiyan should not auto collect');dom.window.close();
  dom=await open({forceConnectedHeiyan:true,collectionResponse:{status:'cooldown',requires_login:true,auth:{state:'expired',message:'采集时发现登录已过期'},retry_after_seconds:300}});d=dom.window.document;
  assert(d.querySelector('#heiyan-booklist'),'connected old auth changed primary booklist');assert.equal(collections.length,beforeLibrary,'old connected auth triggered hidden browser');assert.equal(d.querySelectorAll('.book-row').length,1);dom.window.close();
+ // An imported short-story snapshot remains directly reachable from recent records.
+ const savedShort=await api('/api/import/snapshot',{snapshot:{platform:'fanqie_short',channel:'短篇',category:'全部',board:'此前导入的书单',books:[{id:'old-short',title:'旧版番茄短故事',rank:3,summary:'历史导入样本'}]}});
+ dom=await open({startHome:true});d=dom.window.document;
+ d.querySelector('[data-section="history"]').click();
+ d.querySelector(`[data-action="open-record"][data-snapshot="${savedShort.id}"]`).click();
+ await wait(()=>d.querySelector('.book-row')?.textContent.includes('旧版番茄短故事'),'imported short story no longer accessible from recent records');
+ assert.equal((await api('/api/state')).views.short.snapshot_id,savedShort.id);
+ dom.window.close();
  // Catalogs and chapter text remain fixed to the selected book, independent of collection.
  await api('/api/view',{mode:'long',platform:'fanqie',snapshot_id:original,selected_id:'qa-b',filters:{query:'',sort:'source',favorites:false}});
  dom=await open({contentFixture:true});d=dom.window.document;

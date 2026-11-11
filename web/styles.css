@@ -607,19 +607,14 @@ dialog[data-kind="text"],dialog[data-kind="insights"]{width:min(850px,calc(100vw
   .membership-renew-actions .button { font-size: 11px; padding: 8px 10px; }
 }
 .overseas-navigation { padding: 14px 0; border-top: 1px solid var(--line); }
-.board-navigation { display: grid; gap: 2px; margin-bottom: 23px; }
-.board-navigation .home-navigation { margin: 0; }
+.drama-navigation { padding: 13px 0 15px; border-top: 1px solid var(--line); }
+.drama-label { margin: 0 9px 5px; color: var(--muted); font-size: 12px; font-weight: 600; }
+.drama-platforms { gap: 2px; margin: 0; }
+.drama-platforms .platform-button { min-height: 36px; padding: 6px 9px; }
 .daily-boards { min-width: 0; }
-.daily-boards h1 { margin: 0 0 20px; }
-.daily-board-picker { display: flex; flex-wrap: wrap; align-items: stretch; gap: 12px 26px; padding-bottom: 20px; border-bottom: 1px solid var(--line); }
-.daily-board-group { display: grid; align-content: start; gap: 5px; }
-.daily-group-name { font-size: 11px; color: var(--muted); }
-.daily-board-group > div, .daily-inputs, .daily-pages { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
-.daily-board-group button { border: 1px solid transparent; border-radius: 6px; padding: 6px 10px; color: var(--text-secondary); font-size: 13px; }
-.daily-board-group button:hover { background: var(--surface-hover); }
-.daily-board-group button[aria-pressed=true] { color: var(--brand-text); background: var(--brand-surface); border-color: var(--brand-border); font-weight: 600; }
+.daily-inputs, .daily-pages { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
 .daily-title, .daily-board-tools { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
-.daily-title { margin: 22px 0 8px; }
+.daily-title { margin-bottom: 10px; }
 .daily-board-meta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 3px 16px; font-size: 12px; color: var(--muted); }
 .daily-board-meta strong { font-weight: 500; color: var(--ink); }
 .daily-board-tools { margin: 13px 0 8px; font-size: 12px; color: var(--text-secondary); }
@@ -640,14 +635,7 @@ dialog[data-kind="text"],dialog[data-kind="insights"]{width:min(850px,calc(100vw
 .daily-empty { margin: 12px 0; padding: 32px 12px; text-align: center; border: 1px dashed var(--line); border-radius: 7px; color: var(--muted); font-size: 13px; }
 .daily-empty h3 { color: var(--ink); margin-bottom: 5px; }
 .daily-feedback { margin: 10px 0; padding: 8px 12px; border-left: 2px solid var(--warning-border); background: var(--surface-muted); color: var(--warning); font-size: 12px; overflow-wrap: anywhere; }
-@media (max-width: 900px) {
-  .board-navigation { display: flex; flex: 1 1 100%; margin: 0; }
-  .sidebar .board-navigation .home-navigation { flex: 0 0 auto; }
-}
 @media (max-width: 640px) {
-  .daily-board-picker { gap: 9px 15px; }
-  .daily-board-group button { padding: 5px 8px; }
-  .daily-title { margin-top: 16px; }
   .daily-inputs { flex: 1 1 100%; }
 }
 .overseas-heading { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 41px; padding: 8px; border-radius: 4px; color: var(--text-secondary); font-size: 12px; text-align: left; }
@@ -681,6 +669,9 @@ dialog[data-kind="text"],dialog[data-kind="insights"]{width:min(850px,calc(100vw
   .overseas-heading { flex: 0 0 150px; width: 150px; min-height: 36px; }
   .overseas-platforms { flex: 1 1 300px; margin: 0; gap: 5px; }
   .overseas-platforms .platform-button { padding: 6px 9px; min-height: 36px; }
+  .drama-navigation { display: flex; flex: 1 0 100%; align-items: center; flex-wrap: wrap; gap: 2px 8px; padding: 0 0 10px; border-top: 0; border-bottom: 1px solid var(--line); }
+  .drama-label { margin: 0 9px; }
+  .drama-platforms { flex: 1 1 auto; }
   .sidebar .personal-nav { flex: 1 1 320px; width: auto; margin: 0; }
   .sidebar .sidebar-bottom { flex: 0 0 auto; margin: 0; padding: 0; }
 }
