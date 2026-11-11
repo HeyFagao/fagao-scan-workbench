@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -17,6 +16,10 @@ import stat
 import subprocess
 import sys
 import tempfile
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from fagao.submission_lock import component_lock
+
 
 PINS = Path(__file__).with_name("submission-component-builds.json")
 BUNDLE_ID = "com.fagao.workbench.submission"
@@ -167,26 +170,49 @@ def check_managed(path: Path, system: str, architecture: str, pins: list[dict]) 
     return expected
 
 
-@contextmanager
-def installation_lock(parent: Path):
-    lock = parent / ".submission-install.lock"
-    if os.path.lexists(lock) and (linklike(lock) or not lock.is_file()):
-        raise InstallError("组件安装锁无效")
-    fd = os.open(lock, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
-    try:
-        if os.name == "nt":
-            import msvcrt
-            if os.fstat(fd).st_size == 0:
-                os.write(fd, b"0")
-            os.lseek(fd, 0, os.SEEK_SET)
-            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
-        else:
-            import fcntl
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        yield
-    finally:
-        os.close(fd)
+def mac_component_in_use(bundle: Path) -> bool:
+    # proc_pidpath returns the executable path of each live PID, including helpers.
+    # libproc may hide processes from other users. This private bundle belongs to
+    # the account running the installer.
+    import ctypes
+    lib = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+    lib.proc_listallpids.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    lib.proc_listallpids.restype = ctypes.c_int
+    lib.proc_pidpath.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
+    lib.proc_pidpath.restype = ctypes.c_int
+    capacity = lib.proc_listallpids(None, 0) + 128
+    if capacity <= 128:
+        raise OSError("无法检查投稿组件运行状态")
+    while True:
+        pids = (ctypes.c_int * capacity)()
+        count = lib.proc_listallpids(pids, ctypes.sizeof(pids))
+        if count <= 0:
+            raise OSError("无法检查投稿组件运行状态")
+        if count < capacity:
+            break
+        capacity *= 2
+    resolved = bundle.resolve(strict=True)
+    buffer = ctypes.create_string_buffer(4096)
+    for pid in pids[:count]:
+        if pid > 0 and lib.proc_pidpath(pid, buffer, len(buffer)) > 0:
+            path = Path(os.fsdecode(buffer.value))
+            if bundle.name in path.parts and path.resolve().is_relative_to(resolved):
+                return True
+    return False
 
+
+def require_stopped(bundle: Path, system: str) -> None:
+    # Platform selection is native for actual installations. Cross-built kit
+    # verification can stage a foreign layout, whose executable is never run.
+    if sys.platform == "darwin" and system == "darwin":
+        active = mac_component_in_use(bundle)
+    elif sys.platform == "win32" and system == "win32":
+        from scripts.submission_windows_in_use import component_in_use
+        active = component_in_use(bundle / LAYOUT[system][1])
+    else:
+        return
+    if active:
+        raise InstallError("投稿助手仍在运行，请从投稿助手菜单完整退出，再重新升级。")
 
 def install(source: Path, data_root: Path, system: str, architecture: str, pins: list[dict],
             prior_installations: tuple | list = ()) -> str:
@@ -203,11 +229,12 @@ def install(source: Path, data_root: Path, system: str, architecture: str, pins:
     target = parent / "submission"
     previous = parent / ".submission-previous"
     recognized = [*pins, *prior_installations]
-    with installation_lock(parent):
+    with component_lock(parent):
         if os.path.lexists(previous):
             check_managed(previous, system, architecture, recognized)
             if os.path.lexists(target):
                 check_managed(target, system, architecture, recognized)
+                require_stopped(previous / LAYOUT[system][0], system)
                 shutil.rmtree(previous)
             else:
                 os.replace(previous, target)
@@ -216,6 +243,8 @@ def install(source: Path, data_root: Path, system: str, architecture: str, pins:
         # Distinct package trees may contain identical executable and ASAR bytes.
         if existing == expected:
             return "already_installed"
+        if existing is not None:
+            require_stopped(target / LAYOUT[system][0], system)
         temp = Path(tempfile.mkdtemp(prefix=".submission-stage-", dir=parent))
         try:
             bundle = temp / LAYOUT[system][0]
@@ -228,6 +257,7 @@ def install(source: Path, data_root: Path, system: str, architecture: str, pins:
             (temp / "receipt.json").write_text(json.dumps(receipt_for(expected), indent=2) + "\n", encoding="utf-8")
             (temp / "receipt.json").chmod(0o600)
             if existing is not None:
+                require_stopped(target / LAYOUT[system][0], system)
                 os.replace(target, previous)
             try:
                 os.replace(temp, target)

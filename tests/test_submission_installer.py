@@ -5,6 +5,9 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import subprocess
+import sys
+import shutil
 import unittest
 from unittest.mock import patch
 
@@ -128,3 +131,91 @@ class SubmissionInstallerTests(unittest.TestCase):
         self.dll.write_bytes(b"first library")
         with self.assertRaises(installer.InstallError):
             installer.install(self.source, self.root, "win32", "x64", new, old)
+
+    def test_open_window_refuses_replacement_and_same_build_stays_reusable(self):
+        self.install()
+        with patch.object(installer, "require_stopped", side_effect=installer.InstallError("请完整退出")):
+            self.assertEqual(self.install(), "already_installed")
+            self.dll.write_bytes(b"rebuild")
+            self.pins.append(installer.fingerprint(self.source, "win32", "x64"))
+            with self.assertRaisesRegex(installer.InstallError, "完整退出"):
+                self.install()
+        self.assertEqual((self.target / "FagaoSubmission/runtime.dll").read_bytes(), b"first library")
+        self.assertEqual(installer.check_managed(self.target, "win32", "x64", self.pins), self.pins[0])
+
+    def test_an_app_started_while_copying_leaves_existing_component_untouched(self):
+        self.install()
+        self.dll.write_bytes(b"rebuild")
+        self.pins.append(installer.fingerprint(self.source, "win32", "x64"))
+        with patch.object(installer, "require_stopped",
+                          side_effect=[None, installer.InstallError("请完整退出")]):
+            with self.assertRaisesRegex(installer.InstallError, "完整退出"):
+                self.install()
+        self.assertEqual(installer.check_managed(self.target, "win32", "x64", self.pins), self.pins[0])
+
+    @unittest.skipUnless(sys.platform == "darwin", "macOS libproc")
+    def test_macos_real_process_in_one_bundle_does_not_pin_another_copy(self):
+        first = self.directory / "a/FagaoSubmission.app"
+        other = self.directory / "b/FagaoSubmission.app"
+        for app in (first, other):
+            executable = app / "Contents/MacOS/FagaoSubmission"
+            executable.parent.mkdir(parents=True)
+            shutil.copyfile("/bin/sleep", executable)
+            executable.chmod(0o700)
+        # This file represents a stale PID hint. The decision uses the OS instead.
+        (first / "stale.pid").write_text("1")
+        self.assertFalse(installer.mac_component_in_use(first))
+        with subprocess.Popen([str(first / "Contents/MacOS/FagaoSubmission"), "1"]) as process:
+            self.assertTrue(installer.mac_component_in_use(first))
+            self.assertFalse(installer.mac_component_in_use(other))
+            with self.assertRaisesRegex(installer.InstallError, "完整退出"):
+                installer.require_stopped(first, "darwin")
+            process.wait(timeout=5)
+        self.assertFalse(installer.mac_component_in_use(first))
+
+    @unittest.skipUnless(sys.platform == "darwin", "requires macOS signing and live PID lookup")
+    def test_running_signed_app_is_retained_identically_until_normal_exit(self):
+        from fagao import submission_component
+        source = self.directory / "signed/FagaoSubmission.app"
+        contents = source / "Contents"
+        executable = contents / "MacOS/FagaoSubmission"
+        archive = contents / "Resources/app.asar"
+        executable.parent.mkdir(parents=True)
+        archive.parent.mkdir(parents=True)
+        shutil.copyfile("/bin/cat", executable)
+        executable.chmod(0o700)
+        (contents / "Info.plist").write_bytes(installer.plistlib.dumps({
+            "CFBundlePackageType": "APPL", "CFBundleIdentifier": installer.BUNDLE_ID,
+            "CFBundleVersion": "1", "CFBundleExecutable": "FagaoSubmission",
+        }))
+        def build(version):
+            archive.write_text(version)
+            subprocess.run(["/usr/bin/codesign", "--force", "--sign", "-", str(source)],
+                           capture_output=True, check=True)
+            return installer.fingerprint(source, "darwin", installer.host_architecture())
+        old = build("old archive")
+        def apply_build(pin, prior=()):
+            return installer.install(source, self.root, "darwin", installer.host_architecture(), [pin], prior)
+        self.assertEqual(apply_build(old), "installed")
+        target = self.target / source.name
+        with subprocess.Popen([str(target / executable.relative_to(source))], stdin=subprocess.PIPE,
+                              stdout=subprocess.DEVNULL) as child:
+            try:
+                self.assertEqual(apply_build(old), "already_installed")
+                new = build("new archive")
+                with self.assertRaisesRegex(installer.InstallError, "完整退出"):
+                    apply_build(new, [old])
+                self.assertEqual(installer.tree_sha256(target, "darwin"), old["tree_sha256"])
+                receipt = json.loads((self.target / "receipt.json").read_text())
+                self.assertEqual(receipt, installer.receipt_for(old))
+                self.assertIsNone(child.poll())
+            finally:
+                child.stdin.close()  # normal EOF, as opposed to signalling the process
+                child.wait(timeout=5)
+        self.assertEqual(apply_build(new, [old]), "installed")
+        self.assertEqual(installer.tree_sha256(target, "darwin"), new["tree_sha256"])
+        # Another browser request must wait for installation to finish before launch.
+        with installer.component_lock(self.target.parent), patch.object(subprocess, "Popen") as launch:
+            with self.assertRaises(submission_component.AppError):
+                submission_component.open_component(self.root, "light", None)
+            launch.assert_not_called()

@@ -19,6 +19,7 @@ import time
 from xml.parsers.expat import ExpatError
 
 from .store import AppError
+from .submission_lock import component_lock
 
 
 BUNDLE_ID = 'com.fagao.workbench.submission'
@@ -255,6 +256,18 @@ def _environment(handoff_dir, profile_dir):
 def open_component(root, appearance, draft):
     payload = _encode_handoff(appearance, draft)
     root = Path(root).absolute()
+    try:
+        _checked(root, directory=True)
+        _checked(root / 'components', directory=True)
+        with component_lock(root / 'components', shared=True):
+            return _open_component_locked(root, payload)
+    except FileNotFoundError as exc:
+        raise _unavailable('请先安装本机投稿组件，草稿仍保存在工作台。') from exc
+    except (OSError, ValueError) as exc:
+        raise _unavailable('投稿组件正在更新或暂时无法打开，请稍后再试。') from exc
+
+
+def _open_component_locked(root, payload):
     executable = _verified_component(root, _platform(), check_signature=True)
     try:
         directory = _private_directory(root / 'submission-handoff')

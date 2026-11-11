@@ -4,6 +4,22 @@
     {
       "platform": "darwin",
       "arch": "arm64",
+      "tree_sha256": "68433cccf9134f24d2b84725e1e657f82839d1ea5d25d62fe6f83567764e11cd",
+      "executable_sha256": "c2e85546a2e4b85c88bd5e07cfe8c2018861d14d843e301dbeb3f6e9096588ce",
+      "asar_sha256": "73a58b8c0d579ac9b39515019394ea46e073ec71fa946458ce83dccd09fe4199"
+    },
+    {
+      "platform": "win32",
+      "arch": "x64",
+      "tree_sha256": "8c0d23bd7762e73c1fd58c21a2a16381d6e4c2e0ac6b5bf87be2cc93e4896484",
+      "executable_sha256": "0549c04dfd169cfa3f36d49a81ae660b41030b4202b25795971d699a4dab5e9f",
+      "asar_sha256": "73a58b8c0d579ac9b39515019394ea46e073ec71fa946458ce83dccd09fe4199"
+    }
+  ],
+  "prior_installations": [
+    {
+      "platform": "darwin",
+      "arch": "arm64",
       "tree_sha256": "1515d85e36a021cf433ebb06d14f0f98d712f1410853fada52cf7bdde76fd8e4",
       "executable_sha256": "81a2e803a06bb31849c904ed2dda4f5da22a9c5d2f6a25cca122da6e9c01e050",
       "asar_sha256": "66eac6c4e5db732661fc89842bc8cd5e8da45def4b3862cf6ed671f5eb56507c"
@@ -14,9 +30,7 @@
       "tree_sha256": "aaf35a381e629b29e5e42b3624bc060aad0fe6fde68a25bb4d54b17f102d77c4",
       "executable_sha256": "14111a920c476b87407d2878c3553b825c868e3a30fa09b868dad21c8ee93569",
       "asar_sha256": "66eac6c4e5db732661fc89842bc8cd5e8da45def4b3862cf6ed671f5eb56507c"
-    }
-  ],
-  "prior_installations": [
+    },
     {
       "platform": "darwin",
       "arch": "arm64",
