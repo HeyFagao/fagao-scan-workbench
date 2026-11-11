@@ -254,6 +254,31 @@ test('a board with no published or cached snapshot shows an empty state', async 
   assert(!ctx.calls.some(call => call.method === 'POST'));
 });
 
+test('external source links are absent from all five ranked tables', async t => {
+  const ctx = await fixture(t, false, ({board}) => response(payload(board, 'fixture-' + board)));
+  for (const board of ['douyin','hongguo','zhihu','fanqie_story','adapt']) {
+    await ctx.openBoard(board);
+    await eventually(() => ctx.content().includes('fixture-' + board), 'Did not display ' + board);
+    assert.equal(ctx.d.querySelector('#content a[href*="wangwendashuju.com"]'), null);
+    assert(ctx.content().includes('2026-11-08'));
+  }
+});
+
+test('first edition pending has one clear status, distinct from network or membership errors', async t => {
+  const ctx = await fixture(t, true, ({method,board}) => method === 'GET'
+    ? response({board,status:'empty',snapshot:null})
+    : response({error:{code:board === 'zhihu' ? 'daily_feed_unpublished' : 'feed_unavailable',
+      message:board === 'zhihu' ? '当前还没有可下载的新版榜单。' : '暂时无法更新榜单。'}}, board === 'zhihu' ? 404 : 503));
+  await ctx.openBoard('zhihu');
+  await eventually(() => ctx.content().includes('本榜尚未发布'), 'Missing confirmed unpublished status');
+  assert.equal(ctx.d.querySelector('.daily-feedback'), null);
+  await ctx.openBoard('douyin');
+  await eventually(() => ctx.content().includes('暂时无法更新榜单。'), 'Network error lost');
+  assert(!ctx.content().includes('本榜尚未发布'));
+  await ctx.openBoard('zhihu');
+  await eventually(() => ctx.content().includes('本榜尚未发布'), 'Reopening lost the confirmed pending state');
+});
+
 test('a late sync for the previous board cannot replace the current table', async t => {
   const pending = deferred();
   const ctx = await fixture(t, true, ({method, board}) => method === 'POST' && board === 'douyin'

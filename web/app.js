@@ -32,7 +32,7 @@
   const dailyBoardLabels = new Map([...shortBoards, ...dramaBoards]);
   let lastShortEntry = 'fanqie_story';
   const dailyPageSize = 50;
-  const dailyNextCheck = new Map();
+  const dailyChecks = new Map();
   const newDailyView = board => ({board, revision: '', history: [], snapshot: null, page: 1, query: '', videoType: '', busy: false, error: ''});
   let dailyView = newDailyView('douyin');
   const nextAutoAt = new Map(), autoMessages = new Map(), latestResults = new Map(), snapshotJobs=new Map();
@@ -79,7 +79,7 @@
   function assertAccount(epoch=accountEpoch,write=false){if(epoch!==accountEpoch || !readable() || (write && !membership.allowed))throw staleAccount();}
   function freezeAccountWrites(){
     dailyView={...dailyView,busy:false};
-    dailyNextCheck.clear();
+    dailyChecks.clear();
     accountEpoch++;viewGeneration++;refreshGeneration++;loadingVersion++;navigationGeneration++;overviewRequest++;contentPanelSequence++;
     for(const controller of dataRequests)controller.abort();dataRequests.clear();
     clearTimeout(pollTimer);clearTimeout(searchTimer);pollTimer=null;
@@ -91,7 +91,7 @@
   }
   function clearAccountView(){
     dailyView=newDailyView('douyin');
-    dailyNextCheck.clear();
+    dailyChecks.clear();
     accountEpoch++;viewGeneration++;refreshGeneration++;loadingVersion++;navigationGeneration++;overviewRequest++;contentPanelSequence++;
     for(const controller of dataRequests)controller.abort();dataRequests.clear();
     for(const url of downloadURLs)URL.revokeObjectURL(url);downloadURLs.clear();
@@ -567,7 +567,7 @@
     if(!current() || target.busy)return;
     target.busy=true;
     target.error='';
-    const due=Date.now()>=(dailyNextCheck.get(target.board) || 0);
+    const due=Date.now()>=(dailyChecks.get(target.board)?.nextAt || 0);
     renderDailyBoards();
     const accept=response=>{
       if(response?.board!==target.board || (response.snapshot &&
@@ -584,15 +584,16 @@
       if(!current())return;
       accept(cached);
       if(!target.revision && membership.allowed && (force || due)){
-        dailyNextCheck.set(target.board,Date.now()+AUTO_TTL);
+        dailyChecks.set(target.board,{nextAt:Date.now()+AUTO_TTL});
         renderDailyBoards();
         const published=await api('/api/daily-boards/sync',{board:target.board});
         if(current())accept(published);
       }
     }catch(error){
       if(current() && error.code!=='stale_account'){
-        target.error=error.message || '暂时无法更新榜单。';
-        if(!target.revision)dailyNextCheck.set(target.board,Date.now()+AUTO_TTL);
+        const unpublished = !target.revision && !target.snapshot && error.code === 'daily_feed_unpublished';
+        target.error = unpublished ? '' : error.message || '暂时无法更新榜单。';
+        if(!target.revision)dailyChecks.set(target.board,{nextAt:Date.now()+AUTO_TTL, unpublished});
       }
     }finally{
       target.busy=false;
@@ -620,7 +621,6 @@
       const count=snap.rows.length;
       const sample=coverage.complete===false && Number.isInteger(coverage.source_total)
         ?`收录 ${count} 条，来源共 ${coverage.source_total} 条`:`收录 ${count} 条`;
-      const source=safeURL(snap.source_url);
       const scope=[snap.scope,coverage.complete===false?'部分榜单':''].filter(Boolean).map(escape).join(' · ');
       const typeIndex=snap.columns.indexOf('视频类型');
       const types=typeIndex>=0?[...new Set(snap.rows.map(row=>String(row[typeIndex] ?? '')).filter(Boolean))]:[];
@@ -631,7 +631,6 @@
       body+=`<div class="daily-board-meta">
         <span>榜单日期 <strong>${escape(snap.source_date || '来源未标注')}</strong></span>
         <span>采集于 ${escape(dailyTime(snap.observed_at))}（北京时间）</span>
-        ${source?`<a href="${escape(source)}" target="_blank" rel="noopener noreferrer">网文大数据 ↗</a>`:''}
       </div>
       <div class="daily-board-tools"><div>${scope}${scope?' · ':''}${escape(sample)}</div><div class="daily-inputs">
         ${historyPicker}
@@ -640,6 +639,8 @@
       </div></div><div id="daily-results"></div>`;
     }else if(target.busy){
       body+='<div class="daily-empty" role="status"><span class="spinner"></span> 正在读取榜单…</div>';
+    }else if(membership.allowed && !target.revision && dailyChecks.get(target.board)?.unpublished){
+      body+='<div class="daily-empty" role="status"><h3>本榜尚未发布</h3><p>采集到数据后会自动显示。</p></div>';
     }else{
       const hint=membership.allowed?'有新一期时，这里会显示榜单。':'此账号尚未保存这一榜单。';
       body+=`<div class="daily-empty"><h3>暂无已保存的榜单</h3><p>${hint}</p></div>`;
@@ -1114,7 +1115,7 @@
         assertAccount(epoch);
         await maybeAutoOverview();
         if(section==='daily-boards' && !document.hidden && !dailyView.revision && !dailyView.busy &&
-           Date.now()>=(dailyNextCheck.get(dailyView.board) || 0))await loadDailyBoard();
+           Date.now()>=(dailyChecks.get(dailyView.board)?.nextAt || 0))await loadDailyBoard();
       } catch(error) { if(epoch===accountEpoch)notice(error.message); }
       finally { if(epoch===accountEpoch)schedulePoll(); }
     },2200);
