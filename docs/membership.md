@@ -1,6 +1,6 @@
 # 账号与使用说明
 
-本文件对应 **`0.7.0-dev.11` 扫榜体验版**。客户端发行版本和校验值见 ShiQi-Han03/fagao-scan-workbench 默认分支的 `install-release.json`，由安装助手按 [INSTALL.md](../INSTALL.md) 获取并核验。账号资格以官网当前返回为准，不要求普通用户提供生产发布回执。当前实测状态见 [验收记录](acceptance.md)。
+本文件对应 **`0.7.0-dev.12` 扫榜体验版**。客户端发行版本和校验值见 ShiQi-Han03/fagao-scan-workbench 默认分支的 `install-release.json`，由安装助手按 [INSTALL.md](../INSTALL.md) 获取并核验。账号资格以官网当前返回为准，不要求普通用户提供生产发布回执。当前实测状态见 [验收记录](acceptance.md)。
 
 ## 账号与资格
 
