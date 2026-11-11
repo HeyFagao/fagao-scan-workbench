@@ -1,23 +1,23 @@
 # GitHub 发行回读记录
 
-版本：`0.7.0-dev.10`。发行仓库：[ShiQi-Han03/fagao-scan-workbench](https://github.com/ShiQi-Han03/fagao-scan-workbench)。原始来源为 hanyyyou/fagao-scan-workbench，原仓库未被本轮修改。
+版本：`0.7.0-dev.11`。发行仓库：[ShiQi-Han03/fagao-scan-workbench](https://github.com/ShiQi-Han03/fagao-scan-workbench)。原始来源为 hanyyyou/fagao-scan-workbench，原仓库未被本轮修改。
 
-固定源码：`3e035b82116aa8dbc990f8f5c86d735e8eb3abf2`。macOS 下载核验时间：`2026-11-11T12:23:36.575102+00:00`；Windows CI 核验时间：`2026-11-11T12:25:02.401247+00:00`。安装时读取默认分支的 [install-release.json](../install-release.json)，源码归档中的旧指针不能替代当前发行指针。
+固定源码：`d5413211ebfbe0eb6beaa883e45225f3a645683b`。macOS 下载核验时间：`2026-11-11T12:38:25.880005+00:00`；Windows CI 核验时间：`2026-11-11T12:39:46.513162+00:00`。安装时读取默认分支的 [install-release.json](../install-release.json)，源码归档中的旧指针不能替代当前发行指针。
 
-安装器：[固定源码安装器](https://raw.githubusercontent.com/ShiQi-Han03/fagao-scan-workbench/3e035b82116aa8dbc990f8f5c86d735e8eb3abf2/scripts/bootstrap.py)，SHA-256：`f9289d2d4557f2a943823768d71f6a9273d1dc82aaeba3a65c76a663eec41a52`。
-源码归档：[固定源码 ZIP](https://codeload.github.com/ShiQi-Han03/fagao-scan-workbench/zip/3e035b82116aa8dbc990f8f5c86d735e8eb3abf2)，SHA-256：`43626ca718a25ca445b369bfebfd91948810025c5c03f78b6fe885a31836d1ea`。此哈希是安装器必填的强制校验值：缺失或不匹配时拒绝解压和安装。
+安装器：[固定源码安装器](https://raw.githubusercontent.com/ShiQi-Han03/fagao-scan-workbench/d5413211ebfbe0eb6beaa883e45225f3a645683b/scripts/bootstrap.py)，SHA-256：`f9289d2d4557f2a943823768d71f6a9273d1dc82aaeba3a65c76a663eec41a52`。
+源码归档：[固定源码 ZIP](https://codeload.github.com/ShiQi-Han03/fagao-scan-workbench/zip/d5413211ebfbe0eb6beaa883e45225f3a645683b)，SHA-256：`4c3ae3ae8683f6a20ab8e05ab23786e9232addd8b5b868f7fed9049492d6d2a2`。此哈希是安装器必填的强制校验值：缺失或不匹配时拒绝解压和安装。
 
 ## 这一版的变化
 
-- 短篇导航按知乎短篇、番茄短故事、黑岩故事会排列，点击来源直接打开对应内容。
-- “我的收藏”上方新增漫剧分类，集中展示抖音漫剧日榜、红果热播榜和小说改编漫剧榜。
+- 五个授权榜单的页面已移除“网文大数据”外跳链接。
+- 无已发布期次且本地没有快照时显示“本榜尚未发布”。
 
 ## 已验证
 
 - macOS 匿名 raw 与 codeload 下载、固定提交全部 119 个文件核对、安装器归档强制校验、首次及重复安装、版本和目录身份、资料保留、未登录资料隔离与测试服务关闭，11 项通过。
 - 本地 Python 完整回归 701 项、会员 UI 46 项、国内 UI 146 项和海外 UI 专项通过；UI 外部平台请求为 0。
-- [Windows 原生 CI](https://github.com/ShiQi-Han03/fagao-scan-workbench/actions/runs/43019881687) 的 Python 3.11 和 3.12 两个 job 均成功，每个 job 的 14 项场景与冻结源码逐项一致，测试进程和隔离目录均已清理。
-- 冻结源码的导航与榜单界面专项通过 11 项；完整 Python 回归含 19 项五榜数据读取与授权检查。
+- [Windows 原生 CI](https://github.com/ShiQi-Han03/fagao-scan-workbench/actions/runs/43022021050) 的 Python 3.11 和 3.12 两个 job 均成功，每个 job 的 14 项场景与冻结源码逐项一致，测试进程和隔离目录均已清理。
+- 冻结源码的导航与榜单界面专项通过 13 项；完整 Python 回归含 19 项五榜数据读取与授权检查。
 - Windows 场景实际覆盖中文及空格路径、独立命令后的存活、固定 `.bat` 入口、运行中升级及旧资料保留、允许与拒绝 Job Object 脱离、原生后台托管恢复。证书失败由夹具注入，随后真实调用系统 Schannel curl 下载并校验官方归档。
 
 | Windows Python | 原生检查 | 安装器测试：运行 / 跳过 | 启动器测试：运行 / 跳过 | 清理 |

@@ -2,23 +2,23 @@
   "schema_version": 1,
   "status": "published",
   "app": "fagao-scan-workbench",
-  "app_version": "0.7.0-dev.10",
+  "app_version": "0.7.0-dev.11",
   "repository": "ShiQi-Han03/fagao-scan-workbench",
-  "source_commit": "3e035b82116aa8dbc990f8f5c86d735e8eb3abf2",
-  "release_tag": "v0.7.0-dev.10",
-  "installer_url": "https://raw.githubusercontent.com/ShiQi-Han03/fagao-scan-workbench/3e035b82116aa8dbc990f8f5c86d735e8eb3abf2/scripts/bootstrap.py",
+  "source_commit": "d5413211ebfbe0eb6beaa883e45225f3a645683b",
+  "release_tag": "v0.7.0-dev.11",
+  "installer_url": "https://raw.githubusercontent.com/ShiQi-Han03/fagao-scan-workbench/d5413211ebfbe0eb6beaa883e45225f3a645683b/scripts/bootstrap.py",
   "installer_sha256": "f9289d2d4557f2a943823768d71f6a9273d1dc82aaeba3a65c76a663eec41a52",
-  "source_archive_url": "https://codeload.github.com/ShiQi-Han03/fagao-scan-workbench/zip/3e035b82116aa8dbc990f8f5c86d735e8eb3abf2",
-  "source_archive_sha256": "43626ca718a25ca445b369bfebfd91948810025c5c03f78b6fe885a31836d1ea",
+  "source_archive_url": "https://codeload.github.com/ShiQi-Han03/fagao-scan-workbench/zip/d5413211ebfbe0eb6beaa883e45225f3a645683b",
+  "source_archive_sha256": "4c3ae3ae8683f6a20ab8e05ab23786e9232addd8b5b868f7fed9049492d6d2a2",
   "source_archive_sha256_purpose": "Required SHA-256 of the pinned source archive; bootstrap rejects missing or mismatched digests before extraction or installation.",
   "minimum_python": "3.10",
-  "verified_at": "2026-11-11T12:25:02.401247+00:00",
+  "verified_at": "2026-11-11T12:39:46.513162+00:00",
   "channel": "experimental",
   "verification": {
     "daily_boards": {
-      "source_tree": "b0047df6ba0b2ba0662132ea291eafa81c259649",
+      "source_tree": "52bb5fe8e8f76eca390f411ec2f0ffa124908a6f",
       "backend_tests": 19,
-      "ui_checks": 11,
+      "ui_checks": 13,
       "synthetic_ui": true,
       "external_ui_requests": 0
     },
@@ -36,11 +36,11 @@
     ],
     "windows_install_tested": true,
     "windows_native_ci_tested": true,
-    "windows_ci_run_url": "https://github.com/ShiQi-Han03/fagao-scan-workbench/actions/runs/43019881687",
+    "windows_ci_run_url": "https://github.com/ShiQi-Han03/fagao-scan-workbench/actions/runs/43022021050",
     "windows_jobs": [
       {
         "python": "3.11.9",
-        "job_id": 130520124640,
+        "job_id": 130527286664,
         "native_checks": 14,
         "unit_tests": {
           "bootstrap-tests": {
@@ -67,7 +67,7 @@
       },
       {
         "python": "3.12.10",
-        "job_id": 130520124282,
+        "job_id": 130527287259,
         "native_checks": 14,
         "unit_tests": {
           "bootstrap-tests": {
