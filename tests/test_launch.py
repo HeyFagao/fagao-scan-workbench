@@ -43,7 +43,7 @@ class PreflightTests(unittest.TestCase):
             with patch.object(launch, "ROOT", root):
                 with self.assertRaisesRegex(RuntimeError, "安装文件缺失"):
                     launch.preflight()
-                for name in ("fagao/server.py", "fagao/store.py", "fagao/overview.py", "fagao/dashboard.py", "fagao/public_rankings.py", "fagao/network.py", "fagao/overseas.py", "fagao/overseas_readers.py", "fagao/royalroad_fallback.py", "fagao/scribble_import.py", "fagao/opening_content.py", "fagao/reader_crypto.py", "fagao/_vendor/__init__.py", "fagao/_vendor/pyaes/__init__.py", "fagao/_vendor/pyaes/aes.py", "fagao/_vendor/pyaes/blockfeeder.py", "fagao/_vendor/pyaes/util.py", "web/index.html", "web/app.js", "web/styles.css", "web/theme.js"):
+                for name in ("fagao/server.py", "fagao/store.py", "fagao/overview.py", "fagao/dashboard.py", "fagao/public_rankings.py", "fagao/daily_feeds.py", "fagao/network.py", "fagao/overseas.py", "fagao/overseas_readers.py", "fagao/royalroad_fallback.py", "fagao/scribble_import.py", "fagao/opening_content.py", "fagao/reader_crypto.py", "fagao/_vendor/__init__.py", "fagao/_vendor/pyaes/__init__.py", "fagao/_vendor/pyaes/aes.py", "fagao/_vendor/pyaes/blockfeeder.py", "fagao/_vendor/pyaes/util.py", "web/index.html", "web/app.js", "web/styles.css", "web/theme.js"):
                     path = root / name
                     path.parent.mkdir(parents=True, exist_ok=True)
                     path.write_text("fixture", encoding="utf-8")

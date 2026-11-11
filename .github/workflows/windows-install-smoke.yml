@@ -49,6 +49,11 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m unittest discover -s tests -p test_resolver_favorites.py -v
           exit $LASTEXITCODE
+      - name: Daily board feed and access regressions
+        shell: pwsh
+        run: |
+          python -m unittest discover -s tests -p 'test_daily_feed*.py' -v *> "$env:RUNNER_TEMP/fagao-windows-receipts/daily-feed-tests.log"
+          if ($LASTEXITCODE -ne 0) { Get-Content "$env:RUNNER_TEMP/fagao-windows-receipts/daily-feed-tests.log"; exit $LASTEXITCODE }
       - name: Native install and real Job Object lifetimes
         shell: pwsh
         run: |

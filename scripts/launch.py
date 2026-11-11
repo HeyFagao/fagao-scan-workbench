@@ -123,7 +123,7 @@ def preflight() -> dict:
         modules["ssl"].create_default_context()
     except Exception as exc:
         raise RuntimeError("Python 的数据库或 HTTPS 组件无法正常工作，请让 WorkBuddy 自动修复运行时后重试。") from exc
-    for name in ("fagao/server.py", "fagao/store.py", "fagao/overview.py", "fagao/dashboard.py", "fagao/public_rankings.py", "fagao/network.py", "fagao/overseas.py", "fagao/overseas_readers.py", "fagao/royalroad_fallback.py", "fagao/scribble_import.py", "fagao/opening_content.py", "fagao/reader_crypto.py", "fagao/_vendor/__init__.py", "fagao/_vendor/pyaes/__init__.py", "fagao/_vendor/pyaes/aes.py", "fagao/_vendor/pyaes/blockfeeder.py", "fagao/_vendor/pyaes/util.py", "web/index.html", "web/app.js", "web/styles.css", "web/theme.js"):
+    for name in ("fagao/server.py", "fagao/store.py", "fagao/overview.py", "fagao/dashboard.py", "fagao/public_rankings.py", "fagao/daily_feeds.py", "fagao/network.py", "fagao/overseas.py", "fagao/overseas_readers.py", "fagao/royalroad_fallback.py", "fagao/scribble_import.py", "fagao/opening_content.py", "fagao/reader_crypto.py", "fagao/_vendor/__init__.py", "fagao/_vendor/pyaes/__init__.py", "fagao/_vendor/pyaes/aes.py", "fagao/_vendor/pyaes/blockfeeder.py", "fagao/_vendor/pyaes/util.py", "web/index.html", "web/app.js", "web/styles.css", "web/theme.js"):
         path = ROOT / name
         if not path.is_file() or not path.stat().st_size:
             raise RuntimeError(f"安装文件缺失或为空：{name}。请让 WorkBuddy 重新下载同一固定版本；用户资料无需删除。")

@@ -817,6 +817,14 @@ class Handler(BaseHTTPRequestHandler):
         if path=='/api/health': return {'app':'fagao-scan-workbench','version':__version__,'data_dir':str(self.server.directory),'source_root':str(Path(__file__).resolve().parent.parent),'network':{**network.status(),'probe':self.server.network_probe}}
         if path=='/api/network': return {**network.status(),'probe':self.server.network_probe}
         if path=='/api/membership/status': return self.server.membership_status()
+        if path == '/api/daily-boards':
+            from .daily_feeds import read_cache
+            if self._context is None:
+                raise AppError('membership_unavailable', '请连接当前工作台账号。', 403)
+            params = parse_qs(urlsplit(self.path).query, keep_blank_values=True)
+            if len(params.get('board', [])) != 1 or len(params.get('revision', [])) > 1:
+                raise AppError('daily_feed_parameters', '请选择一个榜单和版本。', 400)
+            return read_cache(store, params['board'][0], params.get('revision', [None])[0])
         if path=='/api/state': return store.state()
         if path=='/api/overview': return self._jobs._overview_data() if self._context is not None else self._jobs.overview()
         if path=='/api/context': return store.context()
@@ -858,6 +866,11 @@ class Handler(BaseHTTPRequestHandler):
             self.server.runtime.stop_account_jobs(account,generation)
             return result
         store=self._store
+        if path == '/api/daily-boards/sync':
+            from .daily_feeds import sync_board
+            if self._context is None:
+                raise AppError('membership_unavailable', '请连接当前工作台账号。', 403)
+            return sync_board(self._context, self.server.runtime.membership, data.get('board'))
         if path=='/api/translation-context':
             return store.translation_context(reference=data.get('query','翻译这本'),session=data.get('session','default'),snapshot_id=data.get('snapshot_id'),book_id=data.get('book_id'))
         if path=='/api/catalog':

@@ -43,6 +43,7 @@ DEFAULT_ORIGIN = "https://www.fagaochuangzuo.com"
 DEFAULT_ENDPOINTS = {
     "authorize": "/workbench/authorize", "token": "/api/workbench/token",
     "permit": "/api/workbench/permit", "revoke": "/api/workbench/revoke",
+    "feed_grant": "/api/workbench/feeds/grant",
 }
 MAX_RESPONSE_BYTES = 64 * 1024
 REQUEST_TIMEOUT = 8
@@ -432,6 +433,17 @@ class MembershipClient:
         try:
             response = network.build_opener(_NoRedirect()).open(request, timeout=REQUEST_TIMEOUT)
         except urllib.error.HTTPError as exc:
+            if url == self.origin + self.endpoints["feed_grant"]:
+                with exc:
+                    error = {"ok": False, "http_status": exc.code}
+                    if exc.code == 404:
+                        try:
+                            reply = json.loads(exc.read(4097))
+                        except (ValueError, OSError):
+                            reply = None
+                        if reply == {"ok": False, "error": {"code": "no_publication"}}:
+                            error["reason"] = "no_publication"
+                    return error
             if 300 <= exc.code < 400:
                 exc.close()
                 raise _InvalidResponse() from None
@@ -659,6 +671,36 @@ class MembershipClient:
                 return result
             reason = result["reason"]
             raise _error(reason, 503 if reason == "verification_unavailable" else 403)
+        return result
+
+    def feed_grant(self, board, account_id, generation):
+        """Obtain a single board's key for a fixed, actively authorized device."""
+        from .daily_feeds import board_id
+        board_id(board)
+        self.require(account_id=account_id, generation=generation, operation="use")
+        try:
+            with _file_lock(self.directory / "request.lock"):
+                with self._state_lock():
+                    state = self._read()
+                    self._expect_identity(state, account_id, generation)
+                    if not state.get("device_token"):
+                        raise _error("not_authenticated")
+                payload = {"board": board, "device_id": state["device_id"], "client_version": __version__}
+                result = self._request("feed_grant", payload, state["device_token"])
+                with self._state_lock():
+                    self._expect_identity(self._read(), account_id, generation)
+        except (_InvalidResponse, _Unavailable):
+            raise AppError("daily_feed_unavailable", "暂时无法联系榜单发布服务，请稍后重试。", 503) from None
+        if result.get("ok") is not True:
+            status = result.get("http_status")
+            if status == 404 and result.get("reason") == "no_publication":
+                raise AppError("daily_feed_unpublished", "当前还没有可下载的新版榜单。", 404)
+            if status in (401, 403):
+                raise AppError("daily_feed_denied", "官网未授权本次榜单更新，请刷新账号状态。", 403)
+            if status == 429:
+                raise AppError("daily_feed_busy", "榜单查询较频繁，请稍后再试。", 429)
+            raise AppError("daily_feed_unavailable", "榜单发布服务暂时不可用，请稍后重试。", 503)
+        self.require(account_id=account_id, generation=generation, operation="use")
         return result
 
     def _expect_identity(self, current, expected_account, expected_generation):
