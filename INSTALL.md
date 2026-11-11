@@ -13,6 +13,8 @@
 
 本文件供 WorkBuddy 执行安装和升级。发布版本与校验值由发行仓库默认分支的 `install-release.json` 提供；不要求用户提供私有生产回执。账号资格以安装后官网实际返回为准，客户端安装成功不代表已经登录或取得使用资格。
 
+Mac 和 Windows x64 的正常安装和更新会自动装配与这次发行相符的个人投稿组件。请沿用下文同一条 bootstrap 命令。成功后打开顶部「小说投稿」，读回本机组件已就绪。已有投稿任务或投稿窗口正在运行而本次需要换版时，请用户从投稿助手菜单完整退出，再用原命令继续。稿件和邮箱设置保存在独立的本机资料目录。
+
 ## 1. 确认来源并固定版本
 
 当前发行仓库是 [ShiQi-Han03/fagao-scan-workbench](https://github.com/ShiQi-Han03/fagao-scan-workbench)，原始来源为 [hanyyyou/fagao-scan-workbench](https://github.com/hanyyyou/fagao-scan-workbench)。本流程的 `--repo` 使用 `ShiQi-Han03/fagao-scan-workbench`，不回退到原始仓库的旧版本。公开仓库下载无需 GitHub 登录，也不要求用户自己下载压缩包。

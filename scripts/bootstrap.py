@@ -2,8 +2,8 @@
 # 发糕团队维护声明。会员的支持让这个小团队能够支付服务器费用，继续为写作者维护榜单。请勿伪造会员凭据或制作、传播绕过订阅校验的版本。侵权责任依适用法律认定，法定例外与许可说明见 docs/ai-maintenance-boundary.md。
 """Install a pinned public source release and open a healthy local workbench.
 
-No package hook is executed. Only the project's declared launch.py is started.
-Python itself is prepared by WorkBuddy before invoking this script.
+The verified release provisions the native submission component and starts
+the workbench. WorkBuddy prepares Python before invoking this script.
 """
 from __future__ import annotations
 
@@ -34,10 +34,15 @@ MAX_EXPANDED = 200 * 1024 * 1024
 MAX_MEMBERS = 10000
 DOWNLOAD_ATTEMPTS = 3
 DOWNLOAD_TIMEOUT = 45
-REQUIRED = ("scripts/launch.py", "fagao/server.py", "fagao/store.py", "fagao/__main__.py", "web/index.html")
+REQUIRED = ("scripts/launch.py", "fagao/server.py", "fagao/store.py", "fagao/__main__.py", "web/index.html",
+            "web/submissions.html", "scripts/provision_submission.py", "scripts/install_submission_component.py",
+            "scripts/submission_archive.py", "scripts/submission_download.py", "scripts/submission-component-builds.json")
+SUBMISSION_DATA_DIRS = {"local-submissions", "submission-native-profile", "submission-handoff"}
+PRIVATE_SOURCE_ENTRIES = {".membership", "accounts", "legacy-claims", "legacy-claim.json",
+                          "legacy-decisions.json", ".legacy-claim.lock"} | SUBMISSION_DATA_DIRS
 EXCLUDED = {".git", "node_modules", "__pycache__", ".venv", ".DS_Store", ".env", ".data",
             "browser-profiles", ".fagao-release.json", ".fagao-install.json", ".install.lock",
-            ".membership", "accounts", "legacy-claims", "legacy-claim.json", "legacy-decisions.json", ".legacy-claim.lock", "network.json"}
+            "network.json"} | PRIVATE_SOURCE_ENTRIES
 RUNTIME_SUFFIXES = (".db", ".sqlite", ".sqlite3", ".sqlite-wal", ".sqlite-shm", ".sqlite3-wal", ".sqlite3-shm", ".log")
 
 
@@ -141,7 +146,7 @@ def extract_archive(archive: Path, destination: Path, expected_root: str) -> Non
             if member.flag_bits & 1:
                 raise InstallError("不接受加密压缩包。")
             relative = PurePosixPath(*path.parts[1:])
-            if any(part in {'.membership','accounts','legacy-claims','legacy-claim.json','legacy-decisions.json','.legacy-claim.lock'} for part in relative.parts):
+            if any(part in PRIVATE_SOURCE_ENTRIES for part in relative.parts):
                 raise InstallError('程序包包含账号凭据或个人资料目录，已拒绝安装。')
             key = str(relative).casefold()
             if key in seen:
@@ -690,6 +695,30 @@ def create_project_workspace(root: Path, manifest: dict) -> Path:
     return root / "workspace"
 
 
+def provision_submission(release: Path, data: Path, component_archive=None) -> dict:
+    """Run only the checked helper inside this exact source release, before switching current."""
+    command = [sys.executable, "-I", "-B", str(release / "scripts/provision_submission.py"),
+               "--data-dir", str(data)]
+    if component_archive is not None:
+        command += ["--component-archive", str(Path(component_archive).expanduser().resolve())]
+    # The helper enforces deadlines on its network and native subprocesses
+    # and owns cleanup of the component staging directory on every failure.
+    result = subprocess.run(command, cwd=release, capture_output=True, text=True,
+                            encoding="utf-8", errors="replace")
+    try:
+        info = json.loads(result.stdout)
+        if not isinstance(info, dict):
+            raise ValueError
+    except ValueError as exc:
+        raise InstallError("未收到小说投稿组件的安装结果。", code="submission_invalid_result",
+                           stage="submission_component") from exc
+    if result.returncode or info.get("status") not in {"installed", "already_installed", "unsupported"}:
+        raise InstallError(str(info.get("message") or "小说投稿组件安装失败。")[:600],
+                           code="submission_install_failed", stage="submission_component",
+                           retryable=True)
+    return info
+
+
 def sha_bytes(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
 
@@ -735,7 +764,7 @@ def create_shortcut(root: Path, manifest: dict) -> Path:
 
 
 def install(*, repo=None, commit=None, source_dir=None, archive_sha256=None, archive_file=None,
-            install_root=None, data_dir=None, port=18376, no_browser=False) -> dict:
+            install_root=None, data_dir=None, port=18376, no_browser=False, component_archive=None) -> dict:
     if sys.version_info < (3, 10):
         raise InstallError("需要 Python 3.10 或更新版本。")
     if not 1024 <= int(port) <= 65535:
@@ -829,11 +858,12 @@ def install(*, repo=None, commit=None, source_dir=None, archive_sha256=None, arc
         shortcut = create_shortcut(root,manifest)
         project_dir = create_project_workspace(root,manifest)
         atomic_json(marker,manifest)
+        submission = provision_submission(release, data, component_archive)
         current_health = health(port)
         if current_health and not service_matches(current_health,data,release):
             resume, saved_archive = resume_instruction(root,data,port,no_browser,source_dir,repo,commit,archive_sha256,archive,release)
             keep_archive = archive is not None and saved_archive == archive
-            return {"status":"restart_required","release_id":release_id,"release_dir":str(release),"message":"新版本已准备，但旧版本或另一服务仍在运行。尚未切换 current，也未声称升级完成。请让 WorkBuddy 核实并停止旧服务，再运行 resume.argv 完成安装。","data_dir":str(data),"install_root":str(root),"download":download,"current_switched":False,"resume":resume}
+            return {"status":"restart_required","release_id":release_id,"release_dir":str(release),"message":"新版本已准备，但旧版本或另一服务仍在运行。尚未切换 current，也未声称升级完成。请让 WorkBuddy 核实并停止旧服务，再运行 resume.argv 完成安装。","data_dir":str(data),"install_root":str(root),"download":download,"current_switched":False,"resume":resume,"submission_component":submission}
         cmd = [sys.executable,str(release/"scripts/launch.py"),"--data-dir",str(data),"--port",str(port)]
         if no_browser:
             cmd.append("--no-browser")
@@ -859,7 +889,7 @@ def install(*, repo=None, commit=None, source_dir=None, archive_sha256=None, arc
             keep_archive = archive is not None and saved_archive == archive
             return {**pending,"release_id":release_id,"release_dir":str(release),"data_dir":str(data),
                     "install_root":str(root),"download":download,"current_switched":False,
-                    "resume":resume}
+                    "resume":resume,"submission_component":submission}
         if run.returncode:
             raise InstallError("版本已准备，但启动失败，未切换现用版本。" + run.stderr[-1800:])
         try:
@@ -874,7 +904,7 @@ def install(*, repo=None, commit=None, source_dir=None, archive_sha256=None, arc
         interpreter = str(Path(sys.executable).resolve())
         atomic_json(root/"current.json",{"app":APP,"release_id":release_id,"data_dir":str(data),"port":port,"source":source,"interpreter":interpreter})
         archive_cleanup = cleanup_pending_archive(root, repo, commit, archive_sha256) if not source_dir else {"status":"not_needed"}
-        return {"status":"ready","release_id":release_id,"release_dir":str(release),"url":f"http://127.0.0.1:{port}/","data_dir":str(data),"shortcut":str(shortcut),"project_dir":str(project_dir),"interpreter":interpreter,"browser_opened":bool(launched.get("browser_opened")),"pid":launched.get("pid"),"service":launched.get("status"),"readiness":readiness,"download":download,"archive_cleanup":archive_cleanup,"lifecycle":launched.get("lifecycle")}
+        return {"status":"ready","release_id":release_id,"release_dir":str(release),"url":f"http://127.0.0.1:{port}/","data_dir":str(data),"shortcut":str(shortcut),"project_dir":str(project_dir),"interpreter":interpreter,"browser_opened":bool(launched.get("browser_opened")),"pid":launched.get("pid"),"service":launched.get("status"),"readiness":readiness,"download":download,"archive_cleanup":archive_cleanup,"lifecycle":launched.get("lifecycle"),"submission_component":submission}
     finally:
         if stage.exists():
             shutil.rmtree(stage)
@@ -889,6 +919,7 @@ def main() -> int:
     parser.add_argument("--commit",help="固定的完整 40 位提交 SHA")
     parser.add_argument("--archive-sha256",help="发行指针中的 source_archive_sha256；GitHub 安装必填")
     parser.add_argument("--archive-file",type=Path,help="已有官方 ZIP，仍须指定 repo、commit 与 archive-sha256")
+    parser.add_argument("--component-archive",type=Path,help="离线复用本机平台的官方投稿组件 ZIP，仍须核对发布版 SHA-256")
     parser.add_argument("--source-dir",type=Path,help="仅用于明确可信的本地工程/离线验收")
     parser.add_argument("--install-root",type=Path)
     parser.add_argument("--data-dir",type=Path)

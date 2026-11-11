@@ -4,6 +4,38 @@
     {
       "platform": "darwin",
       "arch": "arm64",
+      "tree_sha256": "d5c41114ebd06dd07d8ae19931d4c1ecf4b0c7695f180e2d748afb2f77c69317",
+      "executable_sha256": "d484d32aba2af1db7288033bd8b9a6eef89a8c97244a3f043efbba3be4cf0160",
+      "asar_sha256": "065f708559e26038345be38539db543f1765a73a8ce37e4b5000c30fed51558e",
+      "archive_sha256": "9eed273c0e459df3aca425bc61fe8bba4a42935af9bbf99454a485579d3dcb6c",
+      "size_bytes": 123018053,
+      "archive_url": "https://github.com/ShiQi-Han03/fagao-scan-workbench/releases/download/v0.7.0-dev.13/FagaoSubmission-macos-arm64.zip"
+    },
+    {
+      "platform": "darwin",
+      "arch": "x64",
+      "tree_sha256": "7ff4e03eff2cddf0abadf8551717ec39be74850981868eed0d21163fd8daed59",
+      "executable_sha256": "4c388fec8faef1be6257f5cc1c66f9f37f1c67639a6922dd0d1f0eb4ba49b032",
+      "asar_sha256": "065f708559e26038345be38539db543f1765a73a8ce37e4b5000c30fed51558e",
+      "archive_sha256": "ac408afeccc37defe1f40ba15b45a39f871c77c7fdce2a9382752843398581f7",
+      "size_bytes": 128159035,
+      "archive_url": "https://github.com/ShiQi-Han03/fagao-scan-workbench/releases/download/v0.7.0-dev.13/FagaoSubmission-macos-x64.zip"
+    },
+    {
+      "platform": "win32",
+      "arch": "x64",
+      "tree_sha256": "d737ef53f650086a8fea2f2c082ea0a49db4c12c6b3e4c0c7461390968a6901b",
+      "executable_sha256": "ff84dde8a7a7f2c64e10313721dbfb97f9ec8bfa5e96f98dbd2fd3bf546583d0",
+      "asar_sha256": "065f708559e26038345be38539db543f1765a73a8ce37e4b5000c30fed51558e",
+      "archive_sha256": "cd894bb64afca8acbb97857834658176a2462a467eaa602dba3e16268b0d1b94",
+      "size_bytes": 147946300,
+      "archive_url": "https://github.com/ShiQi-Han03/fagao-scan-workbench/releases/download/v0.7.0-dev.13/FagaoSubmission-windows-x64.zip"
+    }
+  ],
+  "prior_installations": [
+    {
+      "platform": "darwin",
+      "arch": "arm64",
       "tree_sha256": "68433cccf9134f24d2b84725e1e657f82839d1ea5d25d62fe6f83567764e11cd",
       "executable_sha256": "c2e85546a2e4b85c88bd5e07cfe8c2018861d14d843e301dbeb3f6e9096588ce",
       "asar_sha256": "73a58b8c0d579ac9b39515019394ea46e073ec71fa946458ce83dccd09fe4199"
@@ -14,9 +46,7 @@
       "tree_sha256": "8c0d23bd7762e73c1fd58c21a2a16381d6e4c2e0ac6b5bf87be2cc93e4896484",
       "executable_sha256": "0549c04dfd169cfa3f36d49a81ae660b41030b4202b25795971d699a4dab5e9f",
       "asar_sha256": "73a58b8c0d579ac9b39515019394ea46e073ec71fa946458ce83dccd09fe4199"
-    }
-  ],
-  "prior_installations": [
+    },
     {
       "platform": "darwin",
       "arch": "arm64",

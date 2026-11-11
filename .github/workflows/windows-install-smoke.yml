@@ -3,6 +3,15 @@ name: Windows installation acceptance
 
 on:
   workflow_dispatch:
+    inputs:
+      public_download:
+        description: Install the candidate anonymously from already-public release assets
+        type: boolean
+        default: false
+      source_archive_sha256:
+        description: Previously verified SHA-256 of the candidate source ZIP for public acceptance
+        type: string
+        required: false
   push:
     branches:
       - codex/windows-install-dev6-20261110
@@ -16,9 +25,40 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  submission-asset:
+    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.public_download }}
+    # The release is still a draft while this acceptance runs. Keep draft access
+    # in this job, which only reads GitHub data and never executes checkout code.
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    timeout-minutes: 8
+    steps:
+      - name: Fetch exact submission distribution
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: v0.7.0-dev.13
+          FILE: FagaoSubmission-windows-x64.zip
+        run: |
+          set -euo pipefail
+          id=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" | jq -er --arg tag "$TAG" 'map(select(.tag_name==$tag)) | select(length==1) | .[0].id')
+          asset=$(gh api "repos/$GITHUB_REPOSITORY/releases/$id/assets" | jq -cer --arg file "$FILE" 'map(select(.name==$file and .state=="uploaded")) | select(length==1) | .[0]')
+          asset_id=$(jq -er '.id' <<< "$asset")
+          digest=$(jq -er '.digest | select(test("^sha256:[a-f0-9]{64}$")) | sub("^sha256:";"")' <<< "$asset")
+          gh api -H 'Accept: application/octet-stream' "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id" > "$RUNNER_TEMP/$FILE"
+          echo "$digest  $RUNNER_TEMP/$FILE" | sha256sum --check --strict
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows-submission-distribution
+          path: ${{ runner.temp }}/FagaoSubmission-windows-x64.zip
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 2
   native-windows:
+    needs: submission-asset
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
@@ -35,6 +75,10 @@ jobs:
           python-version: ${{ matrix.python }}
       - name: Check first-party source notices
         run: python scripts/source_notice.py
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: windows-submission-distribution
+          path: ${{ runner.temp }}/fagao-ci-component
       - name: Installer and launcher regressions
         shell: pwsh
         run: |
@@ -59,8 +103,20 @@ jobs:
           if ($LASTEXITCODE -ne 0) { Get-Content "$env:RUNNER_TEMP/fagao-windows-receipts/daily-feed-tests.log"; exit $LASTEXITCODE }
       - name: Native install and real Job Object lifetimes
         shell: pwsh
+        env:
+          FAGAO_SUBMISSION_ARCHIVE: ${{ runner.temp }}/fagao-ci-component/FagaoSubmission-windows-x64.zip
         run: |
           python scripts/windows_install_smoke.py --receipt "$env:RUNNER_TEMP/fagao-windows-receipts/windows-install-smoke.json"
+          exit $LASTEXITCODE
+      - name: Install acceptance browser dependencies
+        shell: pwsh
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Upgrade dev.12 and open the real personal submission window
+        shell: pwsh
+        env:
+          FAGAO_SUBMISSION_ARCHIVE: ${{ runner.temp }}/fagao-ci-component/FagaoSubmission-windows-x64.zip
+        run: |
+          python scripts/windows_submission_upgrade.py --install-receipt "$env:RUNNER_TEMP/fagao-windows-receipts/windows-install-smoke.json" --receipt "$env:RUNNER_TEMP/fagao-windows-receipts/windows-submission-upgrade.json"
           exit $LASTEXITCODE
       - name: Preserve synthetic acceptance evidence
         if: always()
@@ -68,5 +124,37 @@ jobs:
         with:
           name: windows-install-smoke-${{ matrix.python }}
           path: ${{ runner.temp }}/fagao-windows-receipts/
+          if-no-files-found: error
+          retention-days: 7
+  native-public-download:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.public_download }}
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      PYTHONUTF8: '1'
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Install acceptance browser dependencies
+        shell: pwsh
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Install anonymously using the ordinary public GitHub entry
+        shell: pwsh
+        env:
+          SOURCE_ARCHIVE_SHA256: ${{ inputs.source_archive_sha256 }}
+        run: |
+          python scripts/windows_public_submission_install.py --source-archive-sha256 "$env:SOURCE_ARCHIVE_SHA256" --receipt "$env:RUNNER_TEMP/windows-public-install.json"
+          exit $LASTEXITCODE
+      - name: Preserve anonymous Windows release receipt
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-submission-public
+          path: ${{ runner.temp }}/windows-public-install.json
           if-no-files-found: error
           retention-days: 7

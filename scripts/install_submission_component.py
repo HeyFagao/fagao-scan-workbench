@@ -103,6 +103,12 @@ def tree_sha256(root: Path, system: str) -> str:
 
 
 def host_architecture() -> str:
+    if sys.platform == "darwin" and host.machine().lower() == "x86_64":
+        # WorkBuddy can run an Intel Python under Rosetta on Apple Silicon.
+        translated = subprocess.run(["/usr/sbin/sysctl", "-in", "sysctl.proc_translated"],
+                                    capture_output=True, timeout=5)
+        if translated.returncode == 0 and translated.stdout.strip() == b"1":
+            return "arm64"
     return {"amd64": "x64", "x86_64": "x64", "aarch64": "arm64"}.get(
         name := host.machine().lower(), name)
 

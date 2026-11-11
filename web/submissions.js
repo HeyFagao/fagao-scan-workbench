@@ -184,7 +184,7 @@
       componentAvailable = result.available === true;
       if (componentAvailable) hint.textContent = '';
       else if (result.platform === 'unsupported') hint.textContent = result.message;
-      else hint.textContent = (result.message || '本机投稿组件暂不可用。') + ' 可让 WorkBuddy 安装工作台配套的个人投稿组件，再刷新此页。';
+      else hint.textContent = result.message || '投稿功能暂不可用，可以继续保存草稿。';
     } catch {
       componentAvailable = false;
       hint.textContent = '暂时无法打开投稿助手。可以先写草稿，稍后重新打开此页。';

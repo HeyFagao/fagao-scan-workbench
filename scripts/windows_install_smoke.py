@@ -406,6 +406,11 @@ def run_smoke(args):
         passed("permitted_breakaway_survives_command_and_job_close")
         passed("real_pinned_install_with_unicode_and_space_paths")
         report["installed_version"] = observed["version"]
+        request = urllib.request.Request(f"http://127.0.0.1:{port}/api/submissions/component",
+                                         headers={"X-Fagao-Request": "1"})
+        with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=25) as response:
+            report["submission_component_ready"] = json.load(response).get("available") is True
+        need(report["submission_component_ready"], "fresh install did not provision the personal composer")
         report["download"] = first.get("download", first.get("download_diagnostics", {}))
         need((app / "current.json").is_file() and Path(first["project_dir"]).joinpath("AGENTS.md").is_file(), "stable project/pointer missing")
         need(Path(first["shortcut"]).suffix == ".bat" and Path(first["shortcut"]).is_file(), "Windows shortcut missing")

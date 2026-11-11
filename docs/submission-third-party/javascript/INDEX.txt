@@ -1,0 +1,47 @@
+投稿桌面组件第三方 JavaScript 许可证
+
+按本次构建的主进程、预加载和界面代码所包含的包列出。文件来自对应安装版本。
+
+@pinojs/redact@0.4.0  MIT  pinojs--redact@0.4.0/LICENSE
+@selderee/plugin-htmlparser2@0.12.0  MIT  selderee--plugin-htmlparser2@0.12.0/LICENSE
+@zone-eu/mailsplit@5.4.15  (MIT OR EUPL-1.1+)  zone-eu--mailsplit@5.4.15/LICENSE.EUPL-1.2, zone-eu--mailsplit@5.4.15/LICENSE.MIT
+atomic-sleep@1.0.0  MIT  atomic-sleep@1.0.0/LICENSE
+csv-parse@7.0.2  MIT  csv-parse@7.0.2/LICENSE
+csv-stringify@6.8.3  MIT  csv-stringify@6.8.3/LICENSE
+debug@2.6.9  MIT  debug@2.6.9/LICENSE
+deepmerge-ts@7.1.5  BSD-3-Clause  deepmerge-ts@7.1.5/LICENSE
+dom-serializer@2.0.0  MIT  dom-serializer@2.0.0/LICENSE
+domelementtype@2.3.0  BSD-2-Clause  domelementtype@2.3.0/LICENSE
+domhandler@5.0.3  BSD-2-Clause  domhandler@5.0.3/LICENSE
+electron-squirrel-startup@1.0.1  Apache-2.0  electron-squirrel-startup@1.0.1/LICENSE
+encoding-japanese@2.2.0  MIT  encoding-japanese@2.2.0/LICENSE
+entities@4.5.0  BSD-2-Clause  entities@4.5.0/LICENSE
+entities@7.0.1  BSD-2-Clause  entities@7.0.1/LICENSE
+html-to-text@10.0.0  MIT  html-to-text@10.0.0/LICENSE
+htmlparser2@10.1.0  MIT  htmlparser2@10.1.0/LICENSE
+iconv-lite@0.7.3  MIT  iconv-lite@0.7.3/LICENSE
+imapflow@1.6.6  MIT  imapflow@1.6.6/LICENSE.txt
+ip-address@10.4.0  MIT  ip-address@10.4.0/LICENSE
+leac@0.7.0  MIT  leac@0.7.0/LICENSE
+libbase64@1.3.0  MIT  libbase64@1.3.0/LICENSE
+libmime@5.4.2  MIT  libmime@5.4.2/LICENSE
+libqp@2.1.1  MIT  libqp@2.1.1/LICENSE
+ms@2.0.0  MIT  ms@2.0.0/license.md
+nodemailer@9.0.5  MIT-0  nodemailer@9.0.5/LICENSE
+on-exit-leak-free@2.1.2  MIT  on-exit-leak-free@2.1.2/LICENSE
+parseley@0.13.1  MIT  parseley@0.13.1/LICENSE
+peberminta@0.10.0  MIT  peberminta@0.10.0/LICENSE
+pino-std-serializers@7.1.0  MIT  pino-std-serializers@7.1.0/LICENSE
+pino@10.3.1  MIT  pino@10.3.1/LICENSE
+quick-format-unescaped@4.0.4  MIT  quick-format-unescaped@4.0.4/LICENSE
+react-dom@19.2.8  MIT  react-dom@19.2.8/LICENSE
+react@19.2.8  MIT  react@19.2.8/LICENSE
+safe-stable-stringify@2.5.0  MIT  safe-stable-stringify@2.5.0/LICENSE
+safer-buffer@2.1.2  MIT  safer-buffer@2.1.2/LICENSE
+scheduler@0.27.0  MIT  scheduler@0.27.0/LICENSE
+selderee@0.12.0  MIT  selderee@0.12.0/LICENSE
+smart-buffer@4.2.0  MIT  smart-buffer@4.2.0/LICENSE
+socks@2.8.9  MIT  socks@2.8.9/LICENSE
+sonic-boom@4.2.1  MIT  sonic-boom@4.2.1/LICENSE
+thread-stream@4.2.0  MIT  thread-stream@4.2.0/LICENSE
+zod@4.4.3  MIT  zod@4.4.3/LICENSE

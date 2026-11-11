@@ -1,0 +1,6 @@
+发糕工作台 · 小说投稿组件使用的第三方软件
+
+投稿窗口使用 Electron 43.3.0。Electron 的 MIT 许可证见 Electron-LICENSE.txt。各平台组件压缩包包含 THIRD_PARTY_LICENSES/LICENSES.chromium.html，记录对应 Electron 发行中的 Chromium 及其依赖归属和许可。
+本机 JavaScript 依赖的名称、版本和完整许可文本见 javascript/INDEX.txt 及其同级目录。
+
+在已安装的工作台文件夹，macOS 的 Chromium 许可全文保存在 docs/submission-macos-chromium.html.gz。解压后可用浏览器打开。Windows 的对应文件位于已安装投稿组件目录 FagaoSubmission/LICENSES.chromium.html。

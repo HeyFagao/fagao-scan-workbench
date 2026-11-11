@@ -276,6 +276,9 @@ class InstallationTests(unittest.TestCase):
         self.health_patch=patch.object(bootstrap,'health',side_effect=lambda port:self.service)
         self.run_patch=patch.object(bootstrap.subprocess,'run',side_effect=self.mock_run)
         self.health_patch.start();self.run_patch.start()
+        provision = patch.object(bootstrap, 'provision_submission', return_value={'status': 'installed'})
+        self.addCleanup(provision.stop)
+        self.component = provision.start()
     def tearDown(self):
         self.health_patch.stop();self.run_patch.stop();self.temp.cleanup()
     def mock_run(self,command,**kwargs):
@@ -293,6 +296,19 @@ class InstallationTests(unittest.TestCase):
         self.assertEqual(json.loads((self.root/'current.json').read_text())['release_id'],first['release_id'])
         self.assertTrue(Path(first['shortcut']).is_file())
         self.assertEqual(first['readiness']['status'],'ready')
+        self.assertEqual(first['submission_component'], {'status':'installed'})
+        self.assertEqual(self.component.call_count, 2)
+    def test_component_failure_preserves_current_and_does_not_stop_running_service(self):
+        self.install()
+        pointer = (self.root/'current.json').read_bytes()
+        existing_service = self.service.copy()
+        (self.source/'web/index.html').write_text('new source version')
+        self.component.side_effect = bootstrap.InstallError('test component download failure')
+        with self.assertRaises(bootstrap.InstallError):
+            self.install()
+        self.assertEqual((self.root/'current.json').read_bytes(), pointer)
+        self.assertEqual(self.service, existing_service)
+        self.assertEqual(self.sentinel.read_bytes(), b'user data must survive')
     def test_upgrade_stages_but_does_not_switch_running_old_service(self):
         first=self.install();before=(self.root/'current.json').read_bytes()
         (self.source/'web/index.html').write_text('new version')

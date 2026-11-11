@@ -29,7 +29,8 @@ RECEIPT_FIELDS = {'version', 'platform', 'edition', 'executable_sha256', 'asar_s
 APPEARANCES = {'light', 'dark', 'eye-care', 'system'}
 FIELD_LIMITS = {'work_title': 300, 'pen_name': 100, 'subject': 500, 'body': 200_000}
 HANDOFF_TTL = 300
-HANDOFF_ACK_TIMEOUT = 20
+# First launch may include OS package scanning or translation on macOS.
+HANDOFF_ACK_TIMEOUT = 60
 CHILD_ENV = ('HOME', 'USER', 'LOGNAME', 'TMPDIR', 'LANG', 'LC_ALL', 'LC_CTYPE',
              '__CF_USER_TEXT_ENCODING', 'SYSTEMROOT', 'WINDIR', 'USERPROFILE', 'USERNAME',
              'APPDATA', 'LOCALAPPDATA', 'TEMP', 'TMP', 'HOMEDRIVE', 'HOMEPATH')
@@ -175,9 +176,9 @@ def _verified_component(root, platform, *, check_signature=False):
                            stderr=subprocess.DEVNULL, timeout=30, env={'PATH': '/usr/bin:/bin'})
         return executable
     except FileNotFoundError as exc:
-        raise _unavailable('请先安装本机投稿组件，草稿仍保存在工作台。') from exc
+        raise _unavailable('投稿功能尚未就绪。请让 WorkBuddy 用原安装说明更新工作台，再刷新此页。') from exc
     except (ValueError, OSError, TypeError, ExpatError, plistlib.InvalidFileException, subprocess.SubprocessError) as exc:
-        raise _unavailable('本机投稿组件未通过校验，请重新安装。') from exc
+        raise _unavailable('投稿程序文件校验失败。请让 WorkBuddy 用原安装说明修复工作台，再刷新此页。') from exc
 
 
 def component_status(root):
