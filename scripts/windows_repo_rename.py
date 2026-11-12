@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import platform
 import shutil
+import subprocess
 import struct
 import sys
 import tempfile
@@ -35,11 +36,16 @@ ASSETS = {"FagaoSubmission-macos-arm64.zip": 736048269, "FagaoSubmission-macos-x
           "FagaoSubmission-windows-x64.zip": 736048271}
 # Public encrypted publication receipts. These fixtures contain no account information or keys.
 FEEDS = {
-    "douyin": ("4378471a2079c03f53ddba585b9a42e405edfd8c", "b7819c275c43db4b17a7a365d1dd6b90828e41e85c3e0136894592f9b1f4841d", 7652),
-    "hongguo": ("708022c1872ec4177eac48f6ff107d5fae8b6f9a", "854924ad7ecadaa95753acd28aabfee39f3887e985fc71a97b640fbede45259e", 9356),
-    "zhihu": ("2afc843f753680f00b96725ce721c24d30011384", "8725cd49be420fb2dd9e35d83cc9fd2ecf376391a611797f37ac41d5c5e94c31", 4664),
-    "fanqie_story": ("ac14e41690c180587fb1943fb62cf2a04944512e", "217deacfc40ca0439f9bfaa66ae64ee82a3a35e92f3122e5e1dcdba4fcb3381a", 4748),
-    "adapt": ("7d4e7277a64b207e9d2823b65df4e00677951e1e", "e4572c7fcddf45f54301744f04e5a74d4dab7a9ca0c5fe18c1e65a0da9dec755", 8632),
+    "douyin": ("4378471a2079c03f53ddba585b9a42e405edfd8c", "b7819c275c43db4b17a7a365d1dd6b90828e41e85c3e0136894592f9b1f4841d", 7652,
+               100, '2026-11-12', '2026-11-12T10:02:03+00:00'),
+    "hongguo": ("708022c1872ec4177eac48f6ff107d5fae8b6f9a", "854924ad7ecadaa95753acd28aabfee39f3887e985fc71a97b640fbede45259e", 9356,
+                96, '2026-11-12', '2026-11-12T10:05:25+00:00'),
+    "zhihu": ("2afc843f753680f00b96725ce721c24d30011384", "8725cd49be420fb2dd9e35d83cc9fd2ecf376391a611797f37ac41d5c5e94c31", 4664,
+              83, '2026-11-06', '2026-11-12T04:35:02+00:00'),
+    "fanqie_story": ("ac14e41690c180587fb1943fb62cf2a04944512e", "217deacfc40ca0439f9bfaa66ae64ee82a3a35e92f3122e5e1dcdba4fcb3381a", 4748,
+                     100, '2026-11-11', '2026-11-12T02:09:09+00:00'),
+    "adapt": ("7d4e7277a64b207e9d2823b65df4e00677951e1e", "e4572c7fcddf45f54301744f04e5a74d4dab7a9ca0c5fe18c1e65a0da9dec755", 8632,
+              100, None, '2026-11-12T02:12:41+00:00'),
 }
 
 
@@ -108,16 +114,14 @@ def test_feeds(source, data, owner, receipt):
     from fagao import daily_feeds, network
     network.configure(data)
     opener_factory = network.build_opener
-    for board, (commit, checksum, size) in FEEDS.items():
+    for board, (commit, checksum, size, rows, day, observed) in FEEDS.items():
         aliases = {}
         receipt["feeds"][board] = {"sha256": checksum, "byte_length": size, "commit": commit, "aliases": aliases}
         for alias in (owner, NEW if owner == OLD else OLD):
             url = f"https://raw.githubusercontent.com/{alias}/{FEED}/{commit}/objects/{board}/{checksum}.bin"
             evidence = aliases[alias] = probe_link(url, digest=checksum, limit=size)
             manifest = dict(version=1, format=daily_feeds.FORMAT, board=board, sha256=checksum,
-                            artifact_url=url, byte_length=size, row_count=1, source_date=None,
-                            observed_at="2026-11-12T00:00:00+00:00")
-            # The synthetic envelope is only used to exercise the candidate's URL validation.
+                            artifact_url=url, byte_length=size, row_count=rows, source_date=day, observed_at=observed)
             daily_feeds.validate_manifest(manifest, board)
             routes = []
 
@@ -229,23 +233,29 @@ def run_windows(fixture, identities, phase, receipt):
                     "--archive-sha256", OLD_SOURCE, "--no-browser"]
     with patch.dict(os.environ, {**env, "FAGAO_DATA_DIR": str(data)}, clear=True):
         previous = install(previous_cmd, fixture / "baseline")
-        with serving(previous, data) as (_, old_status, _):
-            from fagao.store import Store
-            from fagao import network
+        with serving(previous, data) as (previous_source, old_status, _):
             need(old_status["version"] == "0.7.0-dev.16" and previous["submission_component"]["status"] == "already_installed",
                  "The dev.16 baseline does not contain the original component")
-            store = Store(data)
-            saved = store.save_snapshot({"platform": "fanqie", "board": "验收榜",
-                                        "books": [{"id": "test-1", "rank": 1, "title": "合成书目"}]})
+            # Use dev.16's own data format to create the historical records.
+            seed = """import json, sys
+from fagao.network import save_settings
+from fagao.store import Store
+store = Store(sys.argv[1])
+save_settings(store.directory, 'direct')
+print(json.dumps(store.save_snapshot({'platform':'fanqie', 'board':'验收榜',
+      'books':[{'id':'test-1', 'rank':1, 'title':'合成书目'}]})))
+"""
+            saved = json.loads(subprocess.check_output([sys.executable, "-B", "-c", seed, str(data)], cwd=previous_source))
             draft = draft_request("/api/submissions/save", {"work_title": "旧版草稿", "pen_name": "合成笔名",
                                                             "subject": "投稿验收", "body": "升级前已保存在本机。"})["draft"]
-            network.save_settings(data, "direct")
             settings = (data / "network.json").read_bytes()
             pending = install(cmd, fixture / "upgrade-while-running", expected=2)
             need(pending["status"] == "restart_required" and pending["current_switched"] is False,
                  "The active dev.16 installation was prematurely replaced")
         resumed = install(pending["resume"]["argv"], fixture / "resume")
         with serving(resumed, data) as (_, current, _):
+            from fagao.store import Store
+            store = Store(data)
             need(resumed["release_id"] == commit and current["version"] == receipt["app_version"]
                  and resumed["submission_component"]["status"] == "already_installed", "Candidate upgrade failed")
             need(draft_request("/api/submissions/draft?id=" + draft["id"])["draft"] == draft
