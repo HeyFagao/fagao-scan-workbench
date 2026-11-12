@@ -58,6 +58,13 @@ def text_integrity_summary(record):
     return label,'；'.join(details)
 
 
+def _collection_key(platform, options):
+    try: serialized=json.dumps({'platform':platform,'options':options},ensure_ascii=False,sort_keys=True,separators=(',',':'),allow_nan=False)
+    except (TypeError,ValueError): raise AppError('invalid_options','采集条件无法保存。')
+    if len(serialized)>16000: raise AppError('invalid_options','采集条件过长。')
+    return hashlib.sha256(serialized.encode()).hexdigest(),options
+
+
 def collection_scope(platform, options):
     """Use effective collector defaults so equivalent requests share one job."""
     if not isinstance(options,dict): raise AppError('invalid_options','采集条件不正确。')
@@ -66,6 +73,9 @@ def collection_scope(platform, options):
     if not isinstance(platform,str) or platform not in modes: raise AppError('invalid_platform','平台不正确。')
     mode=modes[platform]
     if options.get('mode') not in (None,mode): raise AppError('invalid_mode','作品类型与采集平台不一致。')
+    from .long_rankings import COLLECTORS, collection_options
+    if platform in COLLECTORS:
+        return _collection_key(platform, collection_options(platform, options))
     options['mode']=mode
     overseas=next((item for item in PLATFORMS if item['id']==platform and item['mode']=='overseas'),None)
     if overseas:
@@ -98,10 +108,7 @@ def collection_scope(platform, options):
         if key in options:
             value=options[key]
             if isinstance(value,bool) or not isinstance(value,int) or value<1 or value>10000: raise AppError('invalid_options','采集数量和页数应为 1 到 10000 的整数。')
-    try: serialized=json.dumps({'platform':platform,'options':options},ensure_ascii=False,sort_keys=True,separators=(',',':'),allow_nan=False)
-    except (TypeError,ValueError): raise AppError('invalid_options','采集条件无法保存。')
-    if len(serialized)>16000: raise AppError('invalid_options','采集条件过长。')
-    return hashlib.sha256(serialized.encode()).hexdigest(),options
+    return _collection_key(platform, options)
 
 
 def _age_seconds(timestamp):

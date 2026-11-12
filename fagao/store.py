@@ -13,12 +13,14 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
+from .long_rankings import PLATFORMS as LONG_RANKING_PLATFORMS
 from .overseas import OVERSEAS_PLATFORMS
 
 PLATFORMS = [
     {'id':'fanqie','name':'番茄小说','mode':'long','status':'available','message':'公开榜单；以实际采集结果为准'},
     {'id':'qidian','name':'起点中文网','mode':'long','status':'available','message':'公开移动榜单；以实际采集结果为准'},
     {'id':'ciweimao','name':'刺猬猫','mode':'long','status':'available','message':'公开榜单分页采集；实际覆盖以采集结果为准'},
+    *LONG_RANKING_PLATFORMS.values(),
     {'id':'heiyan','name':'黑岩故事会','mode':'short','status':'external','message':'打开腾讯文档书单，在原站完成登录','source_url':'https://docs.qq.com/sheet/DYVNwaVJZV2ZxTWl3?tab=q1ans7'},
     {'id':'fanqie_short','name':'番茄短故事','mode':'short','status':'unavailable','message':'热门故事入口待实机验证；可导入来源明确的书目'},
 ] + OVERSEAS_PLATFORMS

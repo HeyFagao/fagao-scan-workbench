@@ -27,7 +27,7 @@ with tempfile.TemporaryDirectory() as directory, patch('fagao.public_rankings.sy
     thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
     env=dict(os.environ,FAGAO_TEST_URL='http://127.0.0.1:'+str(server.server_port))
     try:
-        result=subprocess.run(['node','tests/ui-smoke.cjs'],env=env,cwd=Path(__file__).resolve().parents[1],timeout=35)
+        result=subprocess.run(['node','tests/ui-smoke.cjs'],env=env,cwd=Path(__file__).resolve().parents[1],timeout=90)
         code=result.returncode
     finally:server.shutdown();server.server_close();thread.join()
     sys.exit(code)

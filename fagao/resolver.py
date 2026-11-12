@@ -28,6 +28,7 @@ class ResolutionError(ValueError):
 
 PLATFORM_NAMES = {
     "fanqie": "番茄", "qidian": "起点", "ciweimao": "刺猬猫",
+    "faloo": "飞卢", "qimao": "七猫", "jjwxc": "晋江", "zongheng": "纵横",
     "heiyan": "黑岩故事会", "fanqie_short": "番茄短故事",
     "goodnovel":"GoodNovel", "goodnovel_short":"GoodNovel 短篇", "meganovel":"MegaNovel",
     "dreame":"Dreame", "webnovel":"Webnovel", "royalroad":"Royal Road", "scribblehub":"Scribble Hub",
@@ -40,6 +41,8 @@ PLATFORM_ALIASES = {
     "fanqie_short": ("番茄短故事", "番茄短篇", "fanqie_short"),
     "fanqie": ("番茄", "fanqie"), "qidian": ("起点", "qidian"),
     "ciweimao": ("刺猬猫", "ciweimao"),
+    "faloo": ("飞卢", "faloo"), "qimao": ("七猫", "qimao"),
+    "jjwxc": ("晋江", "jjwxc"), "zongheng": ("纵横", "zongheng"),
     "heiyan": ("黑岩", "heiyan"),
 }
 OVERSEAS_IDS = {"goodnovel","goodnovel_short","meganovel","dreame","webnovel","royalroad","scribblehub"}
@@ -151,8 +154,11 @@ def _candidate(snapshot: dict, book: dict) -> dict:
 def _result(snapshot: dict, book: dict) -> dict:
     if not book.get("id") or not snapshot.get("id"):
         raise ResolutionError("invalid_record", "作品缺少稳定标识，请重新采集该来源。")
+    scope = _scope(snapshot)
+    if book.get('rank_semantics') == 'source_list_position' and book.get('rank') is not None:
+        scope += f" · 来源列表第 {book['rank']} 位"
     return {"snapshot_id": snapshot["id"], "book_id": book["id"],
-            "book": deepcopy(book), "scope_description": _scope(snapshot)}
+            "book": deepcopy(book), "scope_description": scope}
 
 
 def _book(snapshot: dict, book_id: Any) -> dict:
@@ -165,6 +171,8 @@ def _book(snapshot: dict, book_id: Any) -> dict:
 
 
 def _constraints(query: str, snapshots: list[dict]) -> dict:
+    from .long_rankings import PLATFORMS as domestic_lists
+
     constraints: dict[str, str] = {}
     if re.search(r"长篇|(?<![a-z])long(?![a-z])", query):
         constraints["mode"] = "long"
@@ -192,7 +200,11 @@ def _constraints(query: str, snapshots: list[dict]) -> dict:
         constraints["mode"]="overseas"
     if constraints.get("platform") == "fanqie" and constraints.get("mode") == "short":
         constraints["platform"] = "fanqie_short"
-    if constraints.get("platform") in ("fanqie", "qidian", "ciweimao") and "mode" not in constraints:
+    platform = constraints.get("platform")
+    domestic = domestic_lists.get(platform)
+    if domestic and constraints.get("mode") == "short":
+        raise ResolutionError("incompatible_scope", "此平台在工作台提供长篇榜单。")
+    if (platform in ("fanqie", "qidian", "ciweimao") or domestic) and "mode" not in constraints:
         constraints["mode"] = "long"
     if constraints.get("platform") in ("heiyan", "fanqie_short"):
         if constraints.get("mode") == "long":
@@ -206,14 +218,24 @@ def _constraints(query: str, snapshots: list[dict]) -> dict:
             raise ResolutionError("ambiguous_" + field, "请指定一个频道或榜型。")
         if detected:
             constraints[field] = detected[0]
-    source_boards={_normalize(s.get("board")) for s in snapshots if s.get("board") and s.get("mode")=="overseas"}
+    scoped_snapshots = [s for s in snapshots if not platform or s.get("platform") == platform]
+    source_boards={_normalize(s.get("board")) for s in scoped_snapshots if s.get("board") and
+                   (s.get("mode")=="overseas" or s.get("platform") in domestic_lists)}
+    if domestic:
+        source_boards.update(domestic['boards'])
+        for field, choices in (('channel', domestic['channels']), ('period', domestic.get('periods', []))):
+            present = [value for value in choices if value not in ('全部', '全站') and _contains(query, value)]
+            if len(present) > 1:
+                raise ResolutionError("ambiguous_" + field, "请指定一个榜单频道和周期。")
+            if present:
+                constraints[field] = _canonical(present[0], CHANNEL_ALIASES) if field == 'channel' else _normalize(present[0])
     detected_boards=[b for b in source_boards if _contains(query,b)]
     detected_boards=[b for b in detected_boards if not any(b!=other and b in other for other in detected_boards)]
     if len(detected_boards)>1:
-        raise ResolutionError("ambiguous_board","请指定一个海外榜型。")
+        raise ResolutionError("ambiguous_board","请指定一个榜型。")
     if detected_boards:
         constraints["board"]=_canonical(detected_boards[0],BOARD_ALIASES)
-    categories = {_normalize(s.get("category")) for s in snapshots if s.get("category")}
+    categories = {_normalize(s.get("category")) for s in scoped_snapshots if s.get("category")}
     categories = {c for c in categories if not c.isdigit() and c not in ("全部", "all", "不限")}
     detected = [c for c in categories if _contains(query, c)]
     # Prefer the full category over a category name contained within it.
@@ -249,7 +271,7 @@ def _latest_per_scope(snapshots: list[dict], context: dict) -> list[dict]:
     for s in snapshots:
         key = (_normalize(s.get("platform")), _normalize(s.get("mode")),
                _canonical(s.get("channel"), CHANNEL_ALIASES), _normalize(s.get("category")),
-               _canonical(s.get("board"), BOARD_ALIASES))
+               _canonical(s.get("board"), BOARD_ALIASES), _normalize(s.get("period")))
         previous = grouped.get(key)
         current_time = _timestamp(s.get("collected_at"), zone)
         previous_time = _timestamp((previous or {}).get("collected_at"), zone)
@@ -407,6 +429,8 @@ def resolve_reference(query: str, context: dict) -> dict:
             raise ResolutionError("rank_not_found", f"这份榜单没有采到原榜第 {rank} 名；不会用列表第 {rank} 条替代。")
         if len(books) != 1:
             raise ResolutionError("ambiguous_rank", "此快照包含重复名次，请指定作品分类或书名。", [_candidate(snapshot, b) for b in books])
+        if books[0].get('rank_semantics') == 'source_list_position' and re.search(r'原榜(?:名次|排名)?\s*第', constraint_text):
+            raise ResolutionError("rank_not_found", "此榜仅提供来源列表位置，可用书名或来源第几位来指定作品。")
         return _result(snapshot, books[0])
 
     if list_match:

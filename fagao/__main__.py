@@ -140,7 +140,11 @@ def run_command(args,store):
         from .batch import collect_all_categories
         result=collect_all_categories(store,json.loads(args.options),collection_progress)
     elif args.command=='collect':
-        from .collectors import collect
-        result=store.save_snapshot(collect(args.platform,json.loads(args.options),store.directory,collection_progress))
+        from .collectors import CollectorError, collect
+        try:
+            ranking = collect(args.platform,json.loads(args.options),store.directory,collection_progress)
+        except CollectorError as exc:
+            raise AppError(exc.state, str(exc), 502) from exc
+        result=store.save_snapshot(ranking)
     return result
 if __name__=='__main__': sys.exit(main())

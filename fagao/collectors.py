@@ -948,6 +948,9 @@ def collect(platform, options, data_dir, progress=None):
     network.check_authorization()
     if platform == "heiyan" and network.has_authorization():
         raise CollectorError("黑岩使用腾讯文档书单，请从工作台入口在普通浏览器打开。", "external_link")
+    from .long_rankings import COLLECTORS, collection_options
+    if platform in COLLECTORS:
+        return COLLECTORS[platform].collect(collection_options(platform, options), progress)
     from .overseas import OVERSEAS_PLATFORMS, collect_overseas
     if platform in {item['id'] for item in OVERSEAS_PLATFORMS}:
         return collect_overseas(platform, options, data_dir, progress)

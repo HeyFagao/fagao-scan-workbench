@@ -412,5 +412,68 @@ async function open({stale=false,freshSnapshot=null,history=false,expiredHeiyan=
  const lateData=(await api('/api/overview')).platforms.find(item=>item.platform==='fanqie').dashboard.views['全部'];
  dashboardCheck(()=>{assert.equal(Number(d.querySelector('[data-kpi="books"] strong').childNodes[0].textContent.replaceAll(',','')),lateData.kpis.books);assert.equal(d.querySelector('[data-action="overview-refresh"]').disabled,false);});
  await pause(80);dom.window.close();
- assert.deepEqual(errors,[]);console.log(JSON.stringify({passed:true,checks:82+dashboardChecks+favoriteChecks+openingChecks,dashboard_checks:dashboardChecks,favorite_checks:favoriteChecks,opening_checks:openingChecks,layout_verified:false,external_platform_requests:0}));
+ // The real registry drives the long-form sidebar, the collection scope and the work's source link.
+ const longIds=['faloo','qimao','jjwxc','zongheng'], checkedLong=[];
+ const registry=(await api('/api/state')).platforms;
+ let longChecks=0;
+ const longCheck=fn=>{fn();longChecks++;};
+ for(const id of longIds){
+   const site=registry.find(p=>p.id===id);
+   assert(site?.mode==='long','Missing domestic platform '+id);
+   const spec=site.default_options;
+   const bookId='qa-long-'+id, title=site.name+'测试作品', url='https://example.invalid/book/'+id;
+   await api('/api/import/snapshot',{snapshot:{platform:id,...spec,source_url:site.source_url,books:[{
+     id:bookId,title,author:'测试作者',rank:7,rank_semantics:id==='qimao'?'source_list_position':'original_rank',url,metrics:[{name:'字数',value:123456,unit:'字'}]
+   }]}});
+   dom=await open({startHome:true});d=dom.window.document;
+   const beforeClick=collections.length;
+   const nav=d.querySelector('#platforms [data-action="platform"][data-platform="'+id+'"]');
+   longCheck(()=>{assert(nav);assert.equal(nav.querySelector('small'),null);assert.equal(collections.length,beforeClick);});
+   nav.click();
+   await wait(()=>d.querySelector('[data-action="select-book"][data-book="'+bookId+'"]'),'Missing book on '+id);
+   await wait(()=>collections.slice(beforeClick).some(c=>c.platform===id),'Missing scoped collection on '+id);
+   longCheck(()=>{
+     const requests=collections.slice(beforeClick);
+     assert(requests.every(c=>c.platform===id));assert.equal(requests[0].options.board,spec.board);
+     assert.equal(requests[0].options.limit,100);assert.equal(d.querySelector('#board-kind').value,spec.board);
+     assert.equal(d.querySelector('.source-note a')?.href,site.source_url);
+   });
+   d.querySelector('[data-action="collection-options"]').click();
+   longCheck(()=>{
+     const limit=d.querySelector('#options-form #limit');assert.equal(limit.max,'100');assert.equal(limit.value,'100');
+     assert.equal(d.querySelector('#options-form #category').tagName,'SELECT');
+   });
+   d.querySelector('#options-form [data-action="close-dialog"]').click();
+   d.querySelector('[data-action="select-book"][data-book="'+bookId+'"]').click();
+   await wait(()=>d.querySelector('.detail h2')?.textContent===title,'Wrong selected work on '+id);
+   longCheck(()=>{
+     assert.match(d.querySelector('.positions').textContent,id==='qimao'?/来源列表第 7 本/:/原榜第 7 名/);
+     assert.equal(d.querySelector('.detail .source-link').href,url);
+     assert.equal(d.querySelector('.detail [data-action="catalog"]'),null);assert(d.querySelector('.detail [data-action="import-text"]'));
+   });
+   d.querySelector('.detail [data-action="favorite"]').click();
+   await wait(()=>d.querySelector('.favorite-button')?.getAttribute('aria-pressed')==='true','Cannot save '+id);
+   longCheck(()=>{assert.match(d.querySelector('.bridge').textContent,/书名/);assert(!d.querySelector('.bridge').textContent.includes('书名和简介'));});
+   if(id==='qimao'){
+     d.querySelector('[data-action="context"]').click();
+     await wait(()=>d.querySelector('#dialog[open]'),'Missing WorkBuddy context');
+     longCheck(()=>{assert.match(d.querySelector('#dialog-body').textContent,/来源位置/);assert(!d.querySelector('#dialog-body').textContent.includes('原榜名次'));});
+     d.querySelector('#dialog [data-action="close-dialog"]').click();
+   }
+   if(site.periods?.length>1){
+     const selector=d.querySelector('#board-period');
+     const alternate=site.periods.find(x=>x!==spec.period);selector.value=alternate;
+     selector.dispatchEvent(new dom.window.Event('change',{bubbles:true}));
+     await wait(()=>collections.slice(beforeClick).some(c=>c.platform===id && c.options.period===alternate),'Failed to switch period for '+id);
+     longCheck(()=>assert.equal(d.querySelector('[data-action="select-book"][data-book="'+bookId+'"]'),null,'Retained a different period'));
+   }else if(site.board_periods && site.boards.length>1){
+     const selector=d.querySelector('#board-kind'), alternate=site.boards.find(x=>x!==spec.board);selector.value=alternate;
+     selector.dispatchEvent(new dom.window.Event('change',{bubbles:true}));
+     await wait(()=>collections.slice(beforeClick).some(c=>c.platform===id && c.options.board===alternate),'Failed to switch board for '+id);
+     longCheck(()=>assert.equal(collections.filter(c=>c.platform===id && c.options.board===alternate).at(-1).options.period,site.board_periods[alternate]));
+   }
+   await wait(()=>d.querySelector('.head-actions [data-action="collect"]')?.disabled===false,'Pending collection on '+id);
+   checkedLong.push(id);dom.window.close();
+ }
+ assert.deepEqual(errors,[]);console.log(JSON.stringify({passed:true,checks:82+dashboardChecks+favoriteChecks+openingChecks+longChecks,dashboard_checks:dashboardChecks,favorite_checks:favoriteChecks,opening_checks:openingChecks,long_platform_checks:longChecks,long_platforms:checkedLong,layout_verified:false,external_platform_requests:0}));
 })().catch(e=>{console.error(e);process.exitCode=1;process.exit(1)});

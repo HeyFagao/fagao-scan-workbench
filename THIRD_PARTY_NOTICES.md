@@ -7,6 +7,8 @@
 - `skills/story-long-scan/scripts/ciweimao-rank-scraper.js`
 - `skills/story-short-scan/scripts/heiyan-booklist-scraper.js`
 
+新增七猫和晋江适配时另核对了 Oh Story 的[七猫脚本](https://github.com/zenstory-ai/oh-story-claudecode/blob/41d28fcde00bc60956f9fa432a569478c43a217e/skills/story-long-scan/scripts/qimao-rank-scraper.js)和[晋江脚本](https://github.com/zenstory-ai/oh-story-claudecode/blob/7e26aa0708984ce81a41cd77ebfbbdf467c500b0/skills/story-long-scan/scripts/jjwxc-rank-scraper.js)。工作台的 Python 适配器独立读取官网公开榜页，晋江榜型和分站以页面当时选中的栏目为准。飞卢与纵横同样按各自官网榜页独立实现。
+
 此工程重新实现了 Python 采集和隔离浏览器流程，没有打包上游完整 Skill 产品；保留上游许可如下。
 
 ```

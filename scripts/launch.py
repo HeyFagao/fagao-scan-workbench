@@ -138,11 +138,16 @@ def preflight() -> dict:
             raise ValueError("invalid character table")
     except (OSError, ValueError) as exc:
         raise RuntimeError("番茄字表资源缺失或损坏，请让 WorkBuddy 重新下载完整版本；不要等取文时再处理。") from exc
+    public_lists = ('faloo', 'qimao', 'jjwxc', 'zongheng')
+    for module in ('long_rankings', 'public_rank_page', *(key + '_rank' for key in public_lists)):
+        path = ROOT / 'fagao' / (module + '.py')
+        if not path.is_file() or not path.stat().st_size:
+            raise RuntimeError(f"安装文件缺失或为空：fagao/{module}.py。请让 WorkBuddy 用原安装说明更新工作台。")
     return {
         "status": "ready", "checks": ["python", "sqlite", "https", "web_assets", "fanqie_charmap"],
         "python_version": ".".join(map(str, sys.version_info[:3])),
         "features": {
-            "rankings": {"status": "local_ready", "platforms": ["fanqie", "qidian", "ciweimao"]},
+            "rankings": {"status": "local_ready", "platforms": ["fanqie", "qidian", "ciweimao", *public_lists]},
             "fanqie_text": {"status": "local_ready"},
             "opening_text": {"status": "local_ready", "platforms": ["qidian", "ciweimao"], "start_chapter": 1, "max_chapters": 10},
             "overseas": {"status": "local_ready", "platforms": ["goodnovel", "goodnovel_short", "meganovel", "dreame", "webnovel", "royalroad", "scribblehub"], "translation": "workbuddy_context"},
