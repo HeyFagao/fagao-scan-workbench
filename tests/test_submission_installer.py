@@ -35,7 +35,7 @@ class SubmissionInstallerTests(unittest.TestCase):
     def install(self):
         return installer.install(self.source, self.root, "win32", "x64", self.pins)
 
-    def test_file_outside_receipt_changes_block_first_or_repeat_install(self):
+    def test_unverified_source_rejected_but_recognized_damaged_installation_is_replaced(self):
         self.dll.write_bytes(b"unlisted content")
         with self.assertRaises(installer.InstallError):
             self.install()
@@ -43,10 +43,18 @@ class SubmissionInstallerTests(unittest.TestCase):
         self.dll.write_bytes(b"first library")
         self.assertEqual(self.install(), "installed")
         self.assertEqual(self.install(), "already_installed")
-        (self.target / "FagaoSubmission/runtime.dll").write_bytes(b"unlisted content")
-        with self.assertRaises(installer.InstallError):
-            self.install()
-        self.assertEqual((self.target / "FagaoSubmission/runtime.dll").read_bytes(), b"unlisted content")
+        library = Path("FagaoSubmission/runtime.dll")
+        extra = Path("FagaoSubmission/author-note.txt")
+        (self.target / library).write_bytes(b"unlisted content")
+        (self.target / extra).write_bytes(b"user note")
+        self.assertEqual(self.install(), "installed")
+        self.assertEqual((self.target / library).read_bytes(), b"first library")
+        self.assertFalse((self.target / extra).exists())
+        backup, = self.target.parent.glob("submission-repair-backup-*")
+        self.assertEqual((backup / library).read_bytes(), b"unlisted content")
+        self.assertEqual((backup / extra).read_bytes(), b"user note")
+        self.assertEqual(self.install(), "already_installed")
+        self.assertEqual(list(self.target.parent.glob("submission-repair-backup-*")), [backup])
 
     def test_install_changed_non_receipt_file_updates_tree_and_preserves_user_data(self):
         self.install()
@@ -88,6 +96,47 @@ class SubmissionInstallerTests(unittest.TestCase):
         self.assertEqual((self.target / "FagaoSubmission/runtime.dll").read_bytes(), b"first library")
         self.assertFalse((self.target.parent / ".submission-previous").exists())
         self.assertFalse(list(self.target.parent.glob(".submission-stage-*")))
+
+    def test_failed_repair_restores_the_original_damaged_directory(self):
+        self.install()
+        library = self.target / "FagaoSubmission/runtime.dll"
+        library.unlink()
+        note = self.target / "FagaoSubmission/notes.txt"
+        note.write_bytes(b"keep")
+        rename = os.replace
+        def fail_stage(old, new):
+            if new == self.target and old.name.startswith(".submission-stage-"):
+                raise OSError("simulated locked destination")
+            rename(old, new)
+        with patch.object(installer.os, "replace", side_effect=fail_stage), self.assertRaises(OSError):
+            self.install()
+        self.assertEqual(note.read_bytes(), b"keep")
+        self.assertFalse(library.exists())
+        self.assertFalse(list(self.target.parent.glob(".submission-stage-*")))
+        self.assertEqual(self.install(), "installed")
+        self.assertTrue(library.is_file())
+
+    def test_missing_receipt_and_unrecognized_archive_do_not_adopt_the_directory(self):
+        self.install()
+        (self.target / "receipt.json").unlink()
+        archive = self.target / "FagaoSubmission/resources/app.asar"
+        archive.write_bytes(b"unknown edition")
+        with self.assertRaises((OSError, ValueError)):
+            self.install()
+        self.assertEqual(archive.read_bytes(), b"unknown edition")
+        self.assertFalse(list(self.target.parent.glob("submission-repair-backup-*")))
+
+    def test_copied_receipt_alone_cannot_establish_a_managed_installation(self):
+        self.install()
+        exe = self.target / "FagaoSubmission/FagaoSubmission.exe"
+        archive = self.target / "FagaoSubmission/resources/app.asar"
+        exe.write_bytes(b"unrelated program")
+        archive.write_bytes(b"unrelated application")
+        with self.assertRaises((OSError, ValueError)):
+            self.install()
+        self.assertEqual(exe.read_bytes(), b"unrelated program")
+        self.assertEqual(archive.read_bytes(), b"unrelated application")
+        self.assertFalse(list(self.target.parent.glob("submission-repair-backup-*")))
 
     @unittest.skipIf(os.name == "nt", "test creates Unix framework links")
     def test_accepts_internal_mac_links_and_disallows_external_windows_and_broken_links(self):

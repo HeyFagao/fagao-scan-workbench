@@ -104,6 +104,11 @@ jobs:
       - name: Download the real encrypted Hongguo edition with the primary host offline
         shell: pwsh
         run: python scripts/windows_daily_feed_transport.py --receipt "$env:RUNNER_TEMP/fagao-windows-receipts/hongguo-transport.json"
+      - name: Submission launch errors on Windows
+        shell: pwsh
+        run: |
+          python -m unittest discover -s tests -p 'test_submission_launch_feedback.py' -v *> "$env:RUNNER_TEMP/fagao-windows-receipts/submission-regressions.log"
+          if ($LASTEXITCODE -ne 0) { Get-Content "$env:RUNNER_TEMP/fagao-windows-receipts/submission-regressions.log"; exit $LASTEXITCODE }
       - name: Native install and real Job Object lifetimes
         shell: pwsh
         env:
@@ -114,7 +119,10 @@ jobs:
       - name: Install acceptance browser dependencies
         shell: pwsh
         run: npm ci --ignore-scripts --no-audit --no-fund
-      - name: Upgrade dev.12 and open the real personal submission window
+      - name: Test the browser launch feedback in Edge
+        shell: pwsh
+        run: node tests/submission-launch-ui.cjs
+      - name: Upgrade the released workbench and open the real personal submission window
         shell: pwsh
         env:
           FAGAO_SUBMISSION_ARCHIVE: ${{ runner.temp }}/fagao-ci-component/FagaoSubmission-windows-x64.zip

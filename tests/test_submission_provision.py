@@ -20,6 +20,7 @@ class SubmissionProvisionTests(unittest.TestCase):
         (source / 'resources').mkdir(parents=True)
         (source / 'FagaoSubmission.exe').write_bytes(b'isolated program')
         (source / 'resources/app.asar').write_bytes(b'synthetic application')
+        (source / 'ffmpeg.dll').write_bytes(b'isolated runtime')
         self.archive = self.root / 'release.zip'
         with ZipFile(self.archive, 'w') as z:
             for path in source.rglob('*'):
@@ -50,6 +51,27 @@ class SubmissionProvisionTests(unittest.TestCase):
             self.assertEqual(fetch.call_count, 1)
         self.assertTrue((self.data / 'components/submission/receipt.json').is_file())
         self.assertFalse(list((self.data / 'components').glob('.submission-download-*')))
+
+    def test_normal_update_repairs_missing_files_and_keeps_user_data(self):
+        for missing in ('FagaoSubmission/ffmpeg.dll', 'FagaoSubmission/FagaoSubmission.exe',
+                        'FagaoSubmission/resources/app.asar', 'receipt.json'):
+            with self.subTest(missing=missing):
+                self.data = self.root / ('workbench-' + Path(missing).name)
+                self.install(archive=self.archive)
+                component_dir = self.data / 'components/submission'
+                drafts = self.data / 'local-submissions'
+                drafts.mkdir()
+                draft = drafts / 'draft'
+                draft.write_bytes(b'own work')
+                (component_dir / missing).unlink()
+                with patch.object(provision, 'download_component',
+                                  side_effect=lambda url, path, sha, size: path.write_bytes(self.archive.read_bytes())) as fetch:
+                    result = self.install()
+                fetch.assert_called_once()
+                self.assertEqual(result['status'], 'installed')
+                self.assertEqual(provision.component.check_managed(component_dir, 'win32', 'x64', [self.pin])['tree_sha256'],
+                                 self.pin['tree_sha256'])
+                self.assertEqual(draft.read_bytes(), b'own work')
 
     def test_local_archive_mismatch_does_not_switch_and_creates_no_residue(self):
         contents = bytearray(self.archive.read_bytes())

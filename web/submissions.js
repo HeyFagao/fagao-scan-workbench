@@ -10,7 +10,8 @@
   let drafts = [];
   let busy = false;
   let ready = false;
-  let componentAvailable = false;
+  let componentPlatform = '';
+  let launchAttempted = false;
   let conflict = false;
 
   async function request(route, payload) {
@@ -58,12 +59,12 @@
     byId('restore-draft').hidden = !current.id || !changed || conflict;
     byId('restore-draft').disabled = busy;
     byId('save-draft').disabled = busy || !ready || !changed || !filled || conflict;
-    byId('open-draft').disabled = busy || !componentAvailable || !ready || !filled || conflict;
-    byId('open-assistant').disabled = busy || !componentAvailable;
+    byId('open-draft').disabled = busy || !ready || !filled || conflict;
+    byId('open-assistant').disabled = busy;
     byId('save-copy').disabled = busy || !filled;
     byId('load-latest').disabled = busy;
     byId('retry-loading').disabled = busy;
-    byId('draft-list').querySelectorAll('button').forEach(button => { button.disabled = busy; });
+    byId('draft-list').querySelectorAll('button').forEach(button => { button.disabled = busy || !ready; });
     byId('draft-status').textContent = changed ? '有未保存的修改' : current.id ? '已保存到本机' : '';
   }
 
@@ -74,6 +75,7 @@
       const button = document.createElement('button');
       button.type = 'button';
       button.className = 'draft-option';
+      button.disabled = busy || !ready;
       button.dataset.id = draft.id;
       button.setAttribute('aria-current', String(draft.id === current.id));
       const title = document.createElement('strong');
@@ -179,18 +181,19 @@
 
   async function componentStatus() {
     const hint = byId('assistant-hint');
+    let message;
     try {
       const result = await request('component');
-      componentAvailable = result.available === true;
-      if (componentAvailable) hint.textContent = '';
-      else if (result.platform === 'unsupported') hint.textContent = result.message;
-      else hint.textContent = result.message || '投稿功能暂不可用，可以继续保存草稿。';
+      componentPlatform = result.platform;
+      message = result.available ? '' : result.message || '投稿组件需要检查，请点「打开投稿助手」重试。';
     } catch {
-      componentAvailable = false;
-      hint.textContent = '暂时无法打开投稿助手。可以先写草稿，稍后重新打开此页。';
+      message = '未能检查投稿组件，请点「打开投稿助手」重试。';
     }
-    hint.hidden = componentAvailable;
-    updateControls();
+    // An optional preflight may finish after the user has already opened the window.
+    if (!launchAttempted) {
+      hint.textContent = message;
+      hint.hidden = !message;
+    }
   }
 
   async function initialize() {
@@ -210,19 +213,37 @@
   }
 
   async function openAssistant(useDraft) {
+    launchAttempted = true;
+    const button = byId(useDraft ? 'open-draft' : 'open-assistant');
+    const label = button.firstElementChild;
+    const originalLabel = label.textContent;
+    const hint = byId('assistant-hint');
+    const feedback = useDraft ? byId('editor-feedback') : hint;
+    hint.hidden = useDraft;
+    feedback.hidden = false;
+    feedback.textContent = '正在打开本机投稿窗口…';
+    label.textContent = '正在打开…';
+    button.setAttribute('aria-busy', 'true');
     const payload = {appearance: document.documentElement.dataset.themeMode || 'system'};
-    if (useDraft) {
-      const saved = await save();
-      Object.assign(payload, {id: saved.id, revision: saved.revision});
-    }
     try {
-      await request('open', payload);
-      byId('editor-feedback').textContent = useDraft
-        ? '已打开投稿助手，请在新窗口核对草稿、选择编辑和附件。'
-        : '已打开投稿助手，可在新窗口查看联系人、回信和投稿记录。';
+      if (useDraft) {
+        const saved = await save();
+        Object.assign(payload, {id: saved.id, revision: saved.revision});
+      }
+      const result = await request('open', payload);
+      if (result.opened !== true) throw new Error('未收到投稿窗口的确认，请重新打开。');
+      feedback.textContent = componentPlatform === 'win32'
+        ? '已打开投稿助手。可从任务栏切换到「发糕投稿助手」。'
+        : '已打开投稿助手，请切换到「发糕投稿助手」窗口。';
     } catch (error) {
-      if (error.code === 'submission_component_unavailable') await componentStatus();
-      throw error;
+      if (useDraft && !payload.id) {
+        feedback.textContent = '';
+        throw error;  // Saving conflicts use the editor's recovery actions.
+      }
+      feedback.textContent = error.message;
+    } finally {
+      label.textContent = originalLabel;
+      button.removeAttribute('aria-busy');
     }
   }
 
@@ -291,5 +312,6 @@
   });
 
   componentStatus();
-  run(initialize);
+  // The standalone assistant can open while the draft list loads.
+  initialize().catch(showError);
 })();

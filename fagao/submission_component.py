@@ -137,6 +137,10 @@ def _digest(file_path):
 def _verified_component(root, platform, *, check_signature=False):
     if platform == 'unsupported':
         raise _unavailable('桌面投稿目前支持 macOS 和 Windows。')
+    if platform == 'win32':
+        from scripts import install_submission_component as installer
+        if sys.platform == 'win32' and installer.host_architecture() != 'x64':
+            raise _unavailable('这台电脑的 Windows 架构暂不支持桌面投稿助手。可在工作台保存草稿，或在 Windows x64 电脑上打开助手。')
     try:
         root = Path(root).absolute()
         _checked(root, directory=True)
@@ -166,10 +170,18 @@ def _verified_component(root, platform, *, check_signature=False):
         else:
             executable = _trusted_file(component, WIN_APP / 'FagaoSubmission.exe')
             asar = _trusted_file(component, WIN_APP / 'resources/app.asar')
-        for key, file_path in (('executable_sha256', executable), ('asar_sha256', asar)):
-            expected = receipt[key]
-            if not isinstance(expected, str) or not re.fullmatch(r'[a-f0-9]{64}', expected) or _digest(file_path) != expected:
-                raise ValueError('installed files differ')
+            # Electron also loads DLLs, ICU data and other resources. The same
+            # release pin used by the installer covers all these files.
+            builds = installer.read_pins()
+            matching = [pin['tree_sha256'] for pin in builds if pin['platform'] == 'win32'
+                        and pin['arch'] == 'x64' and installer.receipt_for(pin) == receipt]
+            if not matching or installer.tree_sha256(component / WIN_APP, 'win32') not in matching:
+                raise ValueError('installed Windows component differs from its release')
+        if platform == 'darwin':
+            for key, file_path in (('executable_sha256', executable), ('asar_sha256', asar)):
+                expected = receipt[key]
+                if not isinstance(expected, str) or not re.fullmatch(r'[a-f0-9]{64}', expected) or _digest(file_path) != expected:
+                    raise ValueError('installed files differ')
         if platform == 'darwin' and check_signature:
             subprocess.run(['/usr/bin/codesign', '--verify', '--deep', '--strict', str(component / MAC_APP)],
                            check=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
@@ -268,6 +280,17 @@ def open_component(root, appearance, draft):
         raise _unavailable('投稿组件正在更新或暂时无法打开，请稍后再试。') from exc
 
 
+def _process_start_error(exc):
+    number = getattr(exc, 'winerror', None)
+    if number in (2, 3, 126, 193, 216):
+        return _unavailable(f'Windows 无法加载投稿程序（错误 {number}）。请让 WorkBuddy 用原安装说明检查并修复投稿组件。')
+    if number in (5, 225, 226, 577, 1260):
+        return AppError('submission_launch_blocked',
+                        f'Windows 阻止了投稿程序启动（错误 {number}）。请让 WorkBuddy 检查系统提示和应用运行权限。', 503)
+    detail = f'（Windows 错误 {number}）' if isinstance(number, int) else ''
+    return AppError('submission_handoff_failed', f'无法启动本机投稿程序{detail}。请让 WorkBuddy 检查启动错误。', 503)
+
+
 def _open_component_locked(root, payload):
     executable = _verified_component(root, _platform(), check_signature=True)
     try:
@@ -280,17 +303,27 @@ def _open_component_locked(root, payload):
 
     accepted = directory / (nonce + '.accepted')
     try:
-        process = subprocess.Popen([str(executable), '--fagao-handoff=' + nonce],
-                                   env=_environment(directory, profile), cwd=executable.parent,
-                                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                   stderr=subprocess.DEVNULL, close_fds=True, start_new_session=os.name == 'posix')
+        try:
+            process = subprocess.Popen([str(executable), '--fagao-handoff=' + nonce],
+                                       env=_environment(directory, profile), cwd=executable.parent,
+                                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                       stderr=subprocess.DEVNULL, close_fds=True, start_new_session=os.name == 'posix')
+        except OSError as exc:
+            raise _process_start_error(exc) from exc
         threading.Thread(target=process.wait, name='submission-editor-wait', daemon=True).start()
         # Also covers the second-instance case: the newly started process may exit
         # normally before the existing window consumes the handoff.
         deadline = time.monotonic() + HANDOFF_ACK_TIMEOUT
         while not accepted.exists():
-            if process.poll() not in (None, 0) or time.monotonic() >= deadline:
-                raise AppError('submission_handoff_failed', '投稿窗口未接收草稿。请重新打开，已保存的草稿仍可使用。', 503)
+            exit_code = process.poll()
+            if exit_code not in (None, 0):
+                if _platform() == 'win32' and (exit_code & 0xffffffff) in (0xc0000135, 0xc000007b):
+                    return_code = f'0x{exit_code & 0xffffffff:08X}'
+                    raise _unavailable(f'Windows 无法加载投稿程序的运行文件（{return_code}）。请让 WorkBuddy 检查并修复投稿组件。')
+                raise AppError('submission_handoff_failed',
+                               f'投稿程序在窗口就绪前退出（退出码 {exit_code}）。请让 WorkBuddy 检查启动错误。', 503)
+            if time.monotonic() >= deadline:
+                raise AppError('submission_handoff_failed', '等待投稿窗口响应超时。请查看「发糕投稿助手」窗口或系统提示，然后重试。', 503)
             time.sleep(.05)
         if _checked(accepted, private=True).st_size != 0:
             raise ValueError('invalid acknowledgement')

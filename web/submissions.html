@@ -42,9 +42,9 @@
         <h1>小说投稿</h1>
         <p>在本机写好投稿信，再选编辑、加附件。</p>
       </div>
-      <button type="button" id="open-assistant" class="button secondary" title="查看编辑、投稿记录和回信" aria-describedby="assistant-hint" disabled>打开投稿助手 <span aria-hidden="true">↗</span></button>
+      <button type="button" id="open-assistant" class="button secondary" title="查看编辑、投稿记录和回信" aria-describedby="assistant-hint"><span>打开投稿助手</span> <span aria-hidden="true">↗</span></button>
     </header>
-    <p id="assistant-hint" class="assistant-hint" hidden></p>
+    <p id="assistant-hint" class="assistant-hint" role="status" hidden></p>
     <div id="submission-notice" class="submission-notice" role="alert" hidden>
       <span id="notice-message"></span>
       <div id="conflict-actions" hidden>
@@ -83,7 +83,7 @@
           </div>
           <div class="save-actions">
             <button type="submit" id="save-draft" class="button secondary" disabled>保存草稿</button>
-            <button type="button" id="open-draft" class="button primary" disabled>带入投稿助手 <span aria-hidden="true">→</span></button>
+            <button type="button" id="open-draft" class="button primary" aria-describedby="editor-feedback" disabled><span>带入投稿助手</span> <span aria-hidden="true">→</span></button>
           </div>
         </div>
         <p id="editor-feedback" role="status" aria-live="polite" class="editor-feedback"></p>

@@ -38,8 +38,12 @@ def component_in_use(executable: Path) -> bool:
     """Ask Windows Restart Manager about the installed program and its application archive."""
     if os.name != "nt":
         raise OSError("Windows Restart Manager requires Windows")
-    exe = executable.resolve(strict=True)
-    asar = (exe.parent / "resources" / "app.asar").resolve(strict=True)
+    # Repair can be needed precisely because one of these files is missing.
+    # Use each surviving anchor; the installer has already identified the bundle.
+    resources = [str(p.resolve(strict=True)) for p in
+                 (executable, executable.parent / "resources" / "app.asar") if p.is_file()]
+    if not resources:
+        raise OSError("无法核对投稿程序的运行状态")
     # LOAD_LIBRARY_SEARCH_SYSTEM32 is sufficient for this system component.
     api = ctypes.WinDLL("rstrtmgr.dll", winmode=0x800)
     dword, uint, ptr = wintypes.DWORD, wintypes.UINT, ctypes.POINTER
@@ -50,4 +54,4 @@ def component_in_use(executable: Path) -> bool:
     api.RmEndSession.argtypes = (dword,)
     for fn in (api.RmStartSession, api.RmRegisterResources, api.RmGetList, api.RmEndSession):
         fn.restype = dword
-    return _resources_in_use(api, [str(exe), str(asar)])
+    return _resources_in_use(api, resources)

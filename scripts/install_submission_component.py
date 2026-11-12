@@ -16,8 +16,10 @@ import stat
 import subprocess
 import sys
 import tempfile
+import uuid
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+if __name__ == "__main__":
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from fagao.submission_lock import component_lock
 
 
@@ -103,6 +105,18 @@ def tree_sha256(root: Path, system: str) -> str:
 
 
 def host_architecture() -> str:
+    if sys.platform == "win32":
+        # A 32-bit WorkBuddy/Python on 64-bit Windows can launch the x64 program.
+        import ctypes
+        from ctypes import wintypes
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        query = getattr(kernel, "IsWow64Process2", None)
+        if query is not None:
+            kernel.GetCurrentProcess.restype = wintypes.HANDLE
+            query.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.USHORT), ctypes.POINTER(wintypes.USHORT))
+            process, native = wintypes.USHORT(), wintypes.USHORT()
+            if query(kernel.GetCurrentProcess(), ctypes.byref(process), ctypes.byref(native)):
+                return {0x8664: "x64", 0xaa64: "arm64", 0x014c: "x86"}.get(native.value, "unknown")
     if sys.platform == "darwin" and host.machine().lower() == "x86_64":
         # WorkBuddy can run an Intel Python under Rosetta on Apple Silicon.
         translated = subprocess.run(["/usr/sbin/sysctl", "-in", "sysctl.proc_translated"],
@@ -176,6 +190,43 @@ def check_managed(path: Path, system: str, architecture: str, pins: list[dict]) 
     return expected
 
 
+def inspect_installation(path: Path, system: str, architecture: str, pins: list[dict]) -> dict | None:
+    """Return the intact build, or None if a recognized Windows install needs repair."""
+    try:
+        return check_managed(path, system, architecture, pins)
+    except (FileNotFoundError, InstallError):
+        if system != "win32":
+            raise
+
+    # Recovery may rename only a real, identifiable installation. With a matching
+    # receipt, one surviving pinned file identifies the bundle. Without one,
+    # require both anchors from the same supported build before touching it.
+    require_directory(path)
+    name, exe, asar = LAYOUT[system]
+    bundle = path / name
+    if not os.path.lexists(bundle):
+        raise InstallError("无法辨认现有投稿组件，请保留原目录")
+    require_directory(bundle)
+    known = [pin for pin in pins if pin["platform"] == system and pin["arch"] == architecture]
+    has_receipt = os.path.lexists(path / "receipt.json")
+    if has_receipt:
+        receipt_file = require_file(path, "receipt.json")
+        if receipt_file.stat().st_size > 4096:
+            raise InstallError("无法辨认投稿组件的安装收据，请保留原目录")
+        receipt = json.loads(receipt_file.read_bytes())
+        known = [pin for pin in known if receipt == receipt_for(pin)]
+    anchors = {}
+    for key, relative in (("executable_sha256", exe), ("asar_sha256", asar)):
+        try:
+            anchors[key] = sha256(require_file(bundle, relative))
+        except FileNotFoundError:
+            pass
+    threshold = 1 if has_receipt else 2
+    if not any(sum(pin[key] == value for key, value in anchors.items()) >= threshold for pin in known):
+        raise InstallError("无法辨认现有投稿组件，请保留原目录")
+    return None
+
+
 def mac_component_in_use(bundle: Path) -> bool:
     # proc_pidpath returns the executable path of each live PID, including helpers.
     # libproc may hide processes from other users. This private bundle belongs to
@@ -244,13 +295,17 @@ def install(source: Path, data_root: Path, system: str, architecture: str, pins:
                 shutil.rmtree(previous)
             else:
                 os.replace(previous, target)
-        existing = (check_managed(target, system, architecture, recognized)
-                    if os.path.lexists(target) else None)
+        has_target = os.path.lexists(target)
+        existing = inspect_installation(target, system, architecture, recognized) if has_target else None
         # Distinct package trees may contain identical executable and ASAR bytes.
         if existing == expected:
             return "already_installed"
-        if existing is not None:
+        if has_target:
             require_stopped(target / LAYOUT[system][0], system)
+        # Only a completely verified prior version may be deleted after an
+        # upgrade. A repaired installation may contain personal or unknown files.
+        backup = (parent / ("submission-repair-backup-" + uuid.uuid4().hex)
+                  if has_target and existing is None else previous)
         temp = Path(tempfile.mkdtemp(prefix=".submission-stage-", dir=parent))
         try:
             bundle = temp / LAYOUT[system][0]
@@ -262,14 +317,14 @@ def install(source: Path, data_root: Path, system: str, architecture: str, pins:
                 raise InstallError("投稿组件复制后校验失败")
             (temp / "receipt.json").write_text(json.dumps(receipt_for(expected), indent=2) + "\n", encoding="utf-8")
             (temp / "receipt.json").chmod(0o600)
-            if existing is not None:
+            if has_target:
                 require_stopped(target / LAYOUT[system][0], system)
-                os.replace(target, previous)
+                os.replace(target, backup)
             try:
                 os.replace(temp, target)
             except OSError:
-                if existing is not None:
-                    os.replace(previous, target)
+                if has_target:
+                    os.replace(backup, target)
                 raise
             if existing is not None:
                 shutil.rmtree(previous)

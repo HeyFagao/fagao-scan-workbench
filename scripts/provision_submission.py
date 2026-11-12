@@ -73,8 +73,8 @@ def provision(data: Path, *, system: str, arch: str, archive: Path | None = None
     # is no longer available. Skip only an intact, matching complete tree.
     if os.path.lexists(target) and not os.path.lexists(previous):
         with component.component_lock(parent):
-            installed = component.check_managed(target, system, arch, [*pins, *prior])
-            if installed["tree_sha256"] == pin["tree_sha256"]:
+            installed = component.inspect_installation(target, system, arch, [*pins, *prior])
+            if installed and installed["tree_sha256"] == pin["tree_sha256"]:
                 return {**result, "status": "already_installed"}
     with tempfile.TemporaryDirectory(prefix=".submission-download-", dir=parent) as temp:
         staging = Path(temp)

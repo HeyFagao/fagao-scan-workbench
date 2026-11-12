@@ -1,6 +1,6 @@
 {
   "name": "fagao-scan-workbench",
-  "version": "0.7.0-dev.14",
+  "version": "0.7.0-dev.15",
   "private": true,
   "description": "Local Fagao novel discovery workbench browser dependency",
   "engines": {

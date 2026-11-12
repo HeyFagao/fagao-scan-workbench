@@ -2,8 +2,7 @@
 'use strict';
 
 // This acceptance runs against an installed Windows workbench and its packaged
-// personal editor. The production cold launch and the inspectable warm launch
-// both take the selected draft from the real browser button.
+// personal editor. Both browser buttons must open a visible native window.
 const assert = require('node:assert/strict');
 const {execFileSync, spawn} = require('node:child_process');
 const crypto = require('node:crypto');
@@ -75,15 +74,67 @@ async function readRecipientCounts(profile) {
   return state.recipients.filter(editor => editor.enabled).length;
 }
 
-async function openDraft(page) {
+// The renderer can acknowledge a handoff even if its window is hidden. Check
+// the OS window owned by this exact fixture process. Use its normal close
+// button behavior (WM_CLOSE) to exercise the app's own hide-to-tray handler.
+function checkNativeWindow(executable, pid, action = 'visible') {
+  assert(Number.isInteger(pid) && pid > 0);
+  assert(['visible', 'minimize', 'close-to-tray'].includes(action));
+  const script = `
+    $ErrorActionPreference = 'Stop'
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class FixtureWindow {
+  [DllImport("user32")] public static extern bool IsWindowVisible(IntPtr window);
+  [DllImport("user32")] public static extern bool IsIconic(IntPtr window);
+  [DllImport("user32")] public static extern IntPtr MonitorFromWindow(IntPtr window, uint flags);
+  [DllImport("user32")] public static extern bool ShowWindowAsync(IntPtr window, int command);
+  [DllImport("user32", ExactSpelling=true)] public static extern bool PostMessageW(IntPtr window, uint msg, UIntPtr w, IntPtr l);
+}
+'@
+    $editor = Get-Process -Id ([int]$env:FAGAO_ACCEPTANCE_PID)
+    if ($editor.Path -ne $env:FAGAO_ACCEPTANCE_EXE) { throw 'Unexpected editor process path' }
+    $until = [DateTime]::UtcNow.AddSeconds(8)
+    do {
+      $editor.Refresh()
+      $window = $editor.MainWindowHandle
+      if ($window -ne [IntPtr]::Zero -and [FixtureWindow]::IsWindowVisible($window) -and
+          ![FixtureWindow]::IsIconic($window) -and [FixtureWindow]::MonitorFromWindow($window, 0) -ne [IntPtr]::Zero) { break }
+      if ([DateTime]::UtcNow -ge $until) { throw 'No visible, restored editor window on a display' }
+      Start-Sleep -Milliseconds 120
+    } while ($true)
+    if ($env:FAGAO_ACCEPTANCE_WINDOW -eq 'visible') { exit 0 }
+    if ($env:FAGAO_ACCEPTANCE_WINDOW -eq 'minimize') {
+      [void][FixtureWindow]::ShowWindowAsync($window, 6)
+    } elseif (![FixtureWindow]::PostMessageW($window, 0x10, [UIntPtr]::Zero, [IntPtr]::Zero)) {
+      throw 'The native close request was rejected'
+    }
+    $until = [DateTime]::UtcNow.AddSeconds(8)
+    do {
+      if ($editor.HasExited) { throw 'Editor exited instead of remaining available' }
+      if ($env:FAGAO_ACCEPTANCE_WINDOW -eq 'minimize') {
+        if ([FixtureWindow]::IsIconic($window)) { exit 0 }
+      } elseif (![FixtureWindow]::IsWindowVisible($window)) { exit 0 }
+      Start-Sleep -Milliseconds 120
+    } while ([DateTime]::UtcNow -lt $until)
+    throw 'Could not put the editor window in the requested state'
+  `;
+  execFileSync('pwsh.exe', ['-NoProfile', '-NonInteractive', '-Command', script],
+    {encoding:'utf8', timeout:25000, env:{...process.env, FAGAO_ACCEPTANCE_EXE:executable,
+      FAGAO_ACCEPTANCE_PID:String(pid), FAGAO_ACCEPTANCE_WINDOW:action}});
+}
+
+async function openEditor(page, withDraft = false) {
   const responsePromise = page.waitForResponse(response => (
     new URL(response.url()).pathname === '/api/submissions/open' && response.request().method() === 'POST'
-  ), {timeout: 45000});
-  await page.locator('#open-draft').click();
+  ), {timeout: 85000});
+  await page.locator(withDraft ? '#open-draft' : '#open-assistant').click();
   const response = await responsePromise;
+  assert.equal(Boolean(response.request().postDataJSON()?.id), withDraft);
   assert.equal(response.status(), 200);
   assert.equal((await response.json()).opened, true);
-  await page.locator('#editor-feedback').filter({hasText: '已打开投稿助手'}).waitFor();
+  await page.locator(withDraft ? '#editor-feedback' : '#assistant-hint').filter({hasText: '已打开投稿助手'}).waitFor();
 }
 
 async function run() {
@@ -115,7 +166,7 @@ async function run() {
     const {asar_sha256} = installReceipt;
     assert.equal(crypto.createHash('sha256').update(await fs.readFile(path.join(
       path.dirname(executable), 'resources', 'app.asar'))).digest('hex'), asar_sha256);
-    browser = await chromium.launch({channel: 'msedge', headless: true});
+    browser = await chromium.launch({channel: 'msedge', headless: false});
     const page = await browser.newPage();
     await page.route('**/*', route => {
       const u = new URL(route.request().url());
@@ -125,6 +176,18 @@ async function run() {
     await page.getByRole('link', {name: '小说投稿', exact: true}).click();
     await page.waitForURL(new URL('/submissions.html', origin).href);
     report.checks.browser_opened_from_workbench_home = true;
+    await openEditor(page);
+    const coldPid = (await readJSON(marker)).pid;
+    checkNativeWindow(executable, coldPid);
+    report.checks.real_browser_empty_cold_launch = true;
+    report.checks.real_browser_cold_launch_renderer_ack = true;
+    for (const [action, field] of [['minimize', 'minimized_editor_restored'], ['close-to-tray', 'tray_editor_restored']]) {
+      checkNativeWindow(executable, coldPid, action);
+      await openEditor(page);
+      assert.equal((await readJSON(marker)).pid, coldPid);
+      checkNativeWindow(executable, coldPid);
+      report.checks[field] = true;
+    }
     for (const [name, value] of Object.entries(draft)) {
       await page.locator('[name="' + name + '"]').fill(value);
     }
@@ -135,11 +198,10 @@ async function run() {
     await page.waitForFunction(fields => Object.entries(fields).every(([name, value]) =>
       document.querySelector('[name="' + name + '"]')?.value === value), draft);
     report.checks.browser_draft_persisted = true;
-    await openDraft(page);
-    const coldPid = (await readJSON(marker)).pid;
+    await openEditor(page, true);
+    checkNativeWindow(executable, coldPid);
     assert(nativeProcesses(executable).includes(coldPid));
     assert.equal(await readRecipientCounts(profile), 226);
-    report.checks.real_browser_cold_launch_renderer_ack = true;
 
     // Relaunch only this installed synthetic editor with a loopback debug port
     // so rendered values can be read without changing the workbench's real launcher.
@@ -160,7 +222,7 @@ async function run() {
     const pid = (await readJSON(marker)).pid;
     assert.equal(pid, proc.pid);
     assert(nativeProcesses(executable).includes(pid));
-    await openDraft(page);
+    await openEditor(page, true);
     await nativePage.waitForFunction(expected => {
       const values = Array.from(document.querySelectorAll('input,textarea'), el => el.value);
       return expected.every(value => values.includes(value));

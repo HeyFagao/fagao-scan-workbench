@@ -12,6 +12,7 @@ from unittest.mock import Mock, patch
 
 from fagao import submission_component as component
 from fagao.store import AppError
+from scripts import install_submission_component as installer
 
 
 class SubmissionComponentTests(unittest.TestCase):
@@ -35,6 +36,12 @@ class SubmissionComponentTests(unittest.TestCase):
         self.executable.write_bytes(b'synthetic local executable')
         self.executable.chmod(0o700)
         self.asar.write_bytes(b'synthetic local application')
+        if platform == 'win32':
+            (bundle / 'ffmpeg.dll').write_bytes(b'synthetic media runtime')
+            pin = installer.fingerprint(bundle, 'win32', 'x64')
+            patcher = patch.object(installer, 'read_pins', return_value=[pin])
+            patcher.start()
+            self.addCleanup(patcher.stop)
         if platform == 'darwin':
             (bundle / 'Info.plist').write_bytes(plistlib.dumps({
                 'CFBundleIdentifier': component.BUNDLE_ID, 'CFBundleExecutable': 'FagaoSubmission'}))
@@ -50,6 +57,25 @@ class SubmissionComponentTests(unittest.TestCase):
                 component.open_component(self.root, 'dark', None)
         self.assertEqual(error.exception.code, 'submission_component_unavailable')
         self.assertEqual(list(self.root.iterdir()), [])
+
+    def test_incomplete_windows_runtime_cannot_report_ready_or_launch(self):
+        self.install_fixture('win32')
+        with patch.object(component, '_platform', return_value='win32'), patch.object(subprocess, 'Popen') as launch:
+            self.assertTrue(component.component_status(self.root)['available'])
+            (self.executable.parent / 'ffmpeg.dll').unlink()
+            status = component.component_status(self.root)
+            self.assertFalse(status['available'])
+            self.assertIn('修复', status['message'])
+            with self.assertRaises(AppError):
+                component.open_component(self.root, 'system', None)
+            launch.assert_not_called()
+
+    def test_unsupported_windows_architecture_identifies_the_platform_even_without_a_component(self):
+        with patch.object(component.sys, 'platform', 'win32'), patch.object(installer, 'host_architecture', return_value='arm64'):
+            result = component.component_status(self.root)
+        self.assertFalse(result['available'])
+        self.assertIn('架构暂不支持', result['message'])
+        self.assertNotIn('更新', result['message'])
 
     def test_verified_mac_bundle_uses_nonce_only_private_envelope_and_acknowledgement(self):
         self.install_fixture('darwin')
