@@ -2,10 +2,20 @@
   "schema_version": 1,
   "status": "published",
   "app": "fagao-scan-workbench",
-  "repository": "ShiQi-Han03/fagao-scan-workbench",
   "minimum_python": "3.10",
   "channel": "experimental",
   "source_archive_sha256_purpose": "Required SHA-256 of the pinned source archive; bootstrap rejects missing or mismatched digests before extraction or installation.",
+  "account_qualification": "Ranking access follows the website account permit. Local submissions are available on this device.",
+  "repository": "ShiQi-Han03/fagao-scan-workbench",
+  "repository_id": 1452172195,
+  "owner_id": 153971533,
+  "app_version": "0.7.0-dev.17",
+  "source_commit": "3b9dc0a979dbbd86d8c72414dd833299b9eb6788",
+  "release_tag": "v0.7.0-dev.17",
+  "installer_url": "https://raw.githubusercontent.com/ShiQi-Han03/fagao-scan-workbench/3b9dc0a979dbbd86d8c72414dd833299b9eb6788/scripts/bootstrap.py",
+  "installer_sha256": "ce83225cce4c6f69d21ea6dec18e788adc31daac698a4c7c37c659a7e00cb0fa",
+  "source_archive_url": "https://codeload.github.com/ShiQi-Han03/fagao-scan-workbench/zip/3b9dc0a979dbbd86d8c72414dd833299b9eb6788",
+  "source_archive_sha256": "469298f8eaaafd59aea633d565b0c89365a25390efea69af551eaaf644a206cc",
   "components": {
     "submission": [
       {
@@ -40,44 +50,17 @@
       }
     ]
   },
-  "account_qualification": "Ranking access follows the website account permit. Local submissions are available on this device.",
-  "app_version": "0.7.0-dev.16",
-  "source_commit": "a643a95d48f7c1b182f31e32f814d9a6091dbe37",
-  "release_tag": "v0.7.0-dev.16",
-  "installer_url": "https://raw.githubusercontent.com/ShiQi-Han03/fagao-scan-workbench/a643a95d48f7c1b182f31e32f814d9a6091dbe37/scripts/bootstrap.py",
-  "installer_sha256": "ce83225cce4c6f69d21ea6dec18e788adc31daac698a4c7c37c659a7e00cb0fa",
-  "source_archive_url": "https://codeload.github.com/ShiQi-Han03/fagao-scan-workbench/zip/a643a95d48f7c1b182f31e32f814d9a6091dbe37",
-  "source_archive_sha256": "6d796ebb28a93fa3cd222f7365d3be6d39e301d19860d4d00091b3b04126a6e1",
-  "verified_at": "2026-11-12T09:43:21.031964+00:00",
+  "verified_at": "2026-11-12T11:48:20.634563+00:00",
   "verification": {
-    "source_tree": "3b45e19a1eb109994a472c3e0501635f7ed49745",
-    "python_tests": 792,
-    "windows_ci_run_url": "https://github.com/ShiQi-Han03/fagao-scan-workbench/actions/runs/43192178092",
-    "windows_native_ci_tested": true,
+    "source_tree": "42ec9392bc46c545f554e2bf3dc0724a33c2a964",
+    "python_tests": 796,
     "windows_install_tested": true,
-    "windows_install": {
-      "platform": "Windows-2025Server-10.0.26100-SP0",
-      "python": "3.12.10",
-      "default_workbench_entry": true,
-      "repeat_preserved_data": true,
-      "cleanup_completed": true
-    },
-    "windows_artifact": {
-      "id": 13931158947,
-      "sha256": "eb9dfc182c2618efc9222a194c6d71e0d965feceaf578eacf974fa4b08b161a8"
-    },
-    "long_rankings": {
-      "platform_ids": [
-        "faloo",
-        "jjwxc",
-        "qimao",
-        "zongheng"
-      ],
-      "windows_backend_tests": 21,
-      "source_and_client_verified": true
-    },
+    "windows_native_ci_tested": true,
+    "windows_ci_run_url": "https://github.com/ShiQi-Han03/fagao-scan-workbench/actions/runs/43211790281",
+    "windows_artifact_sha256": "sha256:2709dfdd369467279982e71f14791d2f2e476f503ed1ad0356f327d18a115ed4",
+    "migration_phase": "before",
     "security": {
-      "credential_scan_run_url": "https://github.com/ShiQi-Han03/fagao-scan-workbench/actions/runs/43192178179"
+      "credential_scan_run_url": "https://github.com/ShiQi-Han03/fagao-scan-workbench/actions/runs/43211790111"
     },
     "workbuddy_app_interaction_tested": false
   }
