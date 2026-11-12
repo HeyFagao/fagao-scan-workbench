@@ -280,6 +280,25 @@ test('first edition pending has one clear status, distinct from network or membe
   await eventually(() => ctx.content().includes('本榜尚未发布'), 'Reopening lost the confirmed pending state');
 });
 
+test('a first download failure offers a retry which fills the empty board', async t => {
+  let ready=false;
+  const ctx=await fixture(t,true,({method,board}) => {
+    if(method==='GET')return response({board,status:'empty',snapshot:null});
+    if(ready)return response(payload(board,'恢复下载的榜单'));
+    return response({error:{code:'daily_feed_download',message:'暂时无法下载新版榜单。'}},503);
+  });
+  await ctx.openBoard('hongguo');
+  await eventually(() => ctx.content().includes('榜单已发布，下载未完成'), 'Missing download status');
+  assert(!ctx.content().includes('暂无已保存的榜单'));
+  await ctx.openBoard('douyin');
+  await ctx.openBoard('hongguo');
+  await eventually(() => ctx.content().includes('榜单已发布，下载未完成'), 'Lost retry after switching boards');
+  ready=true;
+  ctx.d.querySelector('[data-action="daily-refresh"]').click();
+  await eventually(() => ctx.content().includes('恢复下载的榜单'), 'Manual retry did not show the board');
+  assert(!ctx.content().includes('下载未完成'));
+});
+
 test('a late sync for the previous board cannot replace the current table', async t => {
   const pending = deferred();
   const ctx = await fixture(t, true, ({method, board}) => method === 'POST' && board === 'douyin'

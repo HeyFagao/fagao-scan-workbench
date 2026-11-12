@@ -594,7 +594,8 @@
       if(current() && error.code!=='stale_account'){
         const unpublished = !target.revision && !target.snapshot && error.code === 'daily_feed_unpublished';
         target.error = unpublished ? '' : error.message || '暂时无法更新榜单。';
-        if(!target.revision)dailyChecks.set(target.board,{nextAt:Date.now()+AUTO_TTL, unpublished});
+        if(!target.revision)dailyChecks.set(target.board,{nextAt:Date.now()+AUTO_TTL, unpublished,
+          downloadFailed:error.code==='daily_feed_download'});
       }
     }finally{
       target.busy=false;
@@ -615,8 +616,9 @@
     const sameTable=wrap.querySelector('.daily-boards')?.dataset.board===target.board;
     const previousOffset=sameTable?wrap.querySelector('.daily-table-wrap')?.scrollLeft:0;
     const refresh=membership.allowed && !target.revision?`<button class="button secondary small" data-action="daily-refresh" ${target.busy?'disabled':''}>${target.busy?'检查更新中…':'更新榜单'}</button>`:'';
+    const firstDownloadFailed=!snap && !target.revision && membership.allowed && dailyChecks.get(target.board)?.downloadFailed;
     let body='';
-    if(target.error)body+=`<p class="daily-feedback" role="status">${target.snapshot?'更新未完成，正在显示已保存的榜单。':''}${escape(target.error)}</p>`;
+    if(target.error && !firstDownloadFailed)body+=`<p class="daily-feedback" role="status">${target.snapshot?'更新未完成，正在显示已保存的榜单。':''}${escape(target.error)}</p>`;
     if(snap){
       const coverage=snap.coverage || {};
       const count=snap.rows.length;
@@ -640,6 +642,8 @@
       </div></div><div id="daily-results"></div>`;
     }else if(target.busy){
       body+='<div class="daily-empty" role="status"><span class="spinner"></span> 正在读取榜单…</div>';
+    }else if(firstDownloadFailed){
+      body+='<div class="daily-empty" role="status"><h3>榜单已发布，下载未完成</h3><p>点击「更新榜单」重新下载。</p></div>';
     }else if(membership.allowed && !target.revision && dailyChecks.get(target.board)?.unpublished){
       body+='<div class="daily-empty" role="status"><h3>本榜尚未发布</h3><p>采集到数据后会自动显示。</p></div>';
     }else{

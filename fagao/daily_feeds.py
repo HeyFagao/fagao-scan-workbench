@@ -24,7 +24,14 @@ FORMAT = 'json+gzip+fernet-v1'
 MAX_TOKEN_BYTES = 16 * 1024 * 1024
 MAX_JSON_BYTES = 32 * 1024 * 1024
 REVISION = re.compile('[a-f0-9]{64}')
-RAW_ROOT = 'https://raw.githubusercontent.com/ShiQi-Han03/fagao-ranking-feed/'
+FEED_REPOSITORY = 'ShiQi-Han03/fagao-ranking-feed'
+RAW_ROOT = f'https://raw.githubusercontent.com/{FEED_REPOSITORY}/'
+CDN_HOSTS = ('cdn.jsdelivr.net', 'gcore.jsdelivr.net')
+OBJECT_URL = re.compile(re.escape(RAW_ROOT) +
+                        r'(?P<commit>[a-f0-9]{40})/objects/(?P<board>[a-z_]+)/(?P<revision>[a-f0-9]{64})\.bin')
+DOWNLOAD_SECONDS = 36
+ROUTE_SECONDS = 12
+SOCKET_TIMEOUT = 5
 
 
 def _invalid():
@@ -69,8 +76,9 @@ def validate_manifest(manifest, board):
     revision = manifest.get('sha256')
     if not isinstance(revision, str) or not REVISION.fullmatch(revision):
         raise _invalid()
-    url_pattern = re.escape(RAW_ROOT) + r'[a-f0-9]{40}/objects/' + board + '/' + revision + r'\.bin'
-    if not isinstance(manifest.get('artifact_url'), str) or not re.fullmatch(url_pattern, manifest['artifact_url']):
+    url = manifest.get('artifact_url')
+    obj = OBJECT_URL.fullmatch(url) if isinstance(url, str) else None
+    if not obj or obj['board'] != board or obj['revision'] != revision:
         raise _invalid()
     if type(manifest.get('byte_length')) is not int or not 100 <= manifest['byte_length'] <= MAX_TOKEN_BYTES:
         raise _invalid()
@@ -164,35 +172,68 @@ def decode_snapshot(grant, board, token):
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
+        fp.close()
         raise _invalid()
 
 
-def _download(url, expected_length):
-    request = urllib.request.Request(url, headers={'Accept': 'application/octet-stream'})
-    try:
-        with network.build_opener(_NoRedirect()).open(request, timeout=12) as response:
-            if response.geturl() != url or response.status != 200:
-                raise _invalid()
-            length = response.headers.get('Content-Length')
-            if length is not None and length != str(expected_length):
-                raise _invalid()
-            deadline = time.monotonic() + 45
-            content = bytearray()
-            read_chunk = getattr(response, 'read1', response.read)
-            while len(content) <= expected_length:
-                if time.monotonic() > deadline:
-                    raise TimeoutError
-                chunk = read_chunk(min(65536, expected_length + 1 - len(content)))
-                if not chunk:
-                    break
-                content.extend(chunk)
-            if len(content) != expected_length:
-                raise _invalid()
-            return bytes(content)
-    except AppError:
-        raise
-    except (OSError, urllib.error.URLError, http.client.HTTPException):
-        raise AppError('daily_feed_download', '暂时无法下载新版榜单，请稍后重试。', 503) from None
+def _read_object(url, expected_length, revision, deadline, require):
+    request = urllib.request.Request(url, headers={'Accept': 'application/octet-stream', 'Accept-Encoding': 'identity'})
+    timeout = min(SOCKET_TIMEOUT, deadline - time.monotonic())
+    if timeout <= 0:
+        raise TimeoutError
+    with network.build_opener(_NoRedirect()).open(request, timeout=timeout) as response:
+        if response.geturl() != url or response.status != 200:
+            raise _invalid()
+        length = response.headers.get('Content-Length')
+        if length is not None and length != str(expected_length):
+            raise _invalid()
+        content = bytearray()
+        read_chunk = getattr(response, 'read1', response.read)
+        next_check = time.monotonic() + 1
+        while len(content) <= expected_length:
+            now = time.monotonic()
+            if now >= deadline:
+                raise TimeoutError
+            if now >= next_check:
+                require()
+                next_check = now + 1
+            chunk = read_chunk(min(65536, expected_length + 1 - len(content)))
+            if not chunk:
+                break
+            content.extend(chunk)
+        if len(content) != expected_length or hashlib.sha256(content).hexdigest() != revision:
+            raise _invalid()
+        return bytes(content)
+
+
+def _download(url, expected_length, *, require=network.check_authorization):
+    obj = OBJECT_URL.fullmatch(url) if isinstance(url, str) else None
+    if not obj or obj['board'] not in BOARDS or type(expected_length) is not int or not 100 <= expected_length <= MAX_TOKEN_BYTES:
+        raise _invalid()
+    # All routes carry the same public ciphertext. The manifest and its key come
+    # only from the website, and each URL is built from the immutable object ID.
+    path = f"/gh/{FEED_REPOSITORY}@{obj['commit']}/objects/{obj['board']}/{obj['revision']}.bin"
+    urls = [url] + [f'https://{host}{path}' for host in CDN_HOSTS]
+    deadline = time.monotonic() + DOWNLOAD_SECONDS
+    invalid_response = False
+    for address in urls:
+        require()
+        now = time.monotonic()
+        if now >= deadline:
+            break
+        try:
+            return _read_object(address, expected_length, obj['revision'], min(deadline, now + ROUTE_SECONDS), require)
+        except AppError as exc:
+            if exc.code != 'daily_feed_invalid':
+                raise
+            invalid_response = True
+        except urllib.error.HTTPError as exc:
+            exc.close()
+        except (OSError, urllib.error.URLError, http.client.HTTPException):
+            continue
+    if invalid_response:
+        raise _invalid()
+    raise AppError('daily_feed_download', '暂时无法下载新版榜单，请稍后重试。', 503)
 
 
 def _envelope(store, connection, board, revision, status):
@@ -231,8 +272,10 @@ def sync_board(ctx, membership, board, download=None):
     if any(entry['revision'] == revision for entry in cached['history']):
         cached['status'] = 'unchanged'
         return cached
-    fetch = download or _download
-    token = fetch(manifest['artifact_url'], manifest['byte_length'])
+    if download is None:
+        token = _download(manifest['artifact_url'], manifest['byte_length'], require=ctx.require)
+    else:
+        token = download(manifest['artifact_url'], manifest['byte_length'])
     ctx.require()
     snapshot = decode_snapshot(grant, board, token)
     ctx.require()

@@ -101,6 +101,9 @@ jobs:
         run: |
           python -m unittest discover -s tests -p 'test_daily_feed*.py' -v *> "$env:RUNNER_TEMP/fagao-windows-receipts/daily-feed-tests.log"
           if ($LASTEXITCODE -ne 0) { Get-Content "$env:RUNNER_TEMP/fagao-windows-receipts/daily-feed-tests.log"; exit $LASTEXITCODE }
+      - name: Download the real encrypted Hongguo edition with the primary host offline
+        shell: pwsh
+        run: python scripts/windows_daily_feed_transport.py --receipt "$env:RUNNER_TEMP/fagao-windows-receipts/hongguo-transport.json"
       - name: Native install and real Job Object lifetimes
         shell: pwsh
         env:

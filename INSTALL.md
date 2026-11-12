@@ -22,6 +22,8 @@ Mac 和 Windows x64 的正常安装和更新会自动装配与这次发行相符
 首次安装或用户明确要求更新时，由助手完成以下步骤：
 
 1. 读取发行仓库默认分支的 `install-release.json`。当前固定入口为 `https://raw.githubusercontent.com/ShiQi-Han03/fagao-scan-workbench/main/install-release.json`。此文件是发行指针；安装源码归档可能先于指针提交，因此归档内没有这个文件时仍从上述公开地址读取。不要把本地旧副本当成当前发行状态。
+
+   如果当前网络无法访问 `raw.githubusercontent.com`，由助手自动改从 GitHub 官方 `https://codeload.github.com/ShiQi-Han03/fagao-scan-workbench/zip/refs/heads/main` 下载默认分支 ZIP 到临时目录。用 ZIP 阅读器只读取归档根目录下唯一的 `install-release.json`，然后按下一步固定版本。
 2. 必须确认 `status` 为 `published`，`source_commit` 为完整的 40 位十六进制提交，`installer_sha256` 和 `source_archive_sha256` 均为完整的 64 位 SHA-256。检查该提交在发行仓库可获取，核对公开发布元数据中的版本。字段缺失、状态不符、无法获取或校验不符时，如实报告具体原因并保留原安装；不猜测链接、不改用浮动源码、不回退到旧版冒充完成。
 3. 读取该 `source_commit` 对应的 `INSTALL.md`、`AGENTS.md`、`README.md` 与 `docs/membership.md`。再从同一提交下载 `scripts/bootstrap.py` 到临时目录。下载地址为：
 
@@ -30,6 +32,8 @@ Mac 和 Windows x64 的正常安装和更新会自动装配与这次发行相符
    ```
 
    将 `SOURCE_COMMIT` 替换为已经核验的 `source_commit`。计算下载文件的 SHA-256，必须与 `installer_sha256` 一致；随后阅读安装器，确认与本工程一致再执行。
+
+   如果使用上述备用路径，或固定提交的 raw 文件无法打开，从 `https://codeload.github.com/ShiQi-Han03/fagao-scan-workbench/zip/SOURCE_COMMIT` 下载该提交的 ZIP。先核对整份 ZIP 的 SHA-256 等于 `source_archive_sha256`，再从该 ZIP 的根目录读取同一套说明和 `scripts/bootstrap.py`，把该文件复制到临时目录并核对 `installer_sha256`。执行下面的常规安装命令时，同时传入 `--archive-file "已校验的固定提交 ZIP 完整路径"`，保留 `--repo`、`--commit` 和 `--archive-sha256`。完成安装后删除本次下载的临时文件。
 4. 按第 2 节确认 Python，用第 3 节的 `--repo` 和 `--commit` 方式安装。安装器自动下载同一提交的完整工程、检查归档并建立固定入口。安装器与工程源码必须使用同一 `source_commit`，不能混用默认分支安装器和旧源码。
 
 `install-release.json` 的 `published` 表示发行方已发布并核验对应客户端来源；它不代表当前电脑已经装好、外站均可访问或当前用户具有会员资格。按第 3、4、6、7 节完成本机检查、账号连接和资料保护。只要公开发布元数据与固定提交可核验，就不再要求用户提供服务器发布记录、账号清单或其他私有材料。
