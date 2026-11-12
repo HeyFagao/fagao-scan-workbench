@@ -6,14 +6,6 @@
   "minimum_python": "3.10",
   "channel": "experimental",
   "source_archive_sha256_purpose": "Required SHA-256 of the pinned source archive; bootstrap rejects missing or mismatched digests before extraction or installation.",
-  "app_version": "0.7.0-dev.13",
-  "source_commit": "676c3c827245376f54e069cf25d4f7d5eca88c29",
-  "release_tag": "v0.7.0-dev.13",
-  "installer_url": "https://raw.githubusercontent.com/ShiQi-Han03/fagao-scan-workbench/676c3c827245376f54e069cf25d4f7d5eca88c29/scripts/bootstrap.py",
-  "installer_sha256": "ce83225cce4c6f69d21ea6dec18e788adc31daac698a4c7c37c659a7e00cb0fa",
-  "source_archive_url": "https://codeload.github.com/ShiQi-Han03/fagao-scan-workbench/zip/676c3c827245376f54e069cf25d4f7d5eca88c29",
-  "source_archive_sha256": "5652cbd06dea25af52f0710dc1e448e1b0d06e4463b7d17b547671b077895d52",
-  "verified_at": "2026-11-11T16:09:44.657026+00:00",
   "components": {
     "submission": [
       {
@@ -48,61 +40,97 @@
       }
     ]
   },
+  "account_qualification": "Ranking access follows the website account permit. Local submissions are available on this device.",
+  "app_version": "0.7.0-dev.14",
+  "source_commit": "31fe8d65effa0d36b04f353dfdfa3a9e7e80a4fa",
+  "release_tag": "v0.7.0-dev.14",
+  "installer_url": "https://raw.githubusercontent.com/ShiQi-Han03/fagao-scan-workbench/31fe8d65effa0d36b04f353dfdfa3a9e7e80a4fa/scripts/bootstrap.py",
+  "installer_sha256": "ce83225cce4c6f69d21ea6dec18e788adc31daac698a4c7c37c659a7e00cb0fa",
+  "source_archive_url": "https://codeload.github.com/ShiQi-Han03/fagao-scan-workbench/zip/31fe8d65effa0d36b04f353dfdfa3a9e7e80a4fa",
+  "source_archive_sha256": "8f844fd7d17d0d90cde0f929a1a39af244163386d1c49f63ddfd60014a33110c",
+  "verified_at": "2026-11-12T04:51:07.200746+00:00",
   "verification": {
-    "source_tree": "93f75fd4e65f0009fbac814b85f20a3def156d21",
-    "platforms": [
-      "macOS ARM64",
-      "Windows x64 (GitHub Actions)"
-    ],
-    "python_tests": 752,
+    "source_tree": "2e1cf735afa6df923ef5ca108def8ffa38e4fa4e",
+    "python_tests": 760,
     "daily_boards": {
-      "source_tree": "93f75fd4e65f0009fbac814b85f20a3def156d21",
-      "backend_tests": 22,
-      "ui_checks": 13
+      "backend_tests": 30,
+      "ui_checks": 14
     },
+    "source_notice_coverage": 107,
+    "windows_ci_run_url": "https://github.com/ShiQi-Han03/fagao-scan-workbench/actions/runs/43156979456",
+    "windows_native_ci_tested": true,
+    "windows_install_tested": true,
     "windows_public_install": {
       "status": "passed",
-      "run_url": "https://github.com/ShiQi-Han03/fagao-scan-workbench/actions/runs/43055286886",
-      "job_id": 130642990590,
-      "artifact_id": 13870613389,
-      "artifact_sha256": "50330d0fa2632793baa00f0080c5840c42cd8bedc23e74189c4014ebbf22d435",
+      "run_url": "https://github.com/ShiQi-Han03/fagao-scan-workbench/actions/runs/43157045712",
       "component_transport": "anonymous_https_release_download",
       "component_archive_override": false
     },
-    "macos_install_checks": 13,
-    "macos_candidate_native_ui": "passed",
-    "repeat_install_preserves_data": true,
-    "archive_digest_enforced": true,
-    "windows_install_tested": true,
-    "windows_native_ci_tested": true,
-    "windows_ci_run_url": "https://github.com/ShiQi-Han03/fagao-scan-workbench/actions/runs/43054370640",
     "windows_jobs": [
       {
         "python": "3.11.9",
-        "job_id": 130640160753,
-        "native_checks": 14,
-        "cleanup_passed": true,
-        "native_submission_ui": "passed",
-        "submission_upgrade": "passed",
-        "artifact_id": 13870593313,
-        "artifact_sha256": "a64d99213b1ca0efadb5c747ea8b80e771c76bfe1dcc8342fecebd661ce67eee"
+        "job_id": 130979129934,
+        "artifact_id": 13916785405,
+        "artifact_sha256": "bed57f1044541247a453f8b61bb199f79bb5125389034b768dd9b4f9eead589e",
+        "cold_cache_download": {
+          "board": "hongguo",
+          "source_date": "2026-11-11",
+          "initial_cached_editions": 0,
+          "platform": "Windows",
+          "python": "3.11.9",
+          "primary_outage_simulated": true,
+          "attempt_hosts": [
+            "raw.githubusercontent.com",
+            "cdn.jsdelivr.net"
+          ],
+          "authenticated_headers_sent": false,
+          "network_fallback": true,
+          "byte_length": 10148,
+          "sha256": "891f195e9f5ea04226b6dd9c652038df31caff203915926c92497647f89fb145"
+        },
+        "download_regressions_passed": 8,
+        "native_install_and_submission": true
       },
       {
         "python": "3.12.10",
-        "job_id": 130640161542,
-        "native_checks": 14,
-        "cleanup_passed": true,
-        "native_submission_ui": "passed",
-        "submission_upgrade": "passed",
-        "artifact_id": 13869668476,
-        "artifact_sha256": "3d88566ea485589585c52d3658db6f8a76b6c2237f1e098e6a0a6ad6f9dcc421"
+        "job_id": 130979129966,
+        "artifact_id": 13916845248,
+        "artifact_sha256": "7a72d15b2b60d5b5a817b369beb03f058f06d4f349d239ffd7148d119f6d6797",
+        "cold_cache_download": {
+          "board": "hongguo",
+          "source_date": "2026-11-11",
+          "initial_cached_editions": 0,
+          "platform": "Windows",
+          "python": "3.12.10",
+          "primary_outage_simulated": true,
+          "attempt_hosts": [
+            "raw.githubusercontent.com",
+            "cdn.jsdelivr.net"
+          ],
+          "authenticated_headers_sent": false,
+          "network_fallback": true,
+          "byte_length": 10148,
+          "sha256": "891f195e9f5ea04226b6dd9c652038df31caff203915926c92497647f89fb145"
+        },
+        "download_regressions_passed": 8,
+        "native_install_and_submission": true
       }
     ],
-    "windows_fixtures_cleaned": true,
     "security": {
-      "credential_scan_run_url": "https://github.com/ShiQi-Han03/fagao-scan-workbench/actions/runs/43054370550"
+      "credential_scan_run_url": "https://github.com/ShiQi-Han03/fagao-scan-workbench/actions/runs/43156979679"
     },
-    "workbuddy_app_interaction_tested": false
-  },
-  "account_qualification": "Ranking access follows the website account permit. Local submissions are available on this device."
+    "workbuddy_app_interaction_tested": false,
+    "macos_hongguo_cold_download": {
+      "architecture": "arm64",
+      "source_date": "2026-11-11",
+      "row_count": 99,
+      "rank_range": [
+        1,
+        99
+      ],
+      "object_sha256": "891f195e9f5ea04226b6dd9c652038df31caff203915926c92497647f89fb145",
+      "cache_before": "empty",
+      "cache_after": "updated"
+    }
+  }
 }

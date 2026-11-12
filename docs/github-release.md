@@ -1,5 +1,17 @@
 # GitHub 发行回读记录
 
+## v0.7.0-dev.14
+
+首次打开红果热播榜等榜单时，如果主文件地址无法连接，工作台会自动通过备用地址读取同一份已校验的榜单。已连接账号可在「漫剧 → 红果热播榜」点「更新榜单」。
+
+继续使用原 WorkBuddy 安装说明即可更新。小说投稿沿用 dev.13 的三份已校验组件。
+
+[Windows 3.11 与 3.12 验收](https://github.com/ShiQi-Han03/fagao-scan-workbench/actions/runs/43156979456) · [Windows 匿名安装验收](https://github.com/ShiQi-Han03/fagao-scan-workbench/actions/runs/43157045712)
+
+本次固定提交为 `31fe8d65effa0d36b04f353dfdfa3a9e7e80a4fa`。Windows 两套 Python 环境均在空缓存下实测主地址断开后从备用地址下载红果榜官方密文，10,148 字节且哈希与发布记录相符；已验收授权后校验、解密及缓存写入。
+
+## v0.7.0-dev.13
+
 发糕扫榜工作台 `0.7.0-dev.13` 将小说投稿并入原 WorkBuddy 安装流程。可从工作台顶部使用本机草稿，带入投稿助手后由作者选择收件人并核对自检邮件。[使用说明](local-submissions.md)
 
 发行源码为 `676c3c827245376f54e069cf25d4f7d5eca88c29`。默认分支的[安装清单](../install-release.json)提供版本、固定提交、安装器、源码以及投稿组件的 SHA-256。Apple Silicon Mac、Intel Mac 和 Windows x64 分别使用该发行的对应组件。[GitHub 发行](https://github.com/ShiQi-Han03/fagao-scan-workbench/releases/tag/v0.7.0-dev.13)
