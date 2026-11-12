@@ -41,96 +41,106 @@
     ]
   },
   "account_qualification": "Ranking access follows the website account permit. Local submissions are available on this device.",
-  "app_version": "0.7.0-dev.14",
-  "source_commit": "31fe8d65effa0d36b04f353dfdfa3a9e7e80a4fa",
-  "release_tag": "v0.7.0-dev.14",
-  "installer_url": "https://raw.githubusercontent.com/ShiQi-Han03/fagao-scan-workbench/31fe8d65effa0d36b04f353dfdfa3a9e7e80a4fa/scripts/bootstrap.py",
+  "app_version": "0.7.0-dev.15",
+  "source_commit": "9e6caa11090410bcca876d312b4efeed78738098",
+  "release_tag": "v0.7.0-dev.15",
+  "installer_url": "https://raw.githubusercontent.com/ShiQi-Han03/fagao-scan-workbench/9e6caa11090410bcca876d312b4efeed78738098/scripts/bootstrap.py",
   "installer_sha256": "ce83225cce4c6f69d21ea6dec18e788adc31daac698a4c7c37c659a7e00cb0fa",
-  "source_archive_url": "https://codeload.github.com/ShiQi-Han03/fagao-scan-workbench/zip/31fe8d65effa0d36b04f353dfdfa3a9e7e80a4fa",
-  "source_archive_sha256": "8f844fd7d17d0d90cde0f929a1a39af244163386d1c49f63ddfd60014a33110c",
-  "verified_at": "2026-11-12T04:51:07.200746+00:00",
+  "source_archive_url": "https://codeload.github.com/ShiQi-Han03/fagao-scan-workbench/zip/9e6caa11090410bcca876d312b4efeed78738098",
+  "source_archive_sha256": "9c1e756153916c4bdd49d2c154b8460c03b1b02312cdbde17de398fd231d0b4b",
+  "verified_at": "2026-11-12T07:31:27.598405+00:00",
   "verification": {
-    "source_tree": "2e1cf735afa6df923ef5ca108def8ffa38e4fa4e",
-    "python_tests": 760,
-    "daily_boards": {
-      "backend_tests": 30,
-      "ui_checks": 14
-    },
-    "source_notice_coverage": 107,
-    "windows_ci_run_url": "https://github.com/ShiQi-Han03/fagao-scan-workbench/actions/runs/43156979456",
+    "source_tree": "9299e7539fe28d7d81876b26b7dbf058605c8d34",
+    "python_tests": 768,
+    "windows_ci_run_url": "https://github.com/ShiQi-Han03/fagao-scan-workbench/actions/runs/43174953818",
     "windows_native_ci_tested": true,
     "windows_install_tested": true,
     "windows_public_install": {
       "status": "passed",
-      "run_url": "https://github.com/ShiQi-Han03/fagao-scan-workbench/actions/runs/43157045712",
+      "run_url": "https://github.com/ShiQi-Han03/fagao-scan-workbench/actions/runs/43174985045",
       "component_transport": "anonymous_https_release_download",
-      "component_archive_override": false
+      "component_archive_override": false,
+      "submission": {
+        "real_browser_empty_cold_launch": true,
+        "minimized_editor_restored": true,
+        "tray_editor_restored": true,
+        "native_four_fields_match": true,
+        "native_zero_selected_recipients": true,
+        "no_sender_accounts_or_delivery_jobs": true
+      }
     },
     "windows_jobs": [
       {
         "python": "3.11.9",
-        "job_id": 130979129934,
-        "artifact_id": 13916785405,
-        "artifact_sha256": "bed57f1044541247a453f8b61bb199f79bb5125389034b768dd9b4f9eead589e",
-        "cold_cache_download": {
-          "board": "hongguo",
-          "source_date": "2026-11-11",
-          "initial_cached_editions": 0,
-          "platform": "Windows",
-          "python": "3.11.9",
-          "primary_outage_simulated": true,
-          "attempt_hosts": [
-            "raw.githubusercontent.com",
-            "cdn.jsdelivr.net"
-          ],
-          "authenticated_headers_sent": false,
-          "network_fallback": true,
-          "byte_length": 10148,
-          "sha256": "891f195e9f5ea04226b6dd9c652038df31caff203915926c92497647f89fb145"
+        "job_id": 131036890257,
+        "artifact_id": 13924152125,
+        "artifact_sha256": "c9b49d03899fece094cc0eb6115bf100c28dbf417d9e865e10b0d22359691476",
+        "submission": {
+          "real_browser_empty_cold_launch": true,
+          "minimized_editor_restored": true,
+          "tray_editor_restored": true,
+          "native_four_fields_match": true,
+          "native_zero_selected_recipients": true,
+          "no_sender_accounts_or_delivery_jobs": true
         },
-        "download_regressions_passed": 8,
-        "native_install_and_submission": true
+        "repair": {
+          "previous_damaged_component_repaired": true,
+          "previous_draft_preserved": true,
+          "previous_ranking_preserved": true,
+          "missing_dll_reported_repairable": true,
+          "repair_restored_original_dll": true,
+          "workbench_healthy_after_repair": true,
+          "runtime_dll_sha256": "afb4f083d34c470bdafc6d1d3801142ea2a71b76553329485d91a35534c086df",
+          "previous_commit": "31fe8d65effa0d36b04f353dfdfa3a9e7e80a4fa"
+        }
       },
       {
         "python": "3.12.10",
-        "job_id": 130979129966,
-        "artifact_id": 13916845248,
-        "artifact_sha256": "7a72d15b2b60d5b5a817b369beb03f058f06d4f349d239ffd7148d119f6d6797",
-        "cold_cache_download": {
-          "board": "hongguo",
-          "source_date": "2026-11-11",
-          "initial_cached_editions": 0,
-          "platform": "Windows",
-          "python": "3.12.10",
-          "primary_outage_simulated": true,
-          "attempt_hosts": [
-            "raw.githubusercontent.com",
-            "cdn.jsdelivr.net"
-          ],
-          "authenticated_headers_sent": false,
-          "network_fallback": true,
-          "byte_length": 10148,
-          "sha256": "891f195e9f5ea04226b6dd9c652038df31caff203915926c92497647f89fb145"
+        "job_id": 131036890251,
+        "artifact_id": 13924311226,
+        "artifact_sha256": "991f829aba65361799a926254dcf99e776ec16469bcf97e4c96bff4ed862380e",
+        "submission": {
+          "real_browser_empty_cold_launch": true,
+          "minimized_editor_restored": true,
+          "tray_editor_restored": true,
+          "native_four_fields_match": true,
+          "native_zero_selected_recipients": true,
+          "no_sender_accounts_or_delivery_jobs": true
         },
-        "download_regressions_passed": 8,
-        "native_install_and_submission": true
+        "repair": {
+          "previous_damaged_component_repaired": true,
+          "previous_draft_preserved": true,
+          "previous_ranking_preserved": true,
+          "missing_dll_reported_repairable": true,
+          "repair_restored_original_dll": true,
+          "workbench_healthy_after_repair": true,
+          "runtime_dll_sha256": "afb4f083d34c470bdafc6d1d3801142ea2a71b76553329485d91a35534c086df",
+          "previous_commit": "31fe8d65effa0d36b04f353dfdfa3a9e7e80a4fa"
+        }
       }
     ],
     "security": {
-      "credential_scan_run_url": "https://github.com/ShiQi-Han03/fagao-scan-workbench/actions/runs/43156979679"
+      "credential_scan_run_url": "https://github.com/ShiQi-Han03/fagao-scan-workbench/actions/runs/43174953629"
     },
     "workbuddy_app_interaction_tested": false,
-    "macos_hongguo_cold_download": {
-      "architecture": "arm64",
-      "source_date": "2026-11-11",
-      "row_count": 99,
-      "rank_range": [
-        1,
-        99
-      ],
-      "object_sha256": "891f195e9f5ea04226b6dd9c652038df31caff203915926c92497647f89fb145",
-      "cache_before": "empty",
-      "cache_after": "updated"
+    "mac_submission_window": {
+      "platform": "macOS arm64",
+      "results": [
+        {
+          "start_state": "closed",
+          "http": 200,
+          "renderer_ack": true,
+          "feedback_visible": true,
+          "one_editor": true
+        },
+        {
+          "start_state": "already_open",
+          "http": 200,
+          "renderer_ack": true,
+          "feedback_visible": true,
+          "one_editor": true
+        }
+      ]
     }
   }
 }

@@ -1,5 +1,15 @@
 # GitHub 发行回读记录
 
+## v0.7.0-dev.15
+
+改善从网页打开「小说投稿」时的进度与错误提示。Windows 工作台可识别需要修复的投稿组件，沿用原 WorkBuddy 安装指令即可修复并保留草稿和已有设置。
+
+Windows 验收覆盖空稿启动、再次从网页打开已最小化或收到托盘的投稿窗口，以及组件修复。使用原工作台安装说明即可获取此版。
+
+[Windows 3.11 与 3.12 验收](https://github.com/ShiQi-Han03/fagao-scan-workbench/actions/runs/43174953818) · [Windows 匿名安装验收](https://github.com/ShiQi-Han03/fagao-scan-workbench/actions/runs/43174985045)
+
+本次固定提交为 `9e6caa11090410bcca876d312b4efeed78738098`。
+
 ## v0.7.0-dev.14
 
 首次打开红果热播榜等榜单时，如果主文件地址无法连接，工作台会自动通过备用地址读取同一份已校验的榜单。已连接账号可在「漫剧 → 红果热播榜」点「更新榜单」。
