@@ -4,7 +4,9 @@
 
 发糕扫榜工作台的 GitHub 官方分发入口使用仓库编号 `1452172195` 核验。安装及更新时使用该仓库当前名称，投稿组件和榜单可识别更名前后的固定下载地址。
 
-当前发行源码 `3b9dc0a979dbbd86d8c72414dd833299b9eb6788`。可继续按官网扫榜页的说明安装或更新。Windows 已验证全新安装、旧版电脑资料保留、投稿附件和五榜下载。[Windows 原生验收](https://github.com/ShiQi-Han03/fagao-scan-workbench/actions/runs/43211790281)
+当前发行源码 `3b9dc0a979dbbd86d8c72414dd833299b9eb6788`。可继续按官网扫榜页的说明安装或更新。Windows 已验证全新安装、旧版电脑资料保留、投稿附件和五榜下载。[Windows 原生验收](https://github.com/HeyFagao/fagao-scan-workbench/actions/runs/43212967769)
+
+[改名前的 Windows 兼容验收](https://github.com/HeyFagao/fagao-scan-workbench/actions/runs/43211790281)
 
 ## v0.7.0-dev.16
 

@@ -6,15 +6,15 @@
   "channel": "experimental",
   "source_archive_sha256_purpose": "Required SHA-256 of the pinned source archive; bootstrap rejects missing or mismatched digests before extraction or installation.",
   "account_qualification": "Ranking access follows the website account permit. Local submissions are available on this device.",
-  "repository": "ShiQi-Han03/fagao-scan-workbench",
+  "repository": "HeyFagao/fagao-scan-workbench",
   "repository_id": 1452172195,
   "owner_id": 153971533,
   "app_version": "0.7.0-dev.17",
   "source_commit": "3b9dc0a979dbbd86d8c72414dd833299b9eb6788",
   "release_tag": "v0.7.0-dev.17",
-  "installer_url": "https://raw.githubusercontent.com/ShiQi-Han03/fagao-scan-workbench/3b9dc0a979dbbd86d8c72414dd833299b9eb6788/scripts/bootstrap.py",
+  "installer_url": "https://raw.githubusercontent.com/HeyFagao/fagao-scan-workbench/3b9dc0a979dbbd86d8c72414dd833299b9eb6788/scripts/bootstrap.py",
   "installer_sha256": "ce83225cce4c6f69d21ea6dec18e788adc31daac698a4c7c37c659a7e00cb0fa",
-  "source_archive_url": "https://codeload.github.com/ShiQi-Han03/fagao-scan-workbench/zip/3b9dc0a979dbbd86d8c72414dd833299b9eb6788",
+  "source_archive_url": "https://codeload.github.com/HeyFagao/fagao-scan-workbench/zip/3b9dc0a979dbbd86d8c72414dd833299b9eb6788",
   "source_archive_sha256": "469298f8eaaafd59aea633d565b0c89365a25390efea69af551eaaf644a206cc",
   "components": {
     "submission": [
@@ -26,7 +26,7 @@
         "asar_sha256": "065f708559e26038345be38539db543f1765a73a8ce37e4b5000c30fed51558e",
         "archive_sha256": "9eed273c0e459df3aca425bc61fe8bba4a42935af9bbf99454a485579d3dcb6c",
         "size_bytes": 123018053,
-        "archive_url": "https://github.com/ShiQi-Han03/fagao-scan-workbench/releases/download/v0.7.0-dev.13/FagaoSubmission-macos-arm64.zip"
+        "archive_url": "https://github.com/HeyFagao/fagao-scan-workbench/releases/download/v0.7.0-dev.13/FagaoSubmission-macos-arm64.zip"
       },
       {
         "platform": "darwin",
@@ -36,7 +36,7 @@
         "asar_sha256": "065f708559e26038345be38539db543f1765a73a8ce37e4b5000c30fed51558e",
         "archive_sha256": "ac408afeccc37defe1f40ba15b45a39f871c77c7fdce2a9382752843398581f7",
         "size_bytes": 128159035,
-        "archive_url": "https://github.com/ShiQi-Han03/fagao-scan-workbench/releases/download/v0.7.0-dev.13/FagaoSubmission-macos-x64.zip"
+        "archive_url": "https://github.com/HeyFagao/fagao-scan-workbench/releases/download/v0.7.0-dev.13/FagaoSubmission-macos-x64.zip"
       },
       {
         "platform": "win32",
@@ -46,22 +46,23 @@
         "asar_sha256": "065f708559e26038345be38539db543f1765a73a8ce37e4b5000c30fed51558e",
         "archive_sha256": "cd894bb64afca8acbb97857834658176a2462a467eaa602dba3e16268b0d1b94",
         "size_bytes": 147946300,
-        "archive_url": "https://github.com/ShiQi-Han03/fagao-scan-workbench/releases/download/v0.7.0-dev.13/FagaoSubmission-windows-x64.zip"
+        "archive_url": "https://github.com/HeyFagao/fagao-scan-workbench/releases/download/v0.7.0-dev.13/FagaoSubmission-windows-x64.zip"
       }
     ]
   },
-  "verified_at": "2026-11-12T11:48:20.634563+00:00",
+  "verified_at": "2026-11-12T11:55:06.268197+00:00",
   "verification": {
     "source_tree": "42ec9392bc46c545f554e2bf3dc0724a33c2a964",
     "python_tests": 796,
     "windows_install_tested": true,
     "windows_native_ci_tested": true,
-    "windows_ci_run_url": "https://github.com/ShiQi-Han03/fagao-scan-workbench/actions/runs/43211790281",
-    "windows_artifact_sha256": "sha256:2709dfdd369467279982e71f14791d2f2e476f503ed1ad0356f327d18a115ed4",
-    "migration_phase": "before",
+    "windows_ci_run_url": "https://github.com/HeyFagao/fagao-scan-workbench/actions/runs/43212967769",
+    "windows_artifact_sha256": "sha256:19d48eecba095af58777e7b8a43146ec19e88263404ba685c2edfebdd8821a5b",
+    "migration_phase": "after",
     "security": {
-      "credential_scan_run_url": "https://github.com/ShiQi-Han03/fagao-scan-workbench/actions/runs/43211790111"
+      "credential_scan_run_url": "https://github.com/HeyFagao/fagao-scan-workbench/actions/runs/43212967602"
     },
-    "workbuddy_app_interaction_tested": false
+    "workbuddy_app_interaction_tested": false,
+    "pre_rename_windows_ci_run_url": "https://github.com/HeyFagao/fagao-scan-workbench/actions/runs/43211790281"
   }
 }
