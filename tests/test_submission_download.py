@@ -13,7 +13,7 @@ from urllib.error import HTTPError, URLError
 from scripts import submission_download as downloader
 
 
-REPOSITORY = "https://github.com/ShiQi-Han03/fagao-scan-workbench"
+REPOSITORY = "https://github.com/HeyFagao/fagao-scan-workbench"
 URL = REPOSITORY + "/releases/download/submission-v1/FagaoSubmission-win32-x64.zip"
 DATA = b"synthetic submission component for installer verification"
 DIGEST = hashlib.sha256(DATA).hexdigest()
@@ -65,18 +65,56 @@ class SubmissionDownloadTests(unittest.TestCase):
     def test_only_official_release_paths_and_tls_asset_redirects(self):
         downloader._validate_source(URL)
         for url in [URL.replace("https:", "http:"), URL.replace("github.com/", "github.com.evil.test/"),
-                    URL.replace("ShiQi-Han03", "other-org"), URL.replace("github.com", "user@github.com"),
+                    URL.replace("HeyFagao", "other-org"), URL.replace("github.com", "user@github.com"),
                     URL.replace("github.com", "github.com:8443"),
                     URL.replace("/releases/download/", "/releases/latest/download/")]:
             with self.subTest(url=url), self.assertRaises(downloader.ComponentDownloadError):
                 downloader._validate_source(url)
 
         for host in ["release-assets.githubusercontent.com", "objects.githubusercontent.com"]:
-            downloader._validate_redirect(f"https://{host}/github-production-release-asset/123?sig=fake")
+            downloader._validate_redirect(f"https://{host}/github-production-release-asset/1452172195/example?sig=fake")
             for url in [f"http://{host}/x", f"https://{host}.evil.test/x",
                         f"https://user@{host}/x", f"https://{host}:444/x"]:
                 with self.subTest(url=url), self.assertRaises(downloader.ComponentDownloadError):
                     downloader._validate_redirect(url)
+
+    def test_previous_named_release_is_only_used_for_existing_pinned_assets(self):
+        suffix = "v0.7.0-dev.13/FagaoSubmission-windows-x64.zip"
+        current = downloader.ORIGIN + suffix
+        previous = downloader.PREVIOUS_ORIGIN + suffix
+        for incoming in (current, previous):
+            attempts = []
+            def fetch(url, output, size):
+                attempts.append(url)
+                if url == current:
+                    raise downloader.ComponentDownloadError("not found", not_found=True)
+                output.write_bytes(DATA)
+            with self.subTest(incoming=incoming), patch.object(downloader, "_python_download", side_effect=fetch):
+                self.download(incoming)
+                self.assertEqual(attempts, [current, previous])
+                self.assertEqual(self.destination.read_bytes(), DATA)
+                self.destination.unlink()
+        with patch.object(downloader, "_python_download") as transport:
+            with self.assertRaises(downloader.ComponentDownloadError):
+                self.download(downloader.PREVIOUS_ORIGIN + "other/unverified.zip")
+            transport.assert_not_called()
+
+    def test_old_owner_path_is_not_consulted_after_integrity_failure(self):
+        url = downloader.ORIGIN + "v0.7.0-dev.13/FagaoSubmission-macos-arm64.zip"
+        with patch.object(downloader, "_python_download", side_effect=lambda u, p, n:
+                          p.write_bytes(b"!" * n)) as fetch, self.assertRaises(downloader.ComponentDownloadError):
+            self.download(url)
+        self.assertEqual(fetch.call_count, 1)
+        self.assertFalse(self.destination.exists())
+
+    def test_release_cdn_cannot_substitute_a_different_repository_id(self):
+        url = downloader.PREVIOUS_ORIGIN + "v0.7.0-dev.13/FagaoSubmission-windows-x64.zip"
+        for status, location in ((302, "https://release-assets.githubusercontent.com/github-production-release-asset/999/example"),
+                                 (200, "")):
+            with self.subTest(status=status), patch.object(downloader, "_curl_head", return_value=(status, location)), \
+                    patch.object(downloader.subprocess, "Popen") as process, self.assertRaises(downloader.ComponentDownloadError):
+                downloader._curl_download(url, self.destination, len(DATA), "system-curl.exe")
+            process.assert_not_called()
 
     def test_native_curl_rejects_redirect_before_requesting_second_host(self):
         with patch.object(downloader, "_curl_head",
@@ -88,8 +126,8 @@ class SubmissionDownloadTests(unittest.TestCase):
         self.assertFalse(self.destination.exists())
 
     def test_native_transport_checks_each_head_then_streams_only_the_final_url(self):
-        first = "https://objects.githubusercontent.com/synthetic"
-        final = "https://release-assets.githubusercontent.com/example?sig=fake"
+        first = "https://objects.githubusercontent.com/github-production-release-asset-2e65be/1452172195/synthetic"
+        final = "https://release-assets.githubusercontent.com/github-production-release-asset/1452172195/example?sig=fake"
         calls = []
         replies = iter([b"302\n" + first.encode(), b"307\n" + final.encode(), b"200\n"])
 

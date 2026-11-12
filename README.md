@@ -8,7 +8,7 @@
 
 把下面这段话复制到 WorkBuddy：
 
-> 请帮我安装或更新「发糕扫榜工作台」：https://github.com/ShiQi-Han03/fagao-scan-workbench 。按项目说明使用最新已发布版本，保留已有资料和设置，自动完成安装、启动和打开页面。遇到问题先自行诊断、修复并重试，不把排查命令交给我，不反复询问是否继续；确认安装命令结束后仍能打开，再告知完成。只有本人登录、验证码、授权、资料归属或系统必须由我批准时，才提醒我并让我自己操作；不要绕过安全校验。最后简短告诉我结果和下一步。
+> 请帮我安装或更新「发糕扫榜工作台」：https://github.com/HeyFagao/fagao-scan-workbench 。请先核对 GitHub 仓库编号 1452172195。按项目说明使用最新已发布版本，保留已有资料和设置，自动完成安装、启动和打开页面。遇到问题先自行诊断、修复并重试，不把排查命令交给我，不反复询问是否继续；确认安装命令结束后仍能打开，再告知完成。只有本人登录、验证码、授权、资料归属或系统必须由我批准时，才提醒我并让我自己操作；不要绕过安全校验。最后简短告诉我结果和下一步。
 
 WorkBuddy 会完成环境准备、安装并打开工作台。打开「小说投稿」即可保存本地草稿。使用扫榜时，点击「连接发糕账号」，在官网登录并确认连接。如果发现旧资料，由你选择认领或保留。
 
@@ -108,6 +108,6 @@ python3 -m fagao.server --port 18376
 
 ## 项目来源与验证
 
-当前发行仓库为 [ShiQi-Han03/fagao-scan-workbench](https://github.com/ShiQi-Han03/fagao-scan-workbench)，原始来源为 [hanyyyou/fagao-scan-workbench](https://github.com/hanyyyou/fagao-scan-workbench)。安装助手按 [INSTALL.md](INSTALL.md) 读取默认分支的 `install-release.json`，固定已发布版本后安装；公开仓库下载不要求 GitHub 登录。
+当前发行仓库为 [HeyFagao/fagao-scan-workbench](https://github.com/HeyFagao/fagao-scan-workbench)（GitHub 仓库编号 `1452172195`），原始来源为 [hanyyyou/fagao-scan-workbench](https://github.com/hanyyyou/fagao-scan-workbench)。安装助手按 [INSTALL.md](INSTALL.md) 读取默认分支的 `install-release.json`，固定已发布版本后安装；公开仓库下载不要求 GitHub 登录。
 
 Windows 与 macOS 启动入口已提供，Python 缺失时由 WorkBuddy 按 INSTALL.md 准备私有运行时。核心功能使用 Python 标准库与随包提供的纯 Python 组件，无需额外安装依赖；黑岩书单在系统浏览器中打开，不依赖 Node 或 Playwright。历史掌文后台适配仅为维护者保留，默认不作为黑岩入口。平台网络访问、腾讯文档账号权限和正文取得有各自的验证状态，详见平台能力表。GitHub 分发成功、工作台打开、平台数据可用与 WorkBuddy 实际拆书分别验收。

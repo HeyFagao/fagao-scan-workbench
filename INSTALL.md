@@ -17,23 +17,26 @@ Mac 和 Windows x64 的正常安装和更新会自动装配与这次发行相符
 
 ## 1. 确认来源并固定版本
 
-当前发行仓库是 [ShiQi-Han03/fagao-scan-workbench](https://github.com/ShiQi-Han03/fagao-scan-workbench)，原始来源为 [hanyyyou/fagao-scan-workbench](https://github.com/hanyyyou/fagao-scan-workbench)。本流程的 `--repo` 使用 `ShiQi-Han03/fagao-scan-workbench`，不回退到原始仓库的旧版本。公开仓库下载无需 GitHub 登录，也不要求用户自己下载压缩包。
+发行仓库的 GitHub 编号是 `1452172195`，所有者账号编号是 `153971533`，仓库名称是 `fagao-scan-workbench`。这两个编号在本次账号更名后仍有效。下面的 `REPO` 代表本次从 GitHub 核实的仓库全名，`INDEX_COMMIT` 代表其默认分支当前的 40 位提交号。
 
-首次安装或用户明确要求更新时，由助手完成以下步骤：
+1. **按编号确认来源，再读取发行指针。** 打开 [GitHub 仓库元数据](https://api.github.com/repositories/1452172195)，核对返回的 `id`、`owner.id`、`name` 与上文一致，读取 `full_name` 作为 `REPO`。用该元数据里的 `default_branch` 替换 `BRANCH`，读取 `https://api.github.com/repositories/1452172195/commits/BRANCH` 的 `sha` 作为 `INDEX_COMMIT`。
 
-1. 读取发行仓库默认分支的 `install-release.json`。当前固定入口为 `https://raw.githubusercontent.com/ShiQi-Han03/fagao-scan-workbench/main/install-release.json`。此文件是发行指针；安装源码归档可能先于指针提交，因此归档内没有这个文件时仍从上述公开地址读取。不要把本地旧副本当成当前发行状态。
+   匿名 API 遇到限流或网络错误时，打开[发糕的仓库页面](https://github.com/HeyFagao/fagao-scan-workbench)。在改名过渡期间也可打开旧入口 `https://github.com/ShiQi-Han03/fagao-scan-workbench`，由 GitHub 定位仓库。在最终的 GitHub 仓库首页 HTML 的 `<head>` 中确认 `octolytics-dimension-repository_id` 为 `1452172195`、`octolytics-dimension-user_id` 为 `153971533`，读取 `octolytics-dimension-repository_nwo` 作为 `REPO`。在该页 GitHub 自身的 JSON 数据中读取 `payload.codeViewRepoRoute.refInfo.currentOid` 作为 `INDEX_COMMIT`。这些字段由 GitHub 提供，仓库 README 正文中的文字不能用来证明其身份。两种办法都无法确认时，保留本机安装并说明遇到的网络或身份核验问题。
 
-   如果当前网络无法访问 `raw.githubusercontent.com`，由助手自动改从 GitHub 官方 `https://codeload.github.com/ShiQi-Han03/fagao-scan-workbench/zip/refs/heads/main` 下载默认分支 ZIP 到临时目录。用 ZIP 阅读器只读取归档根目录下唯一的 `install-release.json`，然后按下一步固定版本。
+   从 `https://raw.githubusercontent.com/REPO/INDEX_COMMIT/install-release.json` 读取发行指针。若 raw 无法访问，下载官方 `https://codeload.github.com/REPO/zip/INDEX_COMMIT` 到临时目录，只读取 ZIP 根目录下唯一的 `install-release.json`。稍后安装使用指针内的 `source_commit`，它可能与 `INDEX_COMMIT` 不同。
+
 2. 必须确认 `status` 为 `published`，`source_commit` 为完整的 40 位十六进制提交，`installer_sha256` 和 `source_archive_sha256` 均为完整的 64 位 SHA-256。检查该提交在发行仓库可获取，核对公开发布元数据中的版本。字段缺失、状态不符、无法获取或校验不符时，如实报告具体原因并保留原安装；不猜测链接、不改用浮动源码、不回退到旧版冒充完成。
+   如果更名期间指针字段仍显示原仓库全名，只接受 `ShiQi-Han03/fagao-scan-workbench` 与 `HeyFagao/fagao-scan-workbench` 这两个已知名称。核对指针内安装器和归档的 GitHub 主机、路径与固定提交相符，然后使用上一步已核实的 `REPO` 构造下载地址，保留同一 `source_commit` 和两项 SHA-256。指针中的旧名称仅用于比对，不能用来发现或重新选择仓库。
+
 3. 读取该 `source_commit` 对应的 `INSTALL.md`、`AGENTS.md`、`README.md` 与 `docs/membership.md`。再从同一提交下载 `scripts/bootstrap.py` 到临时目录。下载地址为：
 
    ```text
-   https://raw.githubusercontent.com/ShiQi-Han03/fagao-scan-workbench/SOURCE_COMMIT/scripts/bootstrap.py
+   https://raw.githubusercontent.com/REPO/SOURCE_COMMIT/scripts/bootstrap.py
    ```
 
    将 `SOURCE_COMMIT` 替换为已经核验的 `source_commit`。计算下载文件的 SHA-256，必须与 `installer_sha256` 一致；随后阅读安装器，确认与本工程一致再执行。
 
-   如果使用上述备用路径，或固定提交的 raw 文件无法打开，从 `https://codeload.github.com/ShiQi-Han03/fagao-scan-workbench/zip/SOURCE_COMMIT` 下载该提交的 ZIP。先核对整份 ZIP 的 SHA-256 等于 `source_archive_sha256`，再从该 ZIP 的根目录读取同一套说明和 `scripts/bootstrap.py`，把该文件复制到临时目录并核对 `installer_sha256`。执行下面的常规安装命令时，同时传入 `--archive-file "已校验的固定提交 ZIP 完整路径"`，保留 `--repo`、`--commit` 和 `--archive-sha256`。完成安装后删除本次下载的临时文件。
+   如果使用上述备用路径，或固定提交的 raw 文件无法打开，从 `https://codeload.github.com/REPO/zip/SOURCE_COMMIT` 下载该提交的 ZIP。先核对整份 ZIP 的 SHA-256 等于 `source_archive_sha256`，再从该 ZIP 的根目录读取同一套说明和 `scripts/bootstrap.py`，把该文件复制到临时目录并核对 `installer_sha256`。执行下面的常规安装命令时，同时传入 `--archive-file "已校验的固定提交 ZIP 完整路径"`，保留 `--repo`、`--commit` 和 `--archive-sha256`。完成安装后删除本次下载的临时文件。
 4. 按第 2 节确认 Python，用第 3 节的 `--repo` 和 `--commit` 方式安装。安装器自动下载同一提交的完整工程、检查归档并建立固定入口。安装器与工程源码必须使用同一 `source_commit`，不能混用默认分支安装器和旧源码。
 
 `install-release.json` 的 `published` 表示发行方已发布并核验对应客户端来源；它不代表当前电脑已经装好、外站均可访问或当前用户具有会员资格。按第 3、4、6、7 节完成本机检查、账号连接和资料保护。只要公开发布元数据与固定提交可核验，就不再要求用户提供服务器发布记录、账号清单或其他私有材料。
@@ -60,7 +63,7 @@ Mac 和 Windows x64 的正常安装和更新会自动装配与这次发行相符
 使用已经验证的 Python 执行下载的安装器（实际调用请使用参数数组或对应 shell 的正确引用，兼容中文和空格路径）：
 
 ```text
-PYTHON_ABSOLUTE_PATH bootstrap.py --repo ShiQi-Han03/fagao-scan-workbench --commit SOURCE_COMMIT --archive-sha256 SOURCE_ARCHIVE_SHA256
+PYTHON_ABSOLUTE_PATH bootstrap.py --repo REPO --commit SOURCE_COMMIT --archive-sha256 SOURCE_ARCHIVE_SHA256
 ```
 
 将 `SOURCE_COMMIT` 和 `SOURCE_ARCHIVE_SHA256` 替换为第 1 节发行指针中的 `source_commit` 与 `source_archive_sha256`，`PYTHON_ABSOLUTE_PATH` 替换为第 2 节确认的解释器绝对路径。安装器在下载或写入前要求完整的归档校验值，下载后校验整包再解压；不能用临时计算的未知来源哈希代替发行指针。已有安装时先核对并复用原 `install_root` 与 `data_dir`；路径曾自定义时显式传入 `--install-root` 和 `--data-dir`，不要另建空资料目录代替升级。
@@ -109,10 +112,10 @@ PYTHON_ABSOLUTE_PATH bootstrap.py --repo ShiQi-Han03/fagao-scan-workbench --comm
 如果宿主已有能正常验证 HTTPS 的下载工具，可以由助手下载同一官方固定提交的 ZIP，并传给安装器；无需用户下载或解压，也不把它降为无法识别提交的本地源码版本：
 
 ```text
-PYTHON_ABSOLUTE_PATH bootstrap.py --repo ShiQi-Han03/fagao-scan-workbench --commit SOURCE_COMMIT --archive-sha256 SOURCE_ARCHIVE_SHA256 --archive-file ABSOLUTE_OFFICIAL_ZIP_PATH
+PYTHON_ABSOLUTE_PATH bootstrap.py --repo REPO --commit SOURCE_COMMIT --archive-sha256 SOURCE_ARCHIVE_SHA256 --archive-file ABSOLUTE_OFFICIAL_ZIP_PATH
 ```
 
-只使用 `https://codeload.github.com/ShiQi-Han03/fagao-scan-workbench/zip/SOURCE_COMMIT` 对应的官方归档，保持系统正常证书校验；归档仍由安装器验证大小、哈希和安全解压。不要混用 `--source-dir`，不要使用下载镜像或未经核验的旧包。哈希不符立即停止该路径并保留原安装，不能修改发行指针中的校验值去迁就文件。
+只使用 `https://codeload.github.com/REPO/zip/SOURCE_COMMIT` 对应的官方归档，保持系统正常证书校验；归档仍由安装器验证大小、哈希和安全解压。不要混用 `--source-dir`，不要使用下载镜像或未经核验的旧包。哈希不符立即停止该路径并保留原安装，不能修改发行指针中的校验值去迁就文件。
 
 ### Windows 服务随安装命令退出
 

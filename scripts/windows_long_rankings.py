@@ -17,11 +17,10 @@ import tempfile
 from unittest.mock import patch
 
 from windows_install_smoke import (
-    ROOT, OwnedProcess, health, installed_service, need, reference_archive,
+    ROOT, OwnedProcess, health, installed_service, need, official_ci_repository, reference_archive,
     run_in_job, server_pid, write_json,
 )
 
-REPOSITORY = "ShiQi-Han03/fagao-scan-workbench"
 PORT = 18376
 
 
@@ -63,11 +62,11 @@ def verify_platforms(source, receipt):
 
 def verify_install(root, receipt):
     commit = os.environ["GITHUB_SHA"]
+    repository = official_ci_repository()
     need(os.name == "nt" and struct.calcsize("P") == 8 and platform.machine().upper() in ("AMD64", "X86_64"),
          "A native Windows x64 runner is required")
-    need(os.environ.get("GITHUB_REPOSITORY") == REPOSITORY and health(PORT) is None,
-         "Unexpected repository or occupied workbench port")
-    archive, source_sha, files = reference_archive(root, REPOSITORY, commit)
+    need(health(PORT) is None, "Workbench port is occupied")
+    archive, source_sha, files = reference_archive(root, repository, commit)
     bootstrap = root / "bootstrap.py"
     bootstrap.write_bytes(subprocess.check_output(["git", "show", commit + ":scripts/bootstrap.py"], cwd=ROOT))
     data = root / "本机资料"
@@ -75,7 +74,7 @@ def verify_install(root, receipt):
     receipt.update(source_commit=commit, source_archive_sha256=source_sha, source_tree_files=files,
                    installer_sha256=hashlib.sha256(bootstrap.read_bytes()).hexdigest(),
                    platform=platform.platform(), python=platform.python_version())
-    command = [sys.executable, str(bootstrap), "--repo", REPOSITORY, "--commit", commit,
+    command = [sys.executable, str(bootstrap), "--repo", repository, "--commit", commit,
                "--archive-file", str(archive), "--archive-sha256", source_sha, "--no-browser"]
     environment = {k: v for k, v in os.environ.items() if k.upper() not in
                    {"GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_PAT", "FAGAO_SUBMISSION_ARCHIVE"}}

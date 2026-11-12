@@ -46,6 +46,16 @@ def need(condition, message):
         raise RuntimeError(message)
 
 
+def official_ci_repository():
+    """Resolve the checkout's spelling from Actions' stable repository identity."""
+    slug = os.environ.get("GITHUB_REPOSITORY", "")
+    owner, separator, name = slug.partition("/")
+    need(os.environ.get("GITHUB_REPOSITORY_ID") == "1452172195" and separator
+         and name.lower() == APP and owner.lower() in {"heyfagao", "shiqi-han03"},
+         "Expected the official workbench repository ID and name")
+    return slug
+
+
 def passed(name):
     CHECKS.append(name)
     print("PASS " + name, flush=True)

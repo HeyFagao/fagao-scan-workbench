@@ -42,11 +42,13 @@ jobs:
           FILE: FagaoSubmission-windows-x64.zip
         run: |
           set -euo pipefail
-          id=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" | jq -er --arg tag "$TAG" 'map(select(.tag_name==$tag)) | select(length==1) | .[0].id')
-          asset=$(gh api "repos/$GITHUB_REPOSITORY/releases/$id/assets" | jq -cer --arg file "$FILE" 'map(select(.name==$file and .state=="uploaded")) | select(length==1) | .[0]')
+          [[ "$GITHUB_REPOSITORY_ID" == 1452172195 ]]
+          releases="repositories/$GITHUB_REPOSITORY_ID/releases"
+          id=$(gh api "$releases?per_page=100" | jq -er --arg tag "$TAG" 'map(select(.tag_name==$tag)) | select(length==1) | .[0].id')
+          asset=$(gh api "$releases/$id/assets" | jq -cer --arg file "$FILE" 'map(select(.name==$file and .state=="uploaded")) | select(length==1) | .[0]')
           asset_id=$(jq -er '.id' <<< "$asset")
           digest=$(jq -er '.digest | select(test("^sha256:[a-f0-9]{64}$")) | sub("^sha256:";"")' <<< "$asset")
-          gh api -H 'Accept: application/octet-stream' "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id" > "$RUNNER_TEMP/$FILE"
+          gh api -H 'Accept: application/octet-stream' "$releases/assets/$asset_id" > "$RUNNER_TEMP/$FILE"
           echo "$digest  $RUNNER_TEMP/$FILE" | sha256sum --check --strict
       - uses: actions/upload-artifact@v7
         with:

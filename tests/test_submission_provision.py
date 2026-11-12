@@ -28,7 +28,7 @@ class SubmissionProvisionTests(unittest.TestCase):
                     z.write(path, path.relative_to(self.root).as_posix())
             z.writestr('THIRD_PARTY_LICENSES/NOTICE.txt', 'test')
         self.pin = provision.component.fingerprint(source, 'win32', 'x64')
-        self.pin.update(archive_url='https://github.com/ShiQi-Han03/fagao-scan-workbench/releases/download/fixture/component.zip',
+        self.pin.update(archive_url='https://github.com/HeyFagao/fagao-scan-workbench/releases/download/fixture/component.zip',
                         archive_sha256=hashlib.sha256(self.archive.read_bytes()).hexdigest(),
                         size_bytes=self.archive.stat().st_size)
         manifest = self.root / 'pins.json'

@@ -25,22 +25,31 @@ ATTEMPTS = 3
 SOCKET_TIMEOUT = 30
 ATTEMPT_TIMEOUT = 15 * 60
 REDIRECT_LIMIT = 4
-ORIGIN = "https://github.com/ShiQi-Han03/fagao-scan-workbench/releases/download/"
+ORIGIN = "https://github.com/HeyFagao/fagao-scan-workbench/releases/download/"
+PREVIOUS_ORIGIN = "https://github.com/ShiQi-Han03/fagao-scan-workbench/releases/download/"
+# Only these original, pinned assets exist under the pre-rename distribution.
+MIGRATED_ASSETS = frozenset("v0.7.0-dev.13/FagaoSubmission-" + target + ".zip"
+                            for target in ("macos-arm64", "macos-x64", "windows-x64"))
+REPOSITORY_CDN_PATH = re.compile(r"/github-production-release-asset(?:-[a-f0-9]+)?/1452172195/[A-Za-z0-9_-]+")
 ASSET_PATH = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.+-]{0,126}/[A-Za-z0-9][A-Za-z0-9_.+-]{0,190}\.zip")
 CDN_HOSTS = frozenset({"release-assets.githubusercontent.com", "objects.githubusercontent.com"})
 
 
 class ComponentDownloadError(ValueError):
-    def __init__(self, message, *, transient=False, tls=False):
+    def __init__(self, message, *, transient=False, tls=False, not_found=False):
         super().__init__(message)
         self.transient = transient
         self.tls = tls
+        self.not_found = not_found
 
 
 def _validate_source(url: str) -> None:
-    if (not isinstance(url, str) or not url.startswith(ORIGIN)
-            or not ASSET_PATH.fullmatch(url[len(ORIGIN):])):
-        raise ComponentDownloadError("投稿组件下载地址不属于指定的 GitHub 发行。")
+    if isinstance(url, str):
+        if url.startswith(ORIGIN) and ASSET_PATH.fullmatch(url[len(ORIGIN):]):
+            return
+        if url.startswith(PREVIOUS_ORIGIN) and url[len(PREVIOUS_ORIGIN):] in MIGRATED_ASSETS:
+            return
+    raise ComponentDownloadError("投稿组件下载地址不属于指定的 GitHub 发行。")
 
 
 def _validate_redirect(url: str) -> None:
@@ -50,7 +59,8 @@ def _validate_redirect(url: str) -> None:
         target = urlsplit(url)
         if (target.scheme != "https" or target.hostname not in CDN_HOSTS
                 or target.port not in (None, 443) or target.username is not None
-                or target.password is not None or target.fragment):
+                or target.password is not None or target.fragment
+                or not REPOSITORY_CDN_PATH.fullmatch(target.path)):
             raise ValueError
     except ValueError:
         raise ComponentDownloadError("投稿组件下载发生了不允许的跳转。") from None
@@ -79,7 +89,7 @@ def _fetch_python(url: str, path: Path, size: int) -> None:
     req = Request(url, headers={"User-Agent": "FagaoWorkbench-Installer", "Accept-Encoding": "identity",
                                 "Cache-Control": "no-cache"})
     with build_opener(_ReleaseRedirect()).open(req, timeout=SOCKET_TIMEOUT) as response:
-        if response.geturl() != url:
+        if response.geturl() != url or url.startswith(PREVIOUS_ORIGIN):
             _validate_redirect(response.geturl())
         if response.status != 200:
             raise ComponentDownloadError("投稿组件下载未返回完整文件。")
@@ -95,7 +105,8 @@ def _classify(error: Exception) -> ComponentDownloadError:
         return error
     if isinstance(error, HTTPError):
         return ComponentDownloadError(f"投稿组件下载返回 HTTP {error.code}。",
-                                      transient=error.code in (408, 429, 500, 502, 503, 504))
+                                      transient=error.code in (408, 429, 500, 502, 503, 504),
+                                      not_found=error.code == 404)
     reason = error.reason if isinstance(error, URLError) else error
     if isinstance(reason, ssl.SSLCertVerificationError) or (
             isinstance(reason, ssl.SSLError) and "CERTIFICATE_VERIFY_FAILED" in str(reason)):
@@ -117,7 +128,7 @@ def _python_download(url: str, path: Path, expected_size: int) -> None:
         try:
             failure = json.loads(result.stdout)
             raise ComponentDownloadError(failure["message"], transient=failure.get("transient") is True,
-                                         tls=failure.get("tls") is True)
+                                         tls=failure.get("tls") is True, not_found=failure.get("not_found") is True)
         except (KeyError, TypeError, json.JSONDecodeError, UnicodeDecodeError):
             raise ComponentDownloadError("投稿组件下载进程未能完成。") from None
 
@@ -174,6 +185,8 @@ def _curl_download(url: str, path: Path, expected_size: int, executable: str) ->
         remaining = max(1, int(deadline - time.monotonic()))
         status, redirect = _curl_head(url, executable, remaining)
         if status == 200:
+            if url.startswith(PREVIOUS_ORIGIN):
+                _validate_redirect(url)  # The previous name must resolve to this repository’s CDN object.
             break
         if status not in (301, 302, 303, 307, 308):
             raise _classify(HTTPError(url, status, "", None, None))
@@ -212,6 +225,8 @@ def download_component(url: str, destination: Path, expected_sha256: str, expect
     if (not isinstance(expected_sha256, str) or not re.fullmatch(r"[a-fA-F0-9]{64}", expected_sha256)
             or type(expected_size) is not int or not 0 < expected_size <= MAX_BYTES):
         raise ComponentDownloadError("投稿组件发行记录缺少有效的大小或 SHA-256。")
+    asset = url[len(PREVIOUS_ORIGIN):] if url.startswith(PREVIOUS_ORIGIN) else url[len(ORIGIN):]
+    url = ORIGIN + asset
     destination = Path(destination)
     if os.path.lexists(destination):
         raise ComponentDownloadError("投稿组件下载位置已存在。")
@@ -229,6 +244,11 @@ def download_component(url: str, destination: Path, expected_sha256: str, expect
             except (OSError, URLError, IncompleteRead, ComponentDownloadError, subprocess.TimeoutExpired) as exc:
                 staged.unlink(missing_ok=True)
                 failure = _classify(exc)
+                if failure.not_found and url == ORIGIN + asset and asset in MIGRATED_ASSETS and attempt < ATTEMPTS:
+                    # Before the username change the new URL does not exist yet.
+                    # The fallback must resolve to this repository ID and match the same digest.
+                    url = PREVIOUS_ORIGIN + asset
+                    continue
                 if attempt < ATTEMPTS and sys.platform == "win32" and not native and (failure.tls or failure.transient):
                     native = _windows_system_curl()
                     if native:
@@ -269,7 +289,8 @@ def _main(args: list[str]) -> int:
         return 0
     except (OSError, ValueError, IncompleteRead) as exc:
         failure = _classify(exc)
-        print(json.dumps({"message": str(failure), "transient": failure.transient, "tls": failure.tls}))
+        print(json.dumps({"message": str(failure), "transient": failure.transient, "tls": failure.tls,
+                          "not_found": failure.not_found}))
         return 1
 
 

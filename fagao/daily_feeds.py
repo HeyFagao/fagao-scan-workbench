@@ -24,11 +24,14 @@ FORMAT = 'json+gzip+fernet-v1'
 MAX_TOKEN_BYTES = 16 * 1024 * 1024
 MAX_JSON_BYTES = 32 * 1024 * 1024
 REVISION = re.compile('[a-f0-9]{64}')
-FEED_REPOSITORY = 'ShiQi-Han03/fagao-ranking-feed'
+FEED_REPOSITORY = 'HeyFagao/fagao-ranking-feed'
+LEGACY_FEED_REPOSITORY = 'ShiQi-Han03/fagao-ranking-feed'
 RAW_ROOT = f'https://raw.githubusercontent.com/{FEED_REPOSITORY}/'
 CDN_HOSTS = ('cdn.jsdelivr.net', 'gcore.jsdelivr.net')
-OBJECT_URL = re.compile(re.escape(RAW_ROOT) +
-                        r'(?P<commit>[a-f0-9]{40})/objects/(?P<board>[a-z_]+)/(?P<revision>[a-f0-9]{64})\.bin')
+_REPOSITORIES = (FEED_REPOSITORY, LEGACY_FEED_REPOSITORY)
+OBJECT_URL = re.compile(r'https://raw\.githubusercontent\.com/(?P<repo>' +
+                        '|'.join(map(re.escape, _REPOSITORIES)) +
+                        r')/(?P<commit>[a-f0-9]{40})/objects/(?P<board>[a-z_]+)/(?P<revision>[a-f0-9]{64})\.bin')
 DOWNLOAD_SECONDS = 36
 ROUTE_SECONDS = 12
 SOCKET_TIMEOUT = 5
@@ -212,8 +215,13 @@ def _download(url, expected_length, *, require=network.check_authorization):
         raise _invalid()
     # All routes carry the same public ciphertext. The manifest and its key come
     # only from the website, and each URL is built from the immutable object ID.
-    path = f"/gh/{FEED_REPOSITORY}@{obj['commit']}/objects/{obj['board']}/{obj['revision']}.bin"
-    urls = [url] + [f'https://{host}{path}' for host in CDN_HOSTS]
+    # The signed-in website may still hold a pre-rename publication. Keep the
+    # two repository spellings interchangeable only for these hashed bytes.
+    suffix = f"objects/{obj['board']}/{obj['revision']}.bin"
+    urls = []
+    for repo in dict.fromkeys((obj['repo'], *_REPOSITORIES)):
+        urls.append(f"https://raw.githubusercontent.com/{repo}/{obj['commit']}/{suffix}")
+        urls.extend(f"https://{host}/gh/{repo}@{obj['commit']}/{suffix}" for host in CDN_HOSTS)
     deadline = time.monotonic() + DOWNLOAD_SECONDS
     invalid_response = False
     for address in urls:

@@ -52,9 +52,12 @@ class DailyFeedMirrorTests(unittest.TestCase):
         self.permission = grant(board='hongguo', token=TOKEN)
         self.membership.feed_grant.return_value = self.permission
         manifest = self.permission['manifest']
-        path = '/gh/ShiQi-Han03/fagao-ranking-feed@' + '1' * 40 + '/objects/hongguo/' + manifest['sha256'] + '.bin'
-        self.urls = [manifest['artifact_url'], 'https://cdn.jsdelivr.net' + path,
-                     'https://gcore.jsdelivr.net' + path]
+        suffix = 'objects/hongguo/' + manifest['sha256'] + '.bin'
+        self.urls = []
+        for repo in ('ShiQi-Han03/fagao-ranking-feed', 'HeyFagao/fagao-ranking-feed'):
+            path = '/gh/' + repo + '@' + '1' * 40 + '/' + suffix
+            self.urls.extend(['https://raw.githubusercontent.com/' + repo + '/' + '1' * 40 + '/' + suffix,
+                              'https://cdn.jsdelivr.net' + path, 'https://gcore.jsdelivr.net' + path])
         self.visited = []
 
     def serve(self, responses):
@@ -95,7 +98,20 @@ class DailyFeedMirrorTests(unittest.TestCase):
     def test_valid_last_mirror_recovers_after_same_length_corrupt_copy(self):
         self.serve({self.urls[0]: TimeoutError(), self.urls[1]: b'!' * len(TOKEN), self.urls[2]: TOKEN})
         self.assertEqual(self.sync()['status'], 'updated')
-        self.assertEqual(self.visited, self.urls)
+        self.assertEqual(self.visited, self.urls[:3])
+
+    def test_old_and_new_grants_can_recover_the_same_ciphertext_from_the_other_name(self):
+        for initial, secondary in [(self.urls[:3], self.urls[3:]), (self.urls[3:], self.urls[:3])]:
+            self.visited.clear()
+            self.permission['manifest']['artifact_url'] = initial[0]
+            manifest = feeds.validate_manifest(self.permission['manifest'], 'hongguo')
+            responses = dict.fromkeys(initial, (404, {}, b''))
+            responses[secondary[0]] = TOKEN
+            self.serve(responses)
+            token = feeds._download(manifest['artifact_url'], len(TOKEN))
+            snapshot = feeds.decode_snapshot(self.permission, 'hongguo', token)
+            self.assertEqual(snapshot['rows'], [['1', '合成红果短剧']])
+            self.assertEqual(self.visited, initial + secondary[:1])
 
     def test_corrupt_copies_are_never_saved(self):
         self.serve(dict.fromkeys(self.urls, b'!' * len(TOKEN)))
@@ -134,7 +150,8 @@ class DailyFeedMirrorTests(unittest.TestCase):
     def test_only_valid_immutable_grants_may_start_object_requests(self):
         self.serve({})
         original = self.urls[0]
-        for bad in (original.replace('1' * 40, 'main'), self.urls[1], original + '?token=unexpected'):
+        for bad in (original.replace('1' * 40, 'main'), self.urls[1], original + '?token=unexpected',
+                    original.replace('ShiQi-Han03', 'OtherOwner'), original.replace('fagao-ranking-feed', 'other')):
             with self.subTest(bad=bad), self.assertRaises(AppError):
                 self.permission['manifest']['artifact_url'] = bad
                 self.sync()

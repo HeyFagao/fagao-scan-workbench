@@ -17,18 +17,18 @@ import tempfile
 import urllib.request
 from unittest.mock import patch
 
-from windows_install_smoke import ROOT, OwnedProcess, health, matching_health, need, run_in_job, server_pid, write_json
+from windows_install_smoke import ROOT, OwnedProcess, health, matching_health, need, official_ci_repository, run_in_job, server_pid, write_json
 
 PORT = 18376
-REPOSITORY = "ShiQi-Han03/fagao-scan-workbench"
+CANONICAL = "HeyFagao/fagao-scan-workbench"
 
 
 def blob(commit: str, name: str) -> bytes:
     return subprocess.check_output(["git", "show", f"{commit}:{name}"], cwd=ROOT)
 
 
-def public_installer(commit: str, destination: Path) -> str:
-    url = f"https://raw.githubusercontent.com/{REPOSITORY}/{commit}/scripts/bootstrap.py"
+def public_installer(repository: str, commit: str, destination: Path) -> str:
+    url = f"https://raw.githubusercontent.com/{repository}/{commit}/scripts/bootstrap.py"
     request = urllib.request.Request(url, headers={"User-Agent": "Fagao-Workbench-Windows-Acceptance"})
     with urllib.request.urlopen(request, timeout=45) as response:
         need(response.status == 200 and response.geturl() == url, "Unexpected public installer response")
@@ -41,14 +41,14 @@ def public_installer(commit: str, destination: Path) -> str:
 
 def acceptance(source_sha: str, receipt: dict) -> None:
     need(os.name == "nt", "A native Windows host is required")
-    need(os.environ.get("GITHUB_REPOSITORY", "").lower() == REPOSITORY.lower(), "Unexpected repository")
+    repository = official_ci_repository()
     commit = os.environ["GITHUB_SHA"]
     need(re.fullmatch(r"[a-f0-9]{40}", commit) and re.fullmatch(r"[a-f0-9]{64}", source_sha),
          "Expected fixed source and archive hashes")
     need(health(PORT) is None, "Default workbench port already in use")
     pins = json.loads(blob(commit, "scripts/submission-component-builds.json"))["builds"]
     pin, = [p for p in pins if p["platform"] == "win32" and p["arch"] == "x64"]
-    need(pin["archive_url"].startswith(f"https://github.com/{REPOSITORY}/releases/download/"),
+    need(pin["archive_url"].startswith(f"https://github.com/{CANONICAL}/releases/download/"),
          "Expected an official GitHub release asset")
     receipt.update(platform=platform.platform(), python=platform.python_version(), source_commit=commit,
                    source_archive_sha256=source_sha, component_url=pin["archive_url"], component_archive_override=False)
@@ -60,12 +60,12 @@ def acceptance(source_sha: str, receipt: dict) -> None:
         data = root / "本地资料"
         source = data / "app" / "releases" / commit
         bootstrap = root / "bootstrap.py"
-        receipt["installer_sha256"] = public_installer(commit, bootstrap)
+        receipt["installer_sha256"] = public_installer(repository, commit, bootstrap)
         owned = None
         try:
             with patch.dict(os.environ, {**env, "FAGAO_DATA_DIR": str(data)}, clear=True):
                 need(not data.exists(), "Expected clean installer data")
-                cmd = [sys.executable, str(bootstrap), "--repo", REPOSITORY, "--commit", commit,
+                cmd = [sys.executable, str(bootstrap), "--repo", repository, "--commit", commit,
                        "--archive-sha256", source_sha, "--no-browser"]
                 code, result = run_in_job(cmd, root / "public install", allow_breakaway=True, cwd=root, timeout=420)
             need(code == 0 and result.get("status") == "ready", f"Public bootstrap failed: {result.get('error')}")

@@ -9,7 +9,7 @@
       "asar_sha256": "065f708559e26038345be38539db543f1765a73a8ce37e4b5000c30fed51558e",
       "archive_sha256": "9eed273c0e459df3aca425bc61fe8bba4a42935af9bbf99454a485579d3dcb6c",
       "size_bytes": 123018053,
-      "archive_url": "https://github.com/ShiQi-Han03/fagao-scan-workbench/releases/download/v0.7.0-dev.13/FagaoSubmission-macos-arm64.zip"
+      "archive_url": "https://github.com/HeyFagao/fagao-scan-workbench/releases/download/v0.7.0-dev.13/FagaoSubmission-macos-arm64.zip"
     },
     {
       "platform": "darwin",
@@ -19,7 +19,7 @@
       "asar_sha256": "065f708559e26038345be38539db543f1765a73a8ce37e4b5000c30fed51558e",
       "archive_sha256": "ac408afeccc37defe1f40ba15b45a39f871c77c7fdce2a9382752843398581f7",
       "size_bytes": 128159035,
-      "archive_url": "https://github.com/ShiQi-Han03/fagao-scan-workbench/releases/download/v0.7.0-dev.13/FagaoSubmission-macos-x64.zip"
+      "archive_url": "https://github.com/HeyFagao/fagao-scan-workbench/releases/download/v0.7.0-dev.13/FagaoSubmission-macos-x64.zip"
     },
     {
       "platform": "win32",
@@ -29,7 +29,7 @@
       "asar_sha256": "065f708559e26038345be38539db543f1765a73a8ce37e4b5000c30fed51558e",
       "archive_sha256": "cd894bb64afca8acbb97857834658176a2462a467eaa602dba3e16268b0d1b94",
       "size_bytes": 147946300,
-      "archive_url": "https://github.com/ShiQi-Han03/fagao-scan-workbench/releases/download/v0.7.0-dev.13/FagaoSubmission-windows-x64.zip"
+      "archive_url": "https://github.com/HeyFagao/fagao-scan-workbench/releases/download/v0.7.0-dev.13/FagaoSubmission-windows-x64.zip"
     }
   ],
   "prior_installations": [

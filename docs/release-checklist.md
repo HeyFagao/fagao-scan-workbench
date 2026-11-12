@@ -11,7 +11,7 @@
 
 ## GitHub 发行状态
 
-当前客户端为 `0.7.0-dev.12`，支持官网体验、字数包、会员及既有实验授权接口。发行仓库为 ShiQi-Han03/fagao-scan-workbench，保留 hanyyyou 原始来源。默认分支 install-release.json 指向通过公开下载和隔离安装核验的固定源码提交；只有发布回读后才能将其状态标为 published。官网当前账号资格由接口实时返回。验收记录见 [acceptance.md](acceptance.md)，旧版本记录保留为历史，不代替本版验证。
+发版前按 [安装说明](../INSTALL.md) 核对发行仓库编号 `1452172195` 和 GitHub 返回的当前仓库全名。工作台的原始上游仍为 hanyyyou。默认分支 install-release.json 指向通过公开下载和隔离安装核验的固定源码提交；只有发布回读后才能将其状态标为 published。官网当前账号资格由接口实时返回。验收记录见 [acceptance.md](acceptance.md)，旧版本记录保留为历史，不代替本版验证。
 
 ## 每次发布前
 

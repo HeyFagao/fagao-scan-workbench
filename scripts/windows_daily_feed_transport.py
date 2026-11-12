@@ -17,6 +17,7 @@ from urllib.parse import urlsplit
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from fagao import daily_feeds, network
 from fagao.store import Store
+from windows_install_smoke import official_ci_repository
 
 # Immutable public publication receipt for the 2026-11-11 Hongguo edition.
 COMMIT = "1a65235a8625571354ac2bc1ca0aba1e40cd1998"
@@ -24,11 +25,16 @@ SHA256 = "891f195e9f5ea04226b6dd9c652038df31caff203915926c92497647f89fb145"
 LENGTH = 10148
 RAW_HOST = "raw.githubusercontent.com"
 CDN_HOSTS = ("cdn.jsdelivr.net", "gcore.jsdelivr.net")
-RAW_URL = f"{daily_feeds.RAW_ROOT}{COMMIT}/objects/hongguo/{SHA256}.bin"
-CDN_PATH = f"/gh/ShiQi-Han03/fagao-ranking-feed@{COMMIT}/objects/hongguo/{SHA256}.bin"
+OBJECT = f"objects/hongguo/{SHA256}.bin"
+FEED_REPOS = ("HeyFagao/fagao-ranking-feed", "ShiQi-Han03/fagao-ranking-feed")
 
 
-def check_transport():
+def check_transport(repository):
+    if repository not in FEED_REPOS:
+        raise ValueError("Expected a known owner of the pinned feed")
+    primary_urls = {f"https://{RAW_HOST}/{repo}/{COMMIT}/{OBJECT}" for repo in FEED_REPOS}
+    cdn_urls = {f"https://{host}/gh/{repo}@{COMMIT}/{OBJECT}" for repo in FEED_REPOS for host in CDN_HOSTS}
+    published_url = f"https://{RAW_HOST}/{repository}/{COMMIT}/{OBJECT}"
     attempts = []
     with tempfile.TemporaryDirectory(prefix="fagao-cold-ranking-") as directory:
         network.configure(directory)
@@ -51,10 +57,10 @@ def check_transport():
                 if any(k.lower() in ("authorization", "cookie", "proxy-authorization")
                        for k, _ in request.header_items()):
                     raise RuntimeError("Credential header on a public artifact request")
-                if request.full_url == RAW_URL:
+                if request.full_url in primary_urls:
                     attempts.append(RAW_HOST)
                     raise URLError("simulated primary transport outage")
-                if host not in CDN_HOSTS or request.full_url != f"https://{host}{CDN_PATH}":
+                if request.full_url not in cdn_urls:
                     raise RuntimeError("Unexpected fallback URL")
                 attempts.append(host)
                 return real_open(request, timeout=timeout)
@@ -63,14 +69,15 @@ def check_transport():
             return opener
 
         with patch.object(network, "build_opener", controlled_opener):
-            encrypted = daily_feeds._download(RAW_URL, LENGTH)
+            encrypted = daily_feeds._download(published_url, LENGTH)
 
     if not attempts or attempts[0] != RAW_HOST or attempts[-1] not in CDN_HOSTS:
         raise RuntimeError("Expected a successful public fallback after blocking the primary host")
     digest = hashlib.sha256(encrypted).hexdigest()
     if len(encrypted) != LENGTH or digest != SHA256:
         raise RuntimeError("Encrypted public artifact differed from its publication receipt")
-    return {"board": "hongguo", "source_date": "2026-11-11", "initial_cached_editions": 0,
+    return {"board": "hongguo", "source_date": "2026-11-11", "grant_repository": repository,
+            "initial_cached_editions": 0,
             "platform": platform.system(), "python": platform.python_version(),
             "primary_outage_simulated": True, "attempt_hosts": attempts,
             "authenticated_headers_sent": False, "network_fallback": True,
@@ -83,7 +90,9 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if sys.platform != "win32":
         raise SystemExit("Native Windows acceptance requires a Windows runner")
-    receipt = check_transport()
+    owner = official_ci_repository().split("/", 1)[0]
+    feed_repository = next(repo for repo in FEED_REPOS if repo.split("/", 1)[0].lower() == owner.lower())
+    receipt = check_transport(feed_repository)
     args.receipt.parent.mkdir(parents=True, exist_ok=True)
     args.receipt.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
     print("Verified the public Hongguo ciphertext over", receipt["attempt_hosts"][-1])
