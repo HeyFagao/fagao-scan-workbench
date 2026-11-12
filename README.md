@@ -108,6 +108,6 @@ python3 -m fagao.server --port 18376
 
 ## 项目来源与验证
 
-当前发行仓库为 [HeyFagao/fagao-scan-workbench](https://github.com/HeyFagao/fagao-scan-workbench)（GitHub 仓库编号 `1452172195`），原始来源为 [hanyyyou/fagao-scan-workbench](https://github.com/hanyyyou/fagao-scan-workbench)。安装助手按 [INSTALL.md](INSTALL.md) 读取默认分支的 `install-release.json`，固定已发布版本后安装；公开仓库下载不要求 GitHub 登录。
+当前发行仓库为 [HeyFagao/fagao-scan-workbench](https://github.com/HeyFagao/fagao-scan-workbench)（GitHub 仓库编号 `1452172195`），早期代码来自 `hanyyyou/fagao-scan-workbench`，其[历史提交](https://github.com/HeyFagao/fagao-scan-workbench/commit/2c7d214c4bd6eb9262a4000882e50912798f02c8)保留在当前仓库。安装助手按 [INSTALL.md](INSTALL.md) 读取默认分支的 `install-release.json`，固定已发布版本后安装；公开仓库下载不要求 GitHub 登录。
 
 Windows 与 macOS 启动入口已提供，Python 缺失时由 WorkBuddy 按 INSTALL.md 准备私有运行时。核心功能使用 Python 标准库与随包提供的纯 Python 组件，无需额外安装依赖；黑岩书单在系统浏览器中打开，不依赖 Node 或 Playwright。历史掌文后台适配仅为维护者保留，默认不作为黑岩入口。平台网络访问、腾讯文档账号权限和正文取得有各自的验证状态，详见平台能力表。GitHub 分发成功、工作台打开、平台数据可用与 WorkBuddy 实际拆书分别验收。
