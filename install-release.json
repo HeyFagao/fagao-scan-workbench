@@ -41,106 +41,44 @@
     ]
   },
   "account_qualification": "Ranking access follows the website account permit. Local submissions are available on this device.",
-  "app_version": "0.7.0-dev.15",
-  "source_commit": "9e6caa11090410bcca876d312b4efeed78738098",
-  "release_tag": "v0.7.0-dev.15",
-  "installer_url": "https://raw.githubusercontent.com/ShiQi-Han03/fagao-scan-workbench/9e6caa11090410bcca876d312b4efeed78738098/scripts/bootstrap.py",
+  "app_version": "0.7.0-dev.16",
+  "source_commit": "a643a95d48f7c1b182f31e32f814d9a6091dbe37",
+  "release_tag": "v0.7.0-dev.16",
+  "installer_url": "https://raw.githubusercontent.com/ShiQi-Han03/fagao-scan-workbench/a643a95d48f7c1b182f31e32f814d9a6091dbe37/scripts/bootstrap.py",
   "installer_sha256": "ce83225cce4c6f69d21ea6dec18e788adc31daac698a4c7c37c659a7e00cb0fa",
-  "source_archive_url": "https://codeload.github.com/ShiQi-Han03/fagao-scan-workbench/zip/9e6caa11090410bcca876d312b4efeed78738098",
-  "source_archive_sha256": "9c1e756153916c4bdd49d2c154b8460c03b1b02312cdbde17de398fd231d0b4b",
-  "verified_at": "2026-11-12T07:31:27.598405+00:00",
+  "source_archive_url": "https://codeload.github.com/ShiQi-Han03/fagao-scan-workbench/zip/a643a95d48f7c1b182f31e32f814d9a6091dbe37",
+  "source_archive_sha256": "6d796ebb28a93fa3cd222f7365d3be6d39e301d19860d4d00091b3b04126a6e1",
+  "verified_at": "2026-11-12T09:43:21.031964+00:00",
   "verification": {
-    "source_tree": "9299e7539fe28d7d81876b26b7dbf058605c8d34",
-    "python_tests": 768,
-    "windows_ci_run_url": "https://github.com/ShiQi-Han03/fagao-scan-workbench/actions/runs/43174953818",
+    "source_tree": "3b45e19a1eb109994a472c3e0501635f7ed49745",
+    "python_tests": 792,
+    "windows_ci_run_url": "https://github.com/ShiQi-Han03/fagao-scan-workbench/actions/runs/43192178092",
     "windows_native_ci_tested": true,
     "windows_install_tested": true,
-    "windows_public_install": {
-      "status": "passed",
-      "run_url": "https://github.com/ShiQi-Han03/fagao-scan-workbench/actions/runs/43174985045",
-      "component_transport": "anonymous_https_release_download",
-      "component_archive_override": false,
-      "submission": {
-        "real_browser_empty_cold_launch": true,
-        "minimized_editor_restored": true,
-        "tray_editor_restored": true,
-        "native_four_fields_match": true,
-        "native_zero_selected_recipients": true,
-        "no_sender_accounts_or_delivery_jobs": true
-      }
+    "windows_install": {
+      "platform": "Windows-2025Server-10.0.26100-SP0",
+      "python": "3.12.10",
+      "default_workbench_entry": true,
+      "repeat_preserved_data": true,
+      "cleanup_completed": true
     },
-    "windows_jobs": [
-      {
-        "python": "3.11.9",
-        "job_id": 131036890257,
-        "artifact_id": 13924152125,
-        "artifact_sha256": "c9b49d03899fece094cc0eb6115bf100c28dbf417d9e865e10b0d22359691476",
-        "submission": {
-          "real_browser_empty_cold_launch": true,
-          "minimized_editor_restored": true,
-          "tray_editor_restored": true,
-          "native_four_fields_match": true,
-          "native_zero_selected_recipients": true,
-          "no_sender_accounts_or_delivery_jobs": true
-        },
-        "repair": {
-          "previous_damaged_component_repaired": true,
-          "previous_draft_preserved": true,
-          "previous_ranking_preserved": true,
-          "missing_dll_reported_repairable": true,
-          "repair_restored_original_dll": true,
-          "workbench_healthy_after_repair": true,
-          "runtime_dll_sha256": "afb4f083d34c470bdafc6d1d3801142ea2a71b76553329485d91a35534c086df",
-          "previous_commit": "31fe8d65effa0d36b04f353dfdfa3a9e7e80a4fa"
-        }
-      },
-      {
-        "python": "3.12.10",
-        "job_id": 131036890251,
-        "artifact_id": 13924311226,
-        "artifact_sha256": "991f829aba65361799a926254dcf99e776ec16469bcf97e4c96bff4ed862380e",
-        "submission": {
-          "real_browser_empty_cold_launch": true,
-          "minimized_editor_restored": true,
-          "tray_editor_restored": true,
-          "native_four_fields_match": true,
-          "native_zero_selected_recipients": true,
-          "no_sender_accounts_or_delivery_jobs": true
-        },
-        "repair": {
-          "previous_damaged_component_repaired": true,
-          "previous_draft_preserved": true,
-          "previous_ranking_preserved": true,
-          "missing_dll_reported_repairable": true,
-          "repair_restored_original_dll": true,
-          "workbench_healthy_after_repair": true,
-          "runtime_dll_sha256": "afb4f083d34c470bdafc6d1d3801142ea2a71b76553329485d91a35534c086df",
-          "previous_commit": "31fe8d65effa0d36b04f353dfdfa3a9e7e80a4fa"
-        }
-      }
-    ],
+    "windows_artifact": {
+      "id": 13931158947,
+      "sha256": "eb9dfc182c2618efc9222a194c6d71e0d965feceaf578eacf974fa4b08b161a8"
+    },
+    "long_rankings": {
+      "platform_ids": [
+        "faloo",
+        "jjwxc",
+        "qimao",
+        "zongheng"
+      ],
+      "windows_backend_tests": 21,
+      "source_and_client_verified": true
+    },
     "security": {
-      "credential_scan_run_url": "https://github.com/ShiQi-Han03/fagao-scan-workbench/actions/runs/43174953629"
+      "credential_scan_run_url": "https://github.com/ShiQi-Han03/fagao-scan-workbench/actions/runs/43192178179"
     },
-    "workbuddy_app_interaction_tested": false,
-    "mac_submission_window": {
-      "platform": "macOS arm64",
-      "results": [
-        {
-          "start_state": "closed",
-          "http": 200,
-          "renderer_ack": true,
-          "feedback_visible": true,
-          "one_editor": true
-        },
-        {
-          "start_state": "already_open",
-          "http": 200,
-          "renderer_ack": true,
-          "feedback_visible": true,
-          "one_editor": true
-        }
-      ]
-    }
+    "workbuddy_app_interaction_tested": false
   }
 }
