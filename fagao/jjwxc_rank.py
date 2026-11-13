@@ -9,14 +9,15 @@ from .collectors import CollectorError, _Tree, _notify, _notify_snapshot, _page_
 from .public_rank_page import fetch_page
 
 ORIGIN = 'https://www.jjwxc.net/'
-CHANNELS = {'言情': 0, '纯爱': 1}
-BOARDS = {'总分榜': 7, '月榜': 5, '字数榜': 8}
+CHANNELS = {'言情': 0, '纯爱': 1, '原创站': 2}
+BOARDS = {'总分榜': 7, '月榜': 5, '字数榜': 8, '季榜': 4, '半年榜': 6, '新晋作者榜': 3}
 DEFAULT = {'channel': '言情', 'category': '全部', 'board': '总分榜'}
 HEADERS = ['序号', '作者', '作品', '类型', '进度', '字数', '作品积分', '发表时间']
 PLATFORM = {
     'id': 'jjwxc', 'name': '晋江文学城', 'mode': 'long', 'status': 'available',
     'message': '按原站分站排名；月榜统计发文第 11 至 40 天的作品积分。',
     'source_url': ORIGIN + 'topten.php?orderstr=7&t=0', 'channels': list(CHANNELS),
+    'channel_labels': {'言情': '言情站', '纯爱': '非言情站', '原创站': '原创站'},
     'categories': ['全部'], 'boards': list(BOARDS), 'default_options': DEFAULT,
 }
 
@@ -54,7 +55,8 @@ def parse_page(html, url, board, limit):
     root = _Tree(html).root
     current = [node for node in root.walk('span') if 'current' in (node.attrs.get('class') or '').split()
                and node.parent.tag == 'a']
-    if len(current) != 1 or current[0].text != board or urljoin(ORIGIN, current[0].parent.attrs.get('href') or '') != url:
+    expected_tab = '新晋作者' if board == '新晋作者榜' else board
+    if len(current) != 1 or current[0].text != expected_tab or urljoin(ORIGIN, current[0].parent.attrs.get('href') or '') != url:
         raise CollectorError('晋江未返回所选分站和榜单，已保留原榜单。')
     headers = [row for row in root.walk('tr') if [c.text for c in _cells(row)] == HEADERS]
     if len(headers) != 1:
@@ -68,9 +70,11 @@ def parse_page(html, url, board, limit):
     books, seen_ids = [], set()
     for row in rows[1:limit + 1]:
         cells = _cells(row)
-        if len(cells) != len(HEADERS):
+        if len(cells) != len(HEADERS) or any('\ufffd' in cell.text for cell in cells):
             raise CollectorError('晋江排名表字段不全，已保留原榜单。')
         book = _parse_row(cells)
+        if '\ufffd' in book['summary']:
+            raise CollectorError('晋江作品简介编码有误，已保留原榜单。')
         if book['id'] in seen_ids or (books and book['rank'] <= books[-1]['rank']):
             raise CollectorError('晋江榜单作品或名次重复、乱序，已保留原榜单。')
         books.append(book)
@@ -87,7 +91,10 @@ def collect(options, progress=None):
     limit = min(requested, 100)
     url = ORIGIN + f'topten.php?orderstr={BOARDS[board]}&t={CHANNELS[channel]}'
     _notify(progress, f'正在读取晋江{channel}分站{board}…')
-    books, total = parse_page(fetch_page(url, encoding='gb18030', timeout=25), url, board, limit)
+    # This chart can exceed 10 MB and contain malformed GB18030 far below the requested rows.
+    # Decode it tolerantly, then verify the selected cells and blurb before accepting any record.
+    fetch_options = {'max_bytes': 16 * 1024 * 1024, 'timeout': 60, 'errors': 'replace'} if board == '新晋作者榜' else {'timeout': 25}
+    books, total = parse_page(fetch_page(url, encoding='gb18030', **fetch_options), url, board, limit)
     complete = len(books) == total
     result = _result('jjwxc', 'long', channel, '全部', board, url, books, period='',
                      complete=complete, requested_count=limit, available_count=len(books), source_total=total,

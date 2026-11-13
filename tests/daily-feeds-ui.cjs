@@ -227,6 +227,39 @@ test('local filtering retains the source rank given to each result', async t => 
   assert.equal(ctx.calls.length, 1, 'Local filters requested a remote refresh');
 });
 
+test('both short-story boards filter the current edition by its actual categories and retain source ranks', async t => {
+  const previous = '1'.repeat(64), latest = '2'.repeat(64);
+  const ctx = await fixture(t, false, ({board, revision}) => {
+    const rows = revision === previous ? [['4', '上一期的书', '旧分类']] :
+      [['11', '同名作品甲', '古言'], ['24', '同名作品乙', '悬疑'], ['30', '另一本', '悬疑']];
+    const result = payload(board, '', {columns: ['排名', '书名', '分类'], rows});
+    result.history = [{revision: latest, source_date: '2026-11-10'}, {revision: previous, source_date: '2026-11-09'}];
+    return response(result);
+  });
+  for (const board of ['fanqie_story', 'zhihu']) {
+    await ctx.openBoard(board);
+    const panel = '#content section[data-board="' + board + '"]';
+    await eventually(() => ctx.d.querySelector(panel + ' #daily-category'), 'Current edition category selector missing');
+    const menu = ctx.d.querySelector('#daily-category');
+    assert.equal(menu.labels[0].textContent.trim().startsWith('本期分类'), true);
+    assert.deepEqual([...menu.options].map(option => option.value), ['', '古言', '悬疑']);
+    const callCount = ctx.calls.length;
+    menu.value = '悬疑';
+    menu.dispatchEvent(new ctx.d.defaultView.Event('change', {bubbles: true}));
+    const search = ctx.d.querySelector('#daily-query');
+    search.value = '同名';
+    search.dispatchEvent(new ctx.d.defaultView.Event('input', {bubbles: true}));
+    assert.deepEqual([...ctx.d.querySelectorAll('#daily-results td')].map(td => td.textContent), ['24', '同名作品乙', '悬疑']);
+    assert.equal(ctx.calls.length, callCount);
+    const history = ctx.d.querySelector('#daily-history');
+    history.value = previous;
+    history.dispatchEvent(new ctx.d.defaultView.Event('change', {bubbles: true}));
+    await eventually(() => ctx.content().includes('上一期的书'), 'Wrong edition after switching date');
+    assert.deepEqual([...ctx.d.querySelector('#daily-category').options].map(option => option.value), ['', '旧分类']);
+  }
+  assert(!ctx.calls.some(call => call.method === 'POST'));
+});
+
 test('expired members can switch saved boards without sending a sync', async t => {
   const ctx = await fixture(t, false, ({board}) => response(payload(board, board + '-历史')));
   await ctx.openBoard('douyin');

@@ -8,7 +8,7 @@ from . import network
 from .collectors import CollectorError, USER_AGENT, _notify
 
 
-HOSTS = {'b.faloo.com', 'www.qimao.com', 'www.jjwxc.net', 'book.zongheng.com'}
+HOSTS = {'b.faloo.com', 'wap.faloo.com', 'www.qimao.com', 'www.jjwxc.net', 'book.zongheng.com'}
 MAX_BYTES = 6 * 1024 * 1024
 
 
@@ -25,12 +25,13 @@ class _RankRedirect(request.HTTPRedirectHandler):
         raise CollectorError('榜单地址发生跳转，请在官网确认当前入口。', 'source_changed')
 
 
-def fetch_page(url, *, encoding='utf-8', timeout=15, headers=None):
+def fetch_page(url, *, encoding='utf-8', timeout=15, headers=None, max_bytes=None, errors='strict'):
     """URLs are constructed by the adapters from their registered board options."""
     network.check_authorization()
     parsed = parse.urlsplit(url)
     if parsed.scheme != 'https' or parsed.netloc not in HOSTS:
         raise CollectorError('榜单地址不属于已接入的平台。', 'invalid_source')
+    limit = MAX_BYTES if max_bytes is None else max_bytes
     fields = {'User-Agent': USER_AGENT, 'Accept': 'text/html,application/json',
               'Accept-Language': 'zh-CN,zh;q=0.9', 'Accept-Encoding': 'identity'}
     if headers:
@@ -41,21 +42,21 @@ def fetch_page(url, *, encoding='utf-8', timeout=15, headers=None):
             if res.status != 200 or res.geturl() != url:
                 raise CollectorError('官网未返回所选榜单。', 'source_changed')
             size = res.headers.get('Content-Length', '')
-            if size.isdigit() and int(size) > MAX_BYTES:
+            if size.isdigit() and int(size) > limit:
                 raise CollectorError('榜单页面超过读取上限。', 'source_changed')
             body = bytearray()
             read = getattr(res, 'read1', res.read)
-            while len(body) <= MAX_BYTES:
+            while len(body) <= limit:
                 if time.monotonic() >= deadline:
                     raise TimeoutError
-                chunk = read(min(65536, MAX_BYTES + 1 - len(body)))
+                chunk = read(min(65536, limit + 1 - len(body)))
                 if not chunk:
                     break
                 body.extend(chunk)
-            if len(body) > MAX_BYTES:
+            if len(body) > limit:
                 raise CollectorError('榜单页面超过读取上限。', 'source_changed')
         network.check_authorization()
-        return body.decode(encoding)
+        return body.decode(encoding, errors=errors)
     except error.HTTPError as exc:
         exc.close()
         state = 'forbidden' if exc.code in (401, 403) else ('not_found' if exc.code == 404 else 'network_error')

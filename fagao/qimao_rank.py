@@ -9,13 +9,19 @@ from .public_rank_page import fetch_page, pause_before_page
 
 ORIGIN = 'https://www.qimao.com'
 CHANNELS = {'男频': ('boy', '0'), '女频': ('girl', '1')}
-BOARDS = {'大热榜': ('hot', '1'), '新书榜': ('new', '2'), '完结榜': ('over', '3')}
-PERIODS = {'日榜': ('date', '1'), '月榜': ('month', '2')}
+BOARDS = {'大热榜': ('hot', '1'), '新书榜': ('new', '2'), '完结榜': ('over', '3'),
+          '收藏榜': ('collect', '4'), '更新榜': ('update', '6')}
+FIXED_PERIODS = {'收藏榜': '累计', '更新榜': '近30天'}
+FIXED_RULES = {'收藏榜': '基于书籍收藏总数排行', '更新榜': '基于书籍30天内的更新总字数排行'}
+# Both single-edition pages use the site's /date/ path and date_type=1.
+PERIODS = {'日榜': ('date', '1'), '月榜': ('month', '2'), '累计': ('date', '1'), '近30天': ('date', '1')}
+BOARD_PERIODS = {board: [FIXED_PERIODS[board]] if board in FIXED_PERIODS else ['日榜', '月榜']
+                 for board in BOARDS}
 PLATFORM = {
     'id': 'qimao', 'name': '七猫中文网', 'mode': 'long', 'status': 'available',
-    'message': '七猫公开日榜和月榜', 'source_url': ORIGIN + '/paihang/',
+    'message': '七猫男女频道公开榜单', 'source_url': ORIGIN + '/paihang/',
     'channels': list(CHANNELS), 'categories': ['全部'], 'boards': list(BOARDS),
-    'periods': list(PERIODS),
+    'periods': list(PERIODS), 'periods_by_board': BOARD_PERIODS,
     'default_options': {'channel': '男频', 'category': '全部', 'board': '大热榜', 'period': '日榜'},
 }
 BOOK_URL = re.compile(r'https://www\.qimao\.com/shuku/([1-9][0-9]{0,19})/')
@@ -28,8 +34,14 @@ def _opening_ids(html, source, channel, board, period):
     active = [n for n in root.walk() if 'active' in n.attrs.get('class', '').split()]
     path = urlsplit(source).path
     channel_label = '男生榜' if channel == '男频' else '女生榜'
-    if (not title or board not in title.text or not any(n.text == channel_label for n in active)
-            or not any(n.tag == 'a' and n.text == period and n.attrs.get('href') == path for n in active)):
+    if board in FIXED_PERIODS:
+        confirmed = (any('menu-tab' in n.attrs.get('class', '').split() and any(
+            a.text == board and a.attrs.get('href') == path for a in n.walk('a')) for n in active)
+            and any('rule-txt' in n.attrs.get('class', '').split() and FIXED_RULES[board] == n.text
+                    for n in root.walk()))
+    else:
+        confirmed = any(n.tag == 'a' and n.text == period and n.attrs.get('href') == path for n in active)
+    if not title or board not in title.text or not any(n.text == channel_label for n in active) or not confirmed:
         raise CollectorError('七猫网页没有确认所选频道、榜型和周期。')
     ids = []
     for card in root.walk('li'):
@@ -52,7 +64,7 @@ def _positive_int(value):
     return int(value)
 
 
-def _book(row, rank):
+def _book(row, rank, board):
     if not isinstance(row, dict):
         raise CollectorError('七猫返回了无效的作品记录。')
     ident = str(row.get('book_id', ''))
@@ -62,10 +74,14 @@ def _book(row, rank):
             or url != f'{ORIGIN}/shuku/{ident}/'):
         raise CollectorError('七猫作品编号、书名或官方链接无法核对。')
     metrics = []
-    heat = str(row.get('number', ''))
+    value = str(row.get('number', ''))
     unit = row.get('unit', '')
-    if re.fullmatch(r'[0-9]+(?:\.[0-9]+)?', heat) and unit in ('', '万', '亿'):
-        metrics.append({'name': '热度', 'value': heat, 'unit': unit})
+    if board == '更新榜':
+        updated = re.fullmatch(r'([0-9]+)字更新', value)
+        if updated:
+            metrics.append({'name': '更新字数', 'value': updated[1], 'unit': '字'})
+    elif re.fullmatch(r'[0-9]+(?:\.[0-9]+)?', value) and unit in ('', '万', '亿'):
+        metrics.append({'name': '收藏数' if board == '收藏榜' else '热度', 'value': value, 'unit': unit})
     words = re.fullmatch(r'([0-9]+(?:\.[0-9]+)?)([万亿]?字)', str(row.get('words_num', '')))
     if words:
         metrics.append({'name': '字数', 'value': words[1], 'unit': words[2]})
@@ -80,8 +96,8 @@ def _book(row, rank):
 def collect(options, progress=None):
     channel = options.get('channel') or '男频'
     board = options.get('board') or '大热榜'
-    period = options.get('period') or '日榜'
-    if (channel not in CHANNELS or board not in BOARDS or period not in PERIODS
+    period = options.get('period') or FIXED_PERIODS.get(board, '日榜')
+    if (channel not in CHANNELS or period not in BOARD_PERIODS.get(board, ())
             or options.get('category', '全部') != '全部'):
         raise CollectorError('七猫榜单不支持所选频道、分类、榜型或周期。')
     channel_slug, gender = CHANNELS[channel]
@@ -118,7 +134,7 @@ def collect(options, progress=None):
                 params['date'] = month.replace('-', '')
         elif total != source_total or (period == '月榜' and month != source_month):
             raise CollectorError('翻页期间七猫榜单的范围发生变化，请稍后重试。')
-        batch = [_book(row, (page - 1) * page_size + i) for i, row in enumerate(rows, 1)]
+        batch = [_book(row, (page - 1) * page_size + i, board) for i, row in enumerate(rows, 1)]
         ids = [b['id'] for b in batch]
         if len(set(ids)) != len(ids) or seen.intersection(ids) or (page == 1 and ids != opening):
             raise CollectorError('七猫榜单与公开首屏不符或分页作品重复，请稍后重试。')

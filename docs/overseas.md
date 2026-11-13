@@ -11,10 +11,12 @@
 | `dreame` | https://www.dreame.com/ranking/6115.html | 新书、上升、月票、畅销、完结、必读榜 | 按来源页码与每页条数保存官方名次；`pager.totalpage` 实为条数，换算后才是页数 |
 | `meganovel` | https://www.meganovel.com/rankings/Fantasy | 5 个分类 | 保存列表序号；第二页参数为 `pageIndex` |
 | `webnovel` | https://www.webnovel.com/ranking/novel/monthly/power_rank | 男女频新书能量榜 | `monthly` 表示发表不超过 30 天；周榜能量石票数，签约原创范围，不将票数写为章节数 |
-| `royalroad` | https://www.royalroad.com/fictions/rising-stars | 当前新星列表 | 官网列表没有显式数字名次，保存列表序号；阅读、关注、页数、章数沿用各自单位 |
+| `royalroad` | https://www.royalroad.com/fictions/rising-stars | 新星主榜及 15 个题材新星榜 | 官网列表没有显式数字名次，保存列表序号；阅读、关注、页数、章数沿用各自单位 |
 | `scribblehub` | https://www.scribblehub.com/series-ranking/?order=2&sort=2 | 周收藏榜 | 保存来源显式名次，阅读、收藏、读者、英文词数与章节分开 |
 
 各平台独立采集、独立展示。`英文词数` 单位为“词”，与中文“字数”分开。缺少值时省略指标。来源没有真实榜单日期时 `data_date` 为空，显示本次采集时间；不把下载时刻伪作源站更新日。
+
+在 Royal Road 选择「全部」打开新星主榜，选择具体题材则显示 RR Tracker 对该题材的观测名次和观测时间。每张题材榜最多提供前 50 部，作品可从详情打开官网。[RR Tracker](https://rrtrack.app/)
 
 ## 分页与首屏
 

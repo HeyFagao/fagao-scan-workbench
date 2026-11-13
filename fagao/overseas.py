@@ -12,6 +12,8 @@ import math
 import re
 from urllib.parse import quote, urlsplit
 
+from .royalroad_genres import RR_GENRES, SOURCE as RR_TRACKER_URL
+
 GOOD_CATEGORIES = {'狼人':'Werewolf', '言情':'Romance', '总裁':'CEO', '婚恋':'Marriage',
                    '超自然':'Paranormal', '青春':'Youth', '奇幻':'Fantasy'}
 MEGA_CATEGORIES = {'奇幻':'Fantasy', '都市':'Urban', '科幻':'Sci-Fi',
@@ -37,7 +39,7 @@ OVERSEAS_PLATFORMS = [
     _platform('dreame', 'Dreame', ['全部'], DREAME_BOARDS, '新书、上升与畅销等公开榜单'),
     _platform('meganovel', 'MegaNovel', MEGA_CATEGORIES, ['分类榜'], '奇幻、都市、系统与游戏分类榜'),
     _platform('webnovel', 'Webnovel', ['全部'], ['新书能量榜'], '发表不超过 30 天作品的能量榜'),
-    _platform('royalroad', 'Royal Road', ['全部'], ['新星榜'], '公开新星榜与作品数据'),
+    _platform('royalroad', 'Royal Road', ['全部', *RR_GENRES], ['新星榜'], '新星主榜与 15 个题材新星榜'),
     _platform('scribblehub', 'Scribble Hub', ['全部'], ['周收藏榜'], '本周收藏榜与作品数据'),
 ]
 
@@ -49,7 +51,8 @@ for _identifier, _period in (('royalroad','当前'),('scribblehub','周榜')):
 for _item in OVERSEAS_PLATFORMS:
     if _item['id'] == 'royalroad':
         _item.update(source_url='https://www.royalroad.com/fictions/rising-stars',
-                     alternate_source_url='https://rst.doomlabs.net/')
+                     alternate_source_url='https://rst.doomlabs.net/',
+                     category_source_urls={label: RR_TRACKER_URL + slug for label, slug in RR_GENRES.items()})
     elif _item['id'] == 'scribblehub':
         _item['source_url'] = 'https://www.scribblehub.com/series-ranking/?order=2&sort=2'
 
@@ -247,6 +250,9 @@ def _validate(platform, options):
 def collect_overseas(platform, options, data_dir, progress=None):
     from .collectors import CollectorError, _fetch, _notify, _notify_snapshot, _page_options, _page_pause, _result
     options, spec = _validate(platform,options)
+    if platform == 'royalroad' and options['category'] != '全部':
+        from .royalroad_genres import collect_genre
+        return collect_genre(options, progress)
     if platform in ('webnovel','royalroad','scribblehub'):
         from .overseas_readers import collect_readers
         return collect_readers(platform,options,data_dir,progress)

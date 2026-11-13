@@ -27,8 +27,10 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from .qidian_boards import BOARDS as QIDIAN_BOARDS, CATEGORIES as QIDIAN_CATEGORIES
 from .fanqie_codec import decode_text, has_unmapped_pua
 from . import network
+from .ciweimao_boards import rank_scope as ciweimao_rank_scope
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -500,20 +502,48 @@ def _fanqie(options, progress, data_dir=None):
     return result
 
 
-QIDIAN_BOARDS = {"月票榜": "yuepiao", "畅销榜": "hotsales", "签约新书榜": "sign", "公众新书榜": "newbook", "新人新书榜": "newauthor", "推荐榜": "rec"}
-
-
-def _qidian_data(html):
+def _qidian_data(html, path=None):
     match = re.search(r'<script[^>]+id=[\"\x27]vite-plugin-ssr_pageContext[\"\x27][^>]*>([\s\S]*?)</script>', html)
     if not match:
         raise CollectorError("起点页面未返回榜单资料，请稍后重试或在平台完成验证。")
     try:
-        data = json.loads(match.group(1))["pageContext"]["pageProps"]["pageData"]
+        context = json.loads(match.group(1))["pageContext"]
+        data = context["pageProps"]["pageData"]
     except (KeyError, ValueError, TypeError) as e:
         raise CollectorError("起点榜单结构发生变化。") from e
-    if data.get("gender") not in (None, "male"):
+    if path is not None:
+        actual = context.get("urlPathname") or ""
+        if actual.startswith("/m.qidian.com/"):
+            actual = actual[len("/m.qidian.com"):]
+        if actual.rstrip("/") != path.rstrip("/") or str(data.get("pageNum")) != "1":
+            raise CollectorError("起点返回的榜型或路径与请求不一致。")
+    if data.get("gender") != "male":
         raise CollectorError("起点返回的频道与请求不一致。")
     return data
+
+
+def _qidian_filters(data):
+    selected = {}
+    for item in data.get("filters", []):
+        try:
+            key = item["key"]
+            index = int(item["selectedIndex"])
+            if index < 0:
+                continue
+            value = item["items"][index]["value"]
+        except (TypeError, ValueError, KeyError, IndexError):
+            continue
+        if isinstance(key, str) and re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,39}", key) and key not in ("gender", "pageNum"):
+            if isinstance(value, (str, int)):
+                selected[key] = value
+    return selected
+
+
+def _check_qidian_category(data, selected, category_id):
+    if str(selected.get("catId", -1)) != str(category_id):
+        raise CollectorError("起点返回的分类与请求不一致。")
+    if category_id != -1 and any(str(row.get("catId")) != str(category_id) for row in data.get("records", [])):
+        raise CollectorError("起点返回的书目与所选分类不一致。")
 
 
 def _qidian_books(data, board, covers=None):
@@ -539,8 +569,7 @@ def _qidian_books(data, board, covers=None):
     return books
 
 
-def parse_qidian(html, board):
-    data = _qidian_data(html)
+def _qidian_first_books(html, data, board):
     covers = {}
     for image in _Tree(html).root.walk("img"):
         cover = _cover_url(image.attrs.get("data-src") or image.attrs.get("src"))
@@ -550,43 +579,44 @@ def parse_qidian(html, board):
     return _qidian_books(data, board, covers), data.get("total")
 
 
+def parse_qidian(html, board):
+    return _qidian_first_books(html, _qidian_data(html), board)
+
+
 def _qidian(options, progress):
     channel = options.get("channel") or "男频"
     category = options.get("category") or "全部"
     board = options.get("board") or "月票榜"
-    if channel not in ("男频", "male") or category != "全部":
-        raise CollectorError("起点当前已接入男频全分类榜，请选择男频、全部。")
+    if channel not in ("男频", "male") or category not in QIDIAN_CATEGORIES:
+        raise CollectorError("请选择当前已接入的起点男频题材。")
     if board not in QIDIAN_BOARDS:
         raise CollectorError("起点当前支持：" + "、".join(QIDIAN_BOARDS))
-    source = f"https://m.qidian.com/rank/{QIDIAN_BOARDS[board]}/"
+    category_id = QIDIAN_CATEGORIES[category]
+    path = f"/rank/{QIDIAN_BOARDS[board]}/"
+    if category_id != -1:
+        path += f"catid{category_id}/"
+    source = "https://m.qidian.com" + path
     _notify(progress, "正在读取起点原始榜单…")
     # Normal anonymous website session. Keep the CSRF cookie server-side and use
     # only the token issued by this exact page session; no signature generation.
     cookies = CookieJar()
     opener = network.build_opener(urllib.request.HTTPCookieProcessor(cookies))
     html = _fetch(source, mobile=True, opener=opener)
-    data = _qidian_data(html)
-    books, total = parse_qidian(html, board)
+    data = _qidian_data(html, path)
+    selected_filters = _qidian_filters(data)
+    _check_qidian_category(data, selected_filters, category_id)
+    books, total = _qidian_first_books(html, data, board)
     max_pages, limit = _page_options(options, 20)
     pages_fetched, stop_reason, warnings = 1, "max_pages", []
     missing_records = max(0, len(data.get("records", [])) - len(books))
-    selected_filters = {}
-    for item in data.get("filters", []):
-        try:
-            key = str(item["key"])
-            value = item["items"][int(item["selectedIndex"])]["value"]
-            if re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,39}", key) and key not in ("gender", "pageNum") and isinstance(value, (str, int)):
-                selected_filters[key] = value
-        except (TypeError, ValueError, KeyError, IndexError):
-            continue
     csrf = next((cookie.value for cookie in cookies if cookie.name == "_csrfToken" and (cookie.domain == "m.qidian.com" or cookie.domain.endswith(".qidian.com"))), None)
-    # Official rank component maps its verified route id to id+'list'.
-    endpoint = QIDIAN_BOARDS[board] + "list"
+    # The publisher's next-page route uses camel case for its Reading Index.
+    endpoint = ("readIndex" if QIDIAN_BOARDS[board] == "readindex" else QIDIAN_BOARDS[board]) + "list"
 
     def publish_page():
         if not progress or not books:
             return
-        raw = _result("qidian", "long", "男频", "全部", board, source, [dict(book) for book in books[:limit]],
+        raw = _result("qidian", "long", "男频", category, board, source, [dict(book) for book in books[:limit]],
                       warnings=list(warnings), complete=False, requested_count=limit,
                       available_count=len(books), source_total=total, source_filters=dict(selected_filters),
                       pagination={"pages_fetched": pages_fetched, "max_pages": max_pages, "stop_reason": "loading",
@@ -619,12 +649,10 @@ def _qidian(options, progress):
                 stop_reason = "wrong_page"
                 warnings.append("起点返回的页码或频道与请求不符，已停止。")
                 break
-            for item in new_data.get("filters", []):
-                key = item.get("key")
-                if key in selected_filters:
-                    value = item.get("items", [])[int(item.get("selectedIndex", 0))].get("value")
-                    if str(value) != str(selected_filters[key]):
-                        raise CollectorError("起点榜单筛选或月份在翻页时发生变化。")
+            next_filters = _qidian_filters(new_data)
+            _check_qidian_category(new_data, next_filters, category_id)
+            if any(str(next_filters.get(key)) != str(value) for key, value in selected_filters.items()):
+                raise CollectorError("起点榜单筛选或月份在翻页时发生变化。")
             new_books = _qidian_books(new_data, board)
             missing_records += max(0, len(new_data.get("records", [])) - len(new_books))
             pages_fetched += 1
@@ -649,7 +677,7 @@ def _qidian(options, progress):
         stop_reason = "last_page"
     if missing_records:
         warnings.append(f"有 {missing_records} 个源条目的书名、身份或名次不可读，已保留其余有效书目。")
-    return _result("qidian", "long", "男频", "全部", board, source, books[:limit],
+    return _result("qidian", "long", "男频", category, board, source, books[:limit],
                    available_count=len(books), source_total=total, requested_count=limit, warnings=warnings,
                    complete=not missing_records and stop_reason in ("last_page", "empty_page", "requested_limit"),
                    pagination={"pages_fetched": pages_fetched, "max_pages": max_pages, "stop_reason": stop_reason,
@@ -693,13 +721,29 @@ class _Tree(HTMLParser):
             self.current.children.append(text)
 
 
-def parse_ciweimao(html, board):
+def _ciweimao_list(tree, board, period):
+    # Page headers and sidebars have their own ranking tabs. Only accept the tab
+    # and book list in the same rank-content panel.
+    period, source = ciweimao_rank_scope(board, period)
+    for panel in tree.walk("div"):
+        if "rank-content" not in panel.attrs.get("class", "").split():
+            continue
+        selected = [link for tabs in panel.walk("ul") if "act-tab-titles" in tabs.attrs.get("class", "").split()
+                    for tab in tabs.walk("li") if "selected" in tab.attrs.get("class", "").split()
+                    for link in tab.walk("a")]
+        if len(selected) == 1 and selected[0].text == period and selected[0].attrs.get("href") == source:
+            return panel
+    raise CollectorError("刺猬猫返回的榜型或周期与所选条件不一致。")
+
+
+def parse_ciweimao(html, board, period=None):
     tree = _Tree(html).root
+    list_root = _ciweimao_list(tree, board, period) if period else tree
     # Current deep rank pages expose a dedicated ol rather than a heading per
     # rank. Require both a matching page title and explicit per-item source ids.
     title_node = next(tree.walk("title"), None)
-    deep_lists = [n for n in tree.walk("ol") if "rank-book-list" in n.attrs.get("class", "").split()]
-    if deep_lists and title_node and board in title_node.text:
+    deep_lists = [n for n in list_root.walk("ol") if "rank-book-list" in n.attrs.get("class", "").split()]
+    if len(deep_lists) == 1 and title_node and board in title_node.text:
         books, seen = [], set()
         for item in deep_lists[0].walk("li"):
             book_id = item.attrs.get("data-book-id", "")
@@ -721,6 +765,8 @@ def parse_ciweimao(html, board):
                           "summary": summary_node.text if summary_node else "", "url": f"https://www.ciweimao.com/book/{book_id}",
                           "tags": [], "metrics": [], "cover_url": cover})
         return sorted(books, key=lambda b: b["rank"])
+    if period:
+        raise CollectorError("刺猬猫未提供当前榜型的作品列表。")
     headings = [n for n in tree.walk() if n.tag in ("h2", "h3", "h4") and board in n.text]
     if not headings:
         raise CollectorError("刺猬猫未返回所选榜单，可能需要验证或页面结构已变化。")
@@ -766,11 +812,10 @@ def _ciweimao(options, progress):
     board = options.get("board") or "月票榜"
     if options.get("channel", "综合") not in ("综合", "全部") or options.get("category", "全部") != "全部":
         raise CollectorError("刺猬猫当前支持综合频道、全部分类。")
-    if board not in ("月票榜", "点击榜", "收藏榜", "推荐榜", "订阅榜", "新书榜", "刀片榜", "更新榜", "吐槽榜"):
-        raise CollectorError("暂不支持此刺猬猫榜单。")
-    # Verified link from the public homepage and rank page. Use an explicit
-    # month URL; the bare /yp redirect defaults to a different period.
-    source = "https://www.ciweimao.com/rank-index/yp-month" if board == "月票榜" else "https://www.ciweimao.com/rank-index"
+    try:
+        period, source = ciweimao_rank_scope(board, options.get("period"))
+    except ValueError as exc:
+        raise CollectorError(str(exc)) from exc
     max_pages, limit = _page_options(options, 10)
     pages_fetched, stop_reason, next_url = 0, "max_pages", source
     books, warnings = [], []
@@ -780,7 +825,7 @@ def _ciweimao(options, progress):
         if not progress or not books:
             return
         raw = _result("ciweimao", "long", "综合", "全部", board, source, [dict(book) for book in books[:limit]],
-                      warnings=list(warnings), complete=False, period="月榜" if board == "月票榜" else None,
+                      warnings=list(warnings), complete=False, period=period,
                       requested_count=limit, available_count=len(books),
                       pagination={"pages_fetched": pages_fetched, "max_pages": max_pages, "stop_reason": "loading",
                                   "source_total": None, "page_size": 10, "started_at": started_at})
@@ -790,7 +835,7 @@ def _ciweimao(options, progress):
         _page_pause(progress, f"正在读取刺猬猫第 {pages_fetched + 1} 页，已取得 {len(books)} 本…")
         try:
             html = _fetch(next_url)
-            new_books = parse_ciweimao(html, board)
+            new_books = parse_ciweimao(html, board, period)
             pages_fetched += 1
         except CollectorError as e:
             if not books:
@@ -832,12 +877,12 @@ def _ciweimao(options, progress):
     if len(books) >= limit and stop_reason not in ("last_page", "empty_page"):
         stop_reason = "requested_limit" if options.get("limit") else "max_pages"
     if board == "月票榜":
-        warnings.append("月票榜采用月榜周期；源页面未提供票数。")
+        warnings.append("月票榜采用" + period + "周期；源页面未提供票数。")
     if stop_reason in ("max_pages", "requested_limit"):
         warnings.append(f"本次按设置最多读取 {max_pages} 页，已取得 {min(len(books), limit)} 本。")
     return _result("ciweimao", "long", "综合", "全部", board, source, books[:limit],
                    warnings=warnings, complete=stop_reason in ("last_page", "empty_page", "requested_limit"),
-                   period="月榜" if board == "月票榜" else None, requested_count=limit, available_count=len(books),
+                   period=period, requested_count=limit, available_count=len(books),
                    pagination={"pages_fetched": pages_fetched, "max_pages": max_pages, "stop_reason": stop_reason,
                                "source_total": None, "page_size": 10, "started_at": started_at, "finished_at": datetime.now(timezone.utc).isoformat()})
 

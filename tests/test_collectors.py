@@ -8,7 +8,44 @@ from fagao.collectors import CollectorError, _state, _clean_text, _fanqie, _ciwe
 from fagao.fanqie_codec import decode_text, has_unmapped_pua
 
 
+def ciwei_panel(markup, period="月榜", slug="yp-month"):
+    url = "https://www.ciweimao.com/rank-index/" + slug
+    return (f'<div class="rank-content"><ul class="act-tab-titles"><li class="selected">'
+            f'<a href="{url}">{period}</a></li></ul>{markup}</div>')
+
+
 class CollectorTests(unittest.TestCase):
+    def test_fanqie_new_install_offers_both_channels_and_uses_the_selected_official_board(self):
+        from fagao.store import Store
+        with tempfile.TemporaryDirectory() as directory:
+            platforms = Store(directory).state()['platforms']
+        fanqie = next(platform for platform in platforms if platform['id'] == 'fanqie')
+        categories = fanqie['categories_by_channel']
+        self.assertEqual((len(set(categories['女频'])), len(set(categories['男频']))), (18, 19))
+        self.assertIn('职场婚恋', categories['女频'])
+        self.assertIn('历史脑洞', categories['男频'])
+        for channel, label in enumerate(fanqie['channels']):
+            self.assertIn('科幻末世', categories[label])
+            for board_number, board in enumerate(fanqie['boards'], 1):
+                # Both genders use category 8; each channel and each board has its own list.
+                path = f'/rank/{channel}_{board_number}_8'
+                book_id = f'1234{channel}{board_number}'
+                alternate = f'/rank/{1-channel}_{board_number}_8'
+                row = {'bookId':book_id, 'currentPos':1, 'bookName':'本榜作品', 'author':'作者', 'abstract':'简介'}
+                directory = (f'<a href="{alternate}">科幻末世</a><a href="{path}">科幻末世</a>'
+                             f'<a href="/rank/{channel}_{board_number}_9999">平台新增分类</a>')
+                def read(url, **kwargs):
+                    if url.endswith(path):
+                        return '<script>__INITIAL_STATE__=' + json.dumps({'rank':{'book_list':[row]}}) + '</script>'
+                    if url.endswith(f'/rank/{channel}_{board_number}_' + ('253' if channel == 0 else '257')):
+                        return directory
+                    self.fail(f'请求了错误的榜单：{url}')
+                with self.subTest(channel=label, board=board), patch('fagao.collectors._fetch', side_effect=read):
+                    snapshot = _fanqie({'channel':label, 'board':board, 'category':'科幻末世', 'limit':1}, None)
+                    self.assertEqual(snapshot['books'][0]['id'], book_id)
+                    self.assertEqual(snapshot['source_url'], 'https://fanqienovel.com' + path)
+                    self.assertIn('平台新增分类', snapshot['categories'])
+
     def test_initial_state_is_json_not_executed_script(self):
         self.assertEqual(_state('<script>window.__INITIAL_STATE__={"rank":{}};window.attack()</script>'), {"rank": {}})
         with self.assertRaises(CollectorError):
@@ -128,6 +165,35 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(fetch.call_args_list[1],fetch.call_args_list[2])
         self.assertTrue(result['complete'])
 
+    def test_qidian_genre_matches_route_selected_filter_and_records(self):
+        from fagao.qidian_boards import BOARDS, CATEGORIES
+        from fagao.store import PLATFORMS
+        platform = next(p for p in PLATFORMS if p['id'] == 'qidian')
+        self.assertEqual(set(platform['boards']), set(BOARDS))
+        self.assertEqual(set(platform['categories']), set(CATEGORIES))
+        options = {'channel': '男频', 'category': '都市', 'board': '阅读榜', 'max_pages': 1}
+        path = '/rank/readindex/catid4/'
+        data = {'gender': 'male', 'pageNum': 1, 'total': 1, 'isLast': 1,
+                'filters': [{'key': 'catId', 'selectedIndex': 0, 'items': [{'value': 4}]}],
+                'records': [{'bid': '999991', 'rankNum': 1, 'bName': '都市作品', 'catId': 4}]}
+        def first_page(actual_path, selected, row):
+            data['filters'][0]['items'][0]['value'] = selected
+            data['records'][0]['catId'] = row
+            return '<script id="vite-plugin-ssr_pageContext">' + json.dumps(
+                {'pageContext': {'urlPathname': actual_path, 'pageProps': {'pageData': data}}}) + '</script>'
+        with patch('fagao.collectors._fetch', return_value=first_page(path, 4, 4)) as fetch:
+            captured = []
+            def emit(message, **details):
+                if 'snapshot' in details: captured.append(details['snapshot']['category'])
+            result = _qidian(options, emit)
+            self.assertEqual(result['category'], '都市')
+            self.assertEqual(captured, ['都市'])
+            self.assertEqual(fetch.call_args.args[0], 'https://m.qidian.com' + path)
+        for actual, selected, row in [('/rank/newbook/catid4/', 4, 4), (path, 21, 4), (path, 4, 21)]:
+            with patch('fagao.collectors._fetch', return_value=first_page(actual, selected, row)):
+                with self.assertRaises(CollectorError):
+                    _qidian(options, None)
+
     def test_qidian_uses_explicit_rank_not_array_position(self):
         state = {'pageContext':{'pageProps':{'pageData':{'gender':'male','total':1000,'records':[
             {'bid':'999991','rankNum':14,'bName':'第十四名','rankCnt':'2万月票'},
@@ -188,10 +254,10 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(_page_options({'max_pages':1,'limit':1000},10),(1,1000))
 
     def test_qidian_unreadable_source_rows_never_report_complete(self):
-        data={'gender':'male','total':2,'isLast':1,'records':[
+        data={'gender':'male','pageNum':1,'total':2,'isLast':1,'records':[
             {'bid':'999991','rankNum':1,'bName':'正常书名'},
             {'bid':'999992','rankNum':2,'bName':'不可读\ue111'}]}
-        html='<script id="vite-plugin-ssr_pageContext">'+json.dumps({'pageContext':{'pageProps':{'pageData':data}}})+'</script>'
+        html='<script id="vite-plugin-ssr_pageContext">'+json.dumps({'pageContext':{'urlPathname':'/rank/yuepiao/','pageProps':{'pageData':data}}})+'</script>'
         with patch('fagao.collectors._fetch',return_value=html):
             result=_qidian({},None)
         self.assertEqual(len(result['books']),1)
@@ -266,11 +332,27 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual([b['id'] for b in result['books']],['123456'])
         self.assertEqual(result['pagination']['stop_reason'],'version_changed')
 
+    def test_ciweimao_selects_the_confirmed_board_and_period(self):
+        html = ciwei_panel('<title>小说收藏榜 - 刺猬猫</title><ol class="rank-book-list">'
+                           '<li data-book-id="123456"><i>1</i><h3 class="tit">'
+                           '<a href="https://www.ciweimao.com/book/123456">真实作品</a>'
+                           '</h3></li></ol>', "总榜", "favor-total")
+        with patch("fagao.collectors.time.sleep"), patch("fagao.collectors._fetch", return_value=html) as fetch:
+            result = _ciweimao({"board":"收藏榜","period":"总榜","max_pages":1}, None)
+            self.assertEqual(result["period"], "总榜")
+            fetch.assert_called_once_with("https://www.ciweimao.com/rank-index/favor-total")
+            with self.assertRaisesRegex(CollectorError, "周期"):
+                _ciweimao({"board":"收藏榜","period":"周榜"}, None)
+            fetch.reset_mock()
+            with self.assertRaisesRegex(CollectorError, "仅提供"):
+                _ciweimao({"board":"新书榜","period":"周榜"}, None)
+            fetch.assert_not_called()
+
     def test_ciweimao_follows_only_real_next_links_with_cover(self):
         def html(rank,next_page=None):
             bid=str(123450+rank)
             return '<title>小说月票榜 - 刺猬猫</title><ol class="rank-book-list"><li data-book-id="'+bid+'"><i>'+str(rank)+'</i><a class="cover"><img src="https://example.com/transparent.png" data-original="https://e1.kuangxiangit.com/cover.jpg"></a><h3 class="tit"><a href="https://www.ciweimao.com/book/'+bid+'">实际作品</a></h3></li></ol>'+('<a rel="next" href="https://www.ciweimao.com/rank-index/yp-month/'+str(next_page)+'">&gt;&gt;</a>' if next_page else '')
-        with patch('fagao.collectors._fetch',side_effect=[html(1,2),html(11)]),patch('fagao.collectors.time.sleep'):
+        with patch('fagao.collectors._fetch',side_effect=[ciwei_panel(html(1,2)),ciwei_panel(html(11))]),patch('fagao.collectors.time.sleep'):
             result=_ciweimao({},None)
         self.assertEqual([b['rank'] for b in result['books']],[1,11])
         self.assertEqual(result['pagination']['stop_reason'],'last_page')
@@ -288,7 +370,7 @@ class CollectorTests(unittest.TestCase):
     def test_ciweimao_page_budget_does_not_shorten_explicit_requested_count(self):
         items=''.join('<li data-book-id="'+str(123450+i)+'"><i>'+str(i)+'</i><h3 class="tit"><a href="https://www.ciweimao.com/book/'+str(123450+i)+'">真实书名</a></h3></li>' for i in range(1,11))
         html='<title>小说月票榜 - 刺猬猫</title><ol class="rank-book-list">'+items+'</ol><a rel="next" href="https://www.ciweimao.com/rank-index/yp-month/2">下一页</a>'
-        with patch('fagao.collectors._fetch',return_value=html),patch('fagao.collectors.time.sleep'):
+        with patch('fagao.collectors._fetch',return_value=ciwei_panel(html)),patch('fagao.collectors.time.sleep'):
             result=_ciweimao({'limit':1000,'max_pages':1},None)
         self.assertEqual(result['requested_count'],1000)
         self.assertEqual(result['pagination']['stop_reason'],'max_pages')
@@ -349,25 +431,26 @@ class CollectorTests(unittest.TestCase):
 
     def test_qidian_first_page_precedes_pagination_and_uses_issued_session(self):
         from types import SimpleNamespace
-        first = {'gender': 'male', 'total': 2, 'isLast': 0, 'records': [
+        first = {'gender': 'male', 'pageNum': 1, 'total': 2, 'isLast': 0, 'records': [
             {'bid': '999991', 'rankNum': 1, 'bName': '首批书目'}]}
         second = {'gender': 'male', 'pageNum': 2, 'isLast': 1, 'records': [
             {'bid': '999992', 'rankNum': 2, 'bName': '后续书目'}]}
         html = '<script id="vite-plugin-ssr_pageContext">' + json.dumps(
-            {'pageContext': {'pageProps': {'pageData': first}}}) + '</script>'
+            {'pageContext': {'urlPathname':'/rank/readindex/', 'pageProps': {'pageData': first}}}) + '</script>'
         events = []
         def progress(message, **kwargs):
             if 'snapshot' in kwargs: events.append((fetch.call_count, kwargs))
         cookie = SimpleNamespace(name='_csrfToken', value='issued-only-test', domain='m.qidian.com')
         with patch('fagao.collectors.CookieJar', return_value=[cookie]), patch('fagao.collectors._fetch',
                 side_effect=[html, json.dumps({'code': 0, 'data': second})]) as fetch, patch('fagao.collectors.time.sleep'):
-            result = _qidian({}, progress)
+            result = _qidian({'board': '阅读榜'}, progress)
         self.assertEqual([event[0] for event in events], [1, 2])
         self.assertTrue(events[0][1]['has_more'])
         self.assertFalse(events[1][1]['has_more'])
         self.assertEqual(events[0][1]['snapshot']['books'][0]['rank'], 1)
         self.assertNotIn('issued-only-test', json.dumps(events))
         self.assertEqual(len(result['books']), 2)
+        self.assertIn('/rank/readIndexlist?', fetch.call_args.args[0])
 
     def test_ciweimao_first_page_is_visible_before_following_verified_link(self):
         def html(rank, next_page=None):
@@ -379,7 +462,7 @@ class CollectorTests(unittest.TestCase):
         events = []
         def progress(message, **kwargs):
             if 'snapshot' in kwargs: events.append((fetch.call_count, kwargs))
-        with patch('fagao.collectors._fetch', side_effect=[html(1, 2), html(2)]) as fetch, patch('fagao.collectors.time.sleep'):
+        with patch('fagao.collectors._fetch', side_effect=[ciwei_panel(html(1, 2)), ciwei_panel(html(2))]) as fetch, patch('fagao.collectors.time.sleep'):
             result = _ciweimao({}, progress)
         self.assertEqual([event[0] for event in events], [1, 2])
         self.assertEqual([event[1]['has_more'] for event in events], [True, False])

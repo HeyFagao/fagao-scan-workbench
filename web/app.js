@@ -34,10 +34,12 @@
   let lastShortEntry = 'fanqie_story';
   const dailyPageSize = 50;
   const dailyChecks = new Map();
-  const newDailyView = board => ({board, revision: '', history: [], snapshot: null, page: 1, query: '', videoType: '', busy: false, error: ''});
+  const newDailyView = board => ({board, revision: '', history: [], snapshot: null, page: 1, query: '', rowFilter: '', busy: false, error: ''});
+  const dailyFilterColumns = {douyin: '视频类型', zhihu: '分类', fanqie_story: '分类'};
   let dailyView = newDailyView('douyin');
   const nextAutoAt = new Map(), autoMessages = new Map(), latestResults = new Map(), snapshotJobs=new Map();
   let historyViews = {};
+  const discoveredGenres=new Map();
   const MEMBER_SITE='https://www.fagaochuangzuo.com/';
   const WORKBENCH_SITE=MEMBER_SITE+'?module=rankings';
   const WORKBENCH_MASCOT=MEMBER_SITE+'growth/redemption/fagao-check.png';
@@ -49,7 +51,7 @@
   const readable=()=>membership.allowed || membership.can_read_history===true;
   const legacyBlocked=()=>membership.allowed && (!legacy.checked || legacy.decision_required || !!legacy.error);
   const readOnlyPosts=new Set(['/api/view','/api/insights','/api/resolve']);
-  const writeActions=new Set(['collect','daily-refresh','overview-refresh','overview-retry','collection-options','translation-context','favorite','import-snapshot','import-ranking-html','import-text','choose-text','catalog','reload-catalog','chapter-preset','chapter-all','choose-chapter','context']);
+  const writeActions=new Set(['category','collect','daily-refresh','overview-refresh','overview-retry','collection-options','translation-context','favorite','import-snapshot','import-ranking-html','import-text','choose-text','catalog','reload-catalog','chapter-preset','chapter-all','choose-chapter','context']);
   const dataRequests=new Set(), downloadURLs=new Set();
   const membershipCopy={
     checking:['正在连接你的工作台','正在确认发糕账号与使用状态。'],
@@ -104,7 +106,7 @@
     section='overview';domesticMode='long';lastShortEntry='fanqie_story';overviewPlatform='fanqie';overviewChannel='全部';dashboardCategoryMetric='primary_median';
     listWindow={key:'',count:20};lastListScrollAt=0;
     nextAutoAt.clear();autoMessages.clear();latestResults.clear();snapshotJobs.clear();
-    historyViews={};savedOptions={};storageAccount=null;
+    historyViews={};savedOptions={};storageAccount=null;discoveredGenres.clear();
     legacyRequest++;legacy={checked:false,checking:false,decision_required:false,counts:{},error:''};legacyBusy=false;legacyConfirmed=false;
     $('#bridge').replaceChildren();$('#content').replaceChildren();$('#content').classList.remove('overseas-content');
     $('#dialog').close();$('#dialog-body').replaceChildren();$('#dialog').dataset.kind='';$('#dialog').dataset.snapshot='';
@@ -341,6 +343,8 @@
   const latestCollectionJob = () => (state?.jobs || []).find(j=>!['text','overview'].includes(j.kind) && j.platform===platformID() && (!j.options || scopeKey(j.platform,j.options)===scopeKey()));
   const accessRestricted = job => ['failed','interrupted'].includes(job?.status) && ['forbidden','source_access_denied','verification_required'].includes(job.error_code);
   function sourceActions(p) {
+    const categoryUrl=safeURL(p.category_source_urls?.[optionsFor(p.id).category]);
+    if(categoryUrl)return `<a class="button secondary small" href="${escape(categoryUrl)}" target="_blank" rel="noopener noreferrer">打开题材快照 ↗</a>`;
     const official=safeURL(p.source_url), alternate=safeURL(p.alternate_source_url);
     return `${official?`<a class="button secondary small" href="${escape(official)}" target="_blank" rel="noopener noreferrer">打开官网榜单 ↗</a>`:''}${alternate?`<a class="button secondary small" href="${escape(alternate)}" target="_blank" rel="noopener noreferrer">打开公开备用源 ↗</a>`:''}${p.id==='scribblehub'?'<button class="button secondary small" data-action="import-ranking-html">导入已打开的榜单</button>':''}`;
   }
@@ -350,15 +354,22 @@
     const preferences=stored && historyViews[targetMode]===stored.id ? {} : savedOptions[id];
     const descriptor=platforms().find(p=>p.id===id);
     const options={...defaultsFor(id),...previous,...preferences,...patch,mode:targetMode};
-    if(descriptor?.board_periods)options.period=descriptor.board_periods[options.board] || '';
+    // An explicitly opened archive retains its original source labels.
+    if (!(stored && historyViews[targetMode]===stored.id && !Object.keys(patch).length)) {
+      normalizeScope(id, options);
+    }
     if(descriptor?.max_limit)options.limit=Math.min(descriptor.max_limit,options.limit);
     return options;
   }
   function scopeKey(id=platformID(),options=optionsFor(id)) { return [id,options.mode || platformMode(id),options.channel,options.category,options.board,options.period || (id==='ciweimao'?'月榜':''),options.limit ?? '',options.max_pages ?? 100,options.detail_budget ?? ''].join('|'); }
   function sameScope(item,id=platformID(),options=optionsFor(id)) {
     if(item?.platform!==id)return false;
-    const keys=platforms().find(p=>p.id===id)?.periods?.length ? ['channel','category','board','period'] : ['channel','category','board'];
-    return keys.every(key=>String(item[key] || '')===String(options[key] || ''));
+    if(!['channel','category','board'].every(key=>item[key]===options[key]))return false;
+    const spec=platforms().find(p=>p.id===id);
+    if(!spec?.periods && !spec?.periods_by_board && !spec?.board_periods)return true;
+    // Older Ciweimao monthly vote snapshots predate the period field.
+    const period=item.period || (id==='ciweimao' && item.board==='月票榜' ? '月榜' : '');
+    return period===(options.period || '');
   }
   function bestSnapshotForScope(id=platformID(),options=optionsFor(id)){
     // Match overview._latest_current: choose a precise version per source,
@@ -392,7 +403,43 @@
     if(snapshotId)historyViews[targetMode]=snapshotId;else delete historyViews[targetMode];
     savePreference('fagao-history-views',JSON.stringify(historyViews));
   }
-  function boardNames(id=platformID()) { return platforms().find(p=>p.id===id)?.boards || (id==='fanqie'?['新书榜','阅读榜']:id==='qidian'?['月票榜','签约新书榜','公众新书榜','新人新书榜','畅销榜']:id==='ciweimao'?['月票榜']:id==='heiyan'?['书库']:['热门故事']); }
+  function channelLabel(id,value) {
+    return platforms().find(p=>p.id===id)?.channel_labels?.[value] ?? value;
+  }
+  function boardNames(id,channel) {
+    const spec=platforms().find(p=>p.id===id);
+    return spec?.boards_by_channel?.[channel] ?? spec?.boards ?? (id==='fanqie'?['新书榜','阅读榜']:id==='qidian'?['月票榜','签约新书榜','公众新书榜','新人新书榜','畅销榜']:id==='ciweimao'?['月票榜']:id==='heiyan'?['书库']:['热门故事']);
+  }
+  function periodNames(id,options) {
+    const spec=platforms().find(p=>p.id===id);
+    const fixed=spec?.board_periods?.[options.board];
+    return spec?.periods_by_board?.[options.board] ?? (fixed ? [fixed] : spec?.periods ?? []);
+  }
+  function categoryNames(id,options) {
+    const spec=platforms().find(p=>p.id===id);
+    const declared=spec?.categories_by_board?.[options.board] ?? spec?.categories_by_channel?.[options.channel] ?? spec?.categories;
+    if(id!=='fanqie')return declared ?? [options.category || defaultsFor(id).category || '全部'];
+    const matches=row=>row?.platform===id && row.channel===options.channel && row.board===options.board;
+    const discovered=discoveredGenres.get(JSON.stringify([options.channel,options.board])) ?? [];
+    const history=(state?.snapshots || []).filter(matches).map(row=>row.category);
+    const previous=savedOptions[id];
+    const saved=previous?.channel===options.channel && previous?.board===options.board ? previous.category : null;
+    return [...new Set([...(declared ?? []), ...discovered, ...history, saved].filter(Boolean))];
+  }
+  function normalizeScope(id,options) {
+    const spec=platforms().find(p=>p.id===id);
+    const choose=(current,values,preferred)=>values.includes(current)?current:values.includes(preferred)?preferred:values[0];
+    options.channel=choose(options.channel,channelsFor(id),defaultsFor(id).channel);
+    options.board=choose(options.board,boardNames(id,options.channel),defaultsFor(id).board);
+    const categories=categoryNames(id,options);
+    const preferred=id==='fanqie' && options.channel==='男频'?'玄幻脑洞':defaultsFor(id).category;
+    if(categories.length)options.category=choose(options.category,categories,preferred);
+    if(spec?.periods || spec?.periods_by_board || spec?.board_periods) {
+      const periods=periodNames(id,options);
+      options.period=choose(options.period,periods,defaultsFor(id).period) || '';
+    }
+    return options;
+  }
   const stopReasons={loading:'当前作品已载入，后续页面会继续补充',waiting_for_more:'向下浏览时继续读取后续作品',paused_for_demand:'已暂停读取，继续向下浏览时恢复',last_page:'已读取平台最后一页',source_end:'已到来源末页',awaiting_demand:'向下浏览时继续读取后续作品',empty_page:'平台已无更多书目',requested_limit:'已达到本次采集数量',max_pages:'已达到本次页数上限',repeated_page:'平台返回重复页面，已停止避免重复',version_changed:'榜单版本发生变化，已保留本次结果',invalid_response:'平台返回的数据暂不可读',wrong_page:'平台返回的页码不一致',request_failed:'后续页面暂时无法连接',session_required:'后续页面需要平台登录',pagination_unverified:'后续翻页方式仍待核实',rank_conflict:'不同页面出现名次冲突',book_conflict:'不同页面出现作品信息冲突',invalid_next_page:'平台未提供可用的下一页'};
   function readableWarning(value){return String(value).replace(/[a-z]+(?:_[a-z]+)+/g,key=>stopReasons[key] || key);}
   function paginationSummary(item){
@@ -483,6 +530,10 @@
     const next = await api(`/api/snapshots/${encodeURIComponent(id)}`);
     if (version !== loadingVersion || viewVersion!==viewGeneration) return;
     snapshot = next.snapshot || next;
+    if(snapshot.platform==='fanqie' && Array.isArray(snapshot.categories) && snapshot.categories.length){
+      const key=JSON.stringify([snapshot.channel,snapshot.board]);
+      discoveredGenres.set(key,snapshot.categories.filter(name=>typeof name==='string' && name.trim()));
+    }
     render();
   }
   function updateView(patch) {
@@ -552,7 +603,7 @@
     const pointsURL = safeURL(state.config?.points_site);
     $('#points-entry').innerHTML = pointsURL ? `<a class="quiet-button" href="${escape(pointsURL)}" target="_blank" rel="noopener noreferrer">返回积分站 ↗</a>` : '<button class="soon" disabled>积分站 <span>即将上线</span></button>';
   }
-  function scopeOf(snap = snapshot) { return [snap?.channel,snap?.category,snap?.board,snap?.period].filter(Boolean).join(' · '); }
+  function scopeOf(snap = snapshot) { return [channelLabel(snap?.platform,snap?.channel),snap?.category,snap?.board,snap?.period].filter(Boolean).join(' · '); }
   function render() {
     if(!readable()){renderMembership();return;}
     if(legacyBlocked()){renderLegacy();return;}
@@ -640,9 +691,10 @@
       const sample=coverage.complete===false && Number.isInteger(coverage.source_total)
         ?`收录 ${count} 条，来源共 ${coverage.source_total} 条`:`收录 ${count} 条`;
       const scope=[snap.scope,coverage.complete===false?'部分榜单':''].filter(Boolean).map(escape).join(' · ');
-      const typeIndex=snap.columns.indexOf('视频类型');
-      const types=typeIndex>=0?[...new Set(snap.rows.map(row=>String(row[typeIndex] ?? '')).filter(Boolean))]:[];
-      if(!types.includes(target.videoType))target.videoType='';
+      const filterColumn=dailyFilterColumns[target.board];
+      const filterIndex=snap.columns.indexOf(filterColumn);
+      const filterValues=filterIndex>=0?[...new Set(snap.rows.map(row=>row[filterIndex].trim()).filter(Boolean))]:[];
+      if(!filterValues.includes(target.rowFilter))target.rowFilter='';
       const history=target.history.filter(item=>typeof item?.revision==='string' && /^[a-f0-9]{64}$/.test(item.revision));
       const past=history.slice(1);
       const historyPicker=past.length?`<label>期次 <select id="daily-history"><option value="">最新一期</option>${past.map(item=>`<option value="${item.revision}" ${target.revision===item.revision?'selected':''}>${escape(item.source_date || '未标榜单日期')} · 采集 ${escape(dailyTime(item.observed_at))}</option>`).join('')}</select></label>`:'';
@@ -652,7 +704,7 @@
       </div>
       <div class="daily-board-tools"><div>${scope}${scope?' · ':''}${escape(sample)}</div><div class="daily-inputs">
         ${historyPicker}
-        ${types.length?`<label>视频类型 <select id="daily-video-type"><option value="">全部类型</option>${types.map(type=>`<option ${target.videoType===type?'selected':''}>${escape(type)}</option>`).join('')}</select></label>`:''}
+        ${filterValues.length?`<label>${filterColumn==='分类'?'本期分类':'视频类型'} <select id="${filterColumn==='分类'?'daily-category':'daily-video-type'}"><option value="">${filterColumn==='分类'?'全部分类':'全部类型'}</option>${filterValues.map(value=>`<option value="${escape(value)}" ${target.rowFilter===value?'selected':''}>${escape(value)}</option>`).join('')}</select></label>`:''}
         <input id="daily-query" type="search" aria-label="搜索本榜" placeholder="搜索本榜" value="${escape(target.query)}" maxlength="120">
       </div></div><div id="daily-results"></div>`;
     }else if(target.busy){
@@ -684,8 +736,8 @@
   function renderDailyResults(){
     const container=$('#daily-results'), target=dailyView, snap=target.snapshot;
     if(!container || !snap)return;
-    const term=target.query.trim().toLowerCase(), typeIndex=snap.columns.indexOf('视频类型');
-    const rows=snap.rows.filter(row=>(!target.videoType || String(row[typeIndex])===target.videoType) &&
+    const term=target.query.trim().toLowerCase(), filterIndex=snap.columns.indexOf(dailyFilterColumns[target.board]);
+    const rows=snap.rows.filter(row=>(!target.rowFilter || row[filterIndex]?.trim()===target.rowFilter) &&
       (!term || row.some(value=>String(value ?? '').toLowerCase().includes(term))));
     if(!rows.length){
       container.innerHTML=`<p class="daily-empty">${snap.rows.length?'没有符合筛选条件的记录。':'这一期没有上榜记录。'}</p>`;
@@ -918,22 +970,14 @@
       if(Date.now()-lastListScrollAt<2000 && entries.some(entry=>entry.isIntersecting) && $('#list-end')===sentinel){listObserver.disconnect();loadMoreBooks().catch(error=>notice(error.message));}
     },{rootMargin:'240px 0px'});listObserver.observe(sentinel);
   }
-  function categoryNames(options){
-    if(mode()==='overseas')return [...new Set([options.category,...(platform().categories || ['全部'])].filter(Boolean))];
-    if(platform().categories?.length)return platform().categories;
-    if(platformID()!=='fanqie')return [options.category || '全部'];
-    const verifiedFemale=['古风世情','科幻末世','游戏体育','女频衍生','玄幻言情','种田','年代','现言脑洞','宫斗宅斗','悬疑脑洞','古言脑洞','快穿','青春甜宠','星光璀璨','女频悬疑','职场婚恋','豪门总裁','民国言情'];
-    const source=snapshot?.platform==='fanqie' && snapshot.channel===options.channel && snapshot.categories?.length ? snapshot.categories : options.channel==='女频'?verifiedFemale:['玄幻脑洞'];
-    return [...new Set([options.category,...source].filter(Boolean))];
-  }
   function renderBoardControls(){
     const id=platformID(), options=optionsFor(), key=scopeKey(), supported=id!=='fanqie_short';
     const status=membership.can_read_history?'历史资料只读 · 更新与新任务已暂停':viewingHistory()?'查看历史记录 · 自动更新已暂停':currentJob()?(currentJob().waiting_for_more?'已载入首批 · 向下浏览继续读取':'后台自动更新中'):accessRestricted(latestCollectionJob())?'来源拒绝读取 · 自动重试已暂停':autoMessages.get(key) || (supported?'自动更新 · 每 15 分钟检查':'此来源待接入');
     const channels=channelsFor(id);
-    const periods=platform().periods || [];
-    const periodControl=periods.length>1?`<label>周期<select id="board-period">${periods.map(value=>`<option ${value===options.period?'selected':''}>${escape(value)}</option>`).join('')}</select></label>`:'';
-    const categories=categoryNames(options), frequent=(options.channel==='女频'?['古言脑洞','现言脑洞','豪门总裁','年代','种田','快穿']:[options.category]).filter(value=>categories.includes(value));
-    return `<div class="board-controls"><label>频道<select id="board-channel" ${channels.length===1?'disabled':''}>${channels.map(value=>`<option ${value===options.channel?'selected':''}>${escape(value)}</option>`).join('')}</select></label><label>榜单<select id="board-kind">${boardNames(id).map(value=>`<option ${value===options.board?'selected':''}>${escape(value)}</option>`).join('')}</select></label>${periodControl}<label>分类<select id="board-category" aria-label="榜单分类" ${categories.length===1?'disabled':''}>${categories.map(value=>`<option ${value===options.category?'selected':''}>${escape(value)}</option>`).join('')}</select></label><div class="auto-status">${currentJob() && !currentJob().waiting_for_more?'<span class="spinner"></span>':`<span class="status-dot${!viewingHistory() && accessRestricted(latestCollectionJob())?'':' online'}"></span>`}<span>${escape(status)}</span>${viewingHistory()?'<button data-action="resume-auto">恢复自动更新</button>':''}</div></div>${(id==='fanqie' || mode()==='overseas') && (mode()==='overseas'?categories:frequent).length>1?`<div class="category-shortcuts" aria-label="常用分类"><span>${mode()==='overseas'?'分类':'常用'}</span>${(mode()==='overseas'?categories:frequent).map(value=>`<button data-action="category" data-category="${escape(value)}" aria-pressed="${value===options.category}">${escape(value)}</button>`).join('')}</div>`:''}`;
+    const periods=periodNames(id,options);
+    const periodControl=periods.length?`<label>周期<select id="board-period" ${periods.length===1 || !membership.allowed?'disabled':''}>${periods.map(value=>`<option ${value===options.period?'selected':''}>${escape(value)}</option>`).join('')}</select></label>`:'';
+    const categories=categoryNames(id,options), frequent=(options.channel==='女频'?['古言脑洞','现言脑洞','豪门总裁','年代','种田','快穿']:[options.category]).filter(value=>categories.includes(value));
+    return `<div class="board-controls"><label>频道<select id="board-channel" ${channels.length===1 || !membership.allowed?'disabled':''}>${channels.map(value=>`<option value="${escape(value)}" ${value===options.channel?'selected':''}>${escape(channelLabel(id,value))}</option>`).join('')}</select></label><label>榜单<select id="board-kind" ${!membership.allowed?'disabled':''}>${boardNames(id,options.channel).map(value=>`<option ${value===options.board?'selected':''}>${escape(value)}</option>`).join('')}</select></label>${periodControl}<label>分类<select id="board-category" aria-label="榜单分类" ${categories.length<=1 || !membership.allowed?'disabled':''}>${categories.map(value=>`<option ${value===options.category?'selected':''}>${escape(value)}</option>`).join('')}</select></label><div class="auto-status">${currentJob() && !currentJob().waiting_for_more?'<span class="spinner"></span>':`<span class="status-dot${!viewingHistory() && accessRestricted(latestCollectionJob())?'':' online'}"></span>`}<span>${escape(status)}</span>${viewingHistory()?'<button data-action="resume-auto">恢复自动更新</button>':''}</div></div>${(id==='fanqie' || mode()==='overseas') && (mode()==='overseas'?categories:frequent).length>1?`<div class="category-shortcuts" aria-label="常用分类"><span>${mode()==='overseas'?'分类':'常用'}</span>${(mode()==='overseas'?categories:frequent).map(value=>`<button data-action="category" data-category="${escape(value)}" aria-pressed="${value===options.category}">${escape(value)}</button>`).join('')}</div>`:''}`;
   }
   function renderToolbar() {
     const f = view().filters || {};
@@ -977,7 +1021,7 @@
       html+='<div class="surface-head"><strong>最近选中的作品</strong><span class="meta">选择固定到当时的榜单</span></div>';
       html+=state.history.length?'<div class="saved-list">'+state.history.slice(0,30).map((h)=>savedRow(h.title||h.book_title||h.book_id,[nameOf(h.platform),h.board,h.category].filter(Boolean).join(' · '),h.selected_at||h.created_at,'open-record',{'snapshot':h.snapshot_id,'book':h.book_id})).join('')+'</div>':empty('还没有选书记录','第一次选中作品后，它的名称与当时榜单会一起保存。','','◷','compact');
       html+='<div class="surface-head"><strong>历史榜单与书库</strong></div>';
-      html+=state.snapshots.length?'<div class="saved-list">'+state.snapshots.map((s)=>savedRow([nameOf(s.platform),s.board].filter(Boolean).join(' · '),[s.channel,s.category,`${s.books_count ?? s.count ?? '?'} 本`].filter(Boolean).join(' · '),snapshotDate(s),'open-record',{'snapshot':s.id})).join('')+'</div>':empty('还没有采集记录','第一次采集成功后，完整书目将保存在这里。','','▤','compact');
+      html+=state.snapshots.length?'<div class="saved-list">'+state.snapshots.map((s)=>savedRow([nameOf(s.platform),s.board].filter(Boolean).join(' · '),[channelLabel(s.platform,s.channel),s.category,`${s.books_count ?? s.count ?? '?'} 本`].filter(Boolean).join(' · '),snapshotDate(s),'open-record',{'snapshot':s.id})).join('')+'</div>':empty('还没有采集记录','第一次采集成功后，完整书目将保存在这里。','','▤','compact');
     } else {
       html+=state.reports.length?'<div class="saved-list">'+state.reports.map((r)=>savedRow(r.title||'拆书报告',r.scope||'阅读范围见报告',r.created_at,'report',{'id':r.id})).join('')+'</div>':empty('还没有拆书报告',membership.can_read_history?'这个账号尚未保存拆书报告。续费后可继续开始新的分析。':'先收藏想分析的作品，再回到 WorkBuddy 说“分析我收藏的《书名》”。完成分析并保存报告后，就能在这里继续查看。');
     }
@@ -992,13 +1036,26 @@
     applyReadOnlyControls();
   }
   function collectionOptions() {
-    const id=platformID(), current=optionsFor(id), categories=categoryNames(current);
-    const select=(name,values)=>`<select id="${name}" name="${name}">${values.map(x=>`<option ${current[name]===x?'selected':''}>${escape(x)}</option>`).join('')}</select>`;
-    const p=platform(), maxLimit=p.max_limit || 10000;
-    const period=p.periods?.length>1?`<div class="field"><label for="period">周期</label>${select('period',p.periods)}</div>`:'';
+    const id=platformID(), p=platform(), maxLimit=p.max_limit || 10000, current=optionsFor(id);
     const hint=p.max_limit?`按原榜顺序最多读取 ${maxLimit} 本，以来源实际数量为准。`:'先显示首批作品，向下浏览时继续读取；最多读取 100 页，以来源实际提供数量为准。';
-    const category=mode()==='overseas' || p.categories?.length?select('category',categories):`<input id="category" name="category" value="${escape(current.category || '全部')}" required maxlength="40">`;
-    showDialog('采集设置',`<form id="options-form"><p>设置保存后自动更新。日常使用无需再次填写。</p><div class="form-grid"><div class="field"><label for="channel">频道</label>${select('channel',channelsFor(id))}</div><div class="field"><label for="category">分类</label>${category}</div><div class="field"><label for="board">榜单</label>${select('board',boardNames(id))}</div>${period}<div class="field"><label for="limit">最大采集数量</label><input id="limit" name="limit" type="number" min="1" max="${maxLimit}" value="${Math.min(current.limit || maxLimit,maxLimit)}" required></div></div><p class="help-inline">${escape(hint)}</p><div class="form-actions"><button class="button secondary" type="button" data-action="close-dialog">取消</button><button class="button primary" type="submit">保存条件</button></div></form>`);
+    const scopeFields=['channel','board','category','period'].map((key,i)=>`<div class="field"><label for="${key}">${['频道','榜单','分类','周期'][i]}</label><select id="${key}" name="${key}"></select></div>`).join('');
+    showDialog('采集设置',`<form id="options-form"><div class="form-grid">${scopeFields}<div class="field"><label for="limit">最大采集数量</label><input id="limit" name="limit" type="number" min="1" max="${maxLimit}" value="${Math.min(current.limit || maxLimit,maxLimit)}" required></div></div><p class="help-inline">${escape(hint)}</p><div class="form-actions"><button class="button secondary" type="button" data-action="close-dialog">取消</button><button class="button primary" type="submit">保存条件</button></div></form>`);
+    const form=$('#options-form');
+    function syncSelects() {
+      const choices={channel:channelsFor(id),board:boardNames(id,current.channel),category:categoryNames(id,current),period:periodNames(id,current)};
+      for(const [key,values] of Object.entries(choices)){
+        const select=form.elements.namedItem(key);
+        select.innerHTML=values.map(value=>`<option value="${escape(value)}" ${value===current[key]?'selected':''}>${escape(key==='channel'?channelLabel(id,value):value)}</option>`).join('');
+        select.closest('.field').hidden=values.length===0;
+      }
+    }
+    syncSelects();
+    form.addEventListener('change',event=>{
+      if(event.target.tagName!=='SELECT')return;
+      current[event.target.name]=event.target.value;
+      normalizeScope(id,current);
+      syncSelects();
+    });
   }
   async function copyTranslationContext(){
     const epoch=accountEpoch;assertAccount(epoch);
@@ -1098,11 +1155,19 @@
       if(epoch!==accountEpoch)return;
       nextAutoAt.set(key,Date.now()+5*60*1000);autoMessages.set(key,'更新暂不可用，稍后自动重试');
       if(!automatic)throw error;
-    } finally {if(epoch===accountEpoch){activeRequest=false;render();}}
+    } finally {
+      if(epoch===accountEpoch){
+        activeRequest=false;
+        render();
+        // A switch can complete while the old request still occupies the single collection slot.
+        if(key!==scopeKey())queueMicrotask(()=>maybeAutoCollect().catch(()=>{}));
+      }
+    }
   }
   async function changeOptions(patch){
-    const epoch=accountEpoch;assertAccount(epoch);
+    const epoch=accountEpoch;assertAccount(epoch,true);
     const id=platformID(), options=optionsFor(id,patch);
+    if (!viewingHistory() && scopeKey(id,options)===scopeKey()) return;
     savedOptions[id]=options;savePreference('fagao-collection-options',JSON.stringify(savedOptions));
     setHistory(null);latestResults.delete(scopeKey());
     const matching=bestSnapshotForScope(id,options);
@@ -1139,6 +1204,13 @@
             assertAccount(epoch);
             if(completed){const jobOptions=completed.options || optionsFor(completed.platform);await receiveSnapshot(completed.snapshot_id,completed.platform,jobOptions,completed.id);assertAccount(epoch);autoMessages.set(scopeKey(completed.platform,jobOptions),'已更新 · 每 15 分钟自动检查');}
           } else render();
+        }
+        // A navigation/state response can already report completion before this poll starts.
+        if(section==='browse' && !view().snapshot_id && !pendingViewMutations && !activeRequest && !viewingHistory()){
+          const job=latestCollectionJob();
+          if(job?.status==='completed' && job.snapshot_id){
+            await receiveSnapshot(job.snapshot_id,job.platform,job.options || optionsFor(),job.id);
+          }
         }
         await pollTextJobs();
         assertAccount(epoch);
@@ -1506,8 +1578,8 @@
     const el=event.target;
     if(el.id==='legacy-confirm'){legacyConfirmed=legacy.can_claim===true && !!el.checked;const button=$('[data-action="legacy-claim"]');if(button)button.disabled=!legacyConfirmed || legacyBusy || legacy.can_claim!==true;return;}
     if(legacyBlocked())return;
-    if(el.id==='daily-video-type'){
-      dailyView.videoType=el.value;
+    if(el.id==='daily-video-type' || el.id==='daily-category'){
+      dailyView.rowFilter=el.value;
       dailyView.page=1;
       renderDailyResults();
       return;
@@ -1522,7 +1594,7 @@
     }
     if(el.id==='chapter-range-mode'){captureTextRange();renderContentDialog();return;}
     if(el.id==='snapshot-select'){setHistory(el.value);updateView({snapshot_id:el.value,selected_id:null,page:1}).catch(e=>notice(e.message));}
-    if(el.id==='board-channel'){changeOptions({channel:el.value,...(platformID()==='fanqie'?{category:el.value==='男频'?'玄幻脑洞':'古言脑洞'}:{})}).catch(e=>notice(e.message));}
+    if(el.id==='board-channel'){changeOptions({channel:el.value}).catch(e=>notice(e.message));}
     if(el.id==='board-kind')changeOptions({board:el.value}).catch(e=>notice(e.message));
     if(el.id==='board-period')changeOptions({period:el.value}).catch(e=>notice(e.message));
     if(el.id==='board-category' && el.value.trim())changeOptions({category:el.value.trim()}).catch(e=>notice(e.message));

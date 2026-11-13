@@ -79,6 +79,40 @@ class QimaoRankTests(unittest.TestCase):
             with self.assertRaisesRegex(CollectorError, '频道'):
                 self.collect()
 
+    def test_single_edition_books_and_metrics_match_the_selected_chart(self):
+        for board, scope, slug, rank_type, rule, number, metric in (
+            ('收藏榜', '累计', 'collect', '4', '基于书籍收藏总数排行', '2694516',
+             {'name': '收藏数', 'value': '2694516', 'unit': ''}),
+            ('更新榜', '近30天', 'update', '6', '基于书籍30天内的更新总字数排行', '83062字更新',
+             {'name': '更新字数', 'value': '83062', 'unit': '字'}),
+        ):
+            path = '/paihang/girl/' + slug + '/date/'
+            book_url = qimao.ORIGIN + '/shuku/22/'
+            html = (f'<title>{board}</title><span class="active">女生榜</span>'
+                    f'<div class="menu-tab active"><a href="{path}">{board}</a></div>'
+                    f'<span class="rule-txt">{rule}</span><li class="rank-list-item">'
+                    f'<span class="rank-number">1</span><a class="s-book-title" href="{book_url}">书</a></li>')
+
+            def fetch(url, **kwargs):
+                if '/qimaoapi/' not in url:
+                    self.assertEqual(url, qimao.ORIGIN + path)
+                    return html
+                query = parse_qs(urlsplit(url).query)
+                self.assertEqual(query, {'is_girl': ['1'], 'rank_type': [rank_type], 'date_type': ['1'], 'page': ['1']})
+                return json.dumps({'data': {
+                    'table_data': [{'book_id': '22', 'book_url': book_url, 'title': '书', 'number': number}],
+                    'page_data': {'page': '1', 'page_size': '20', 'count': '1', 'data_month': ''}}})
+
+            with self.subTest(board=board), patch.object(qimao, 'fetch_page', side_effect=fetch):
+                snap = qimao.collect({'channel': '女频', 'board': board})
+                self.assertEqual(snap['period'], scope)
+                self.assertEqual(snap['books'][0]['metrics'], [metric])
+                with self.assertRaises(CollectorError):
+                    self.collect(board=board, period='日榜')
+                with self.assertRaises(CollectorError):
+                    qimao._opening_ids(html.replace(path, '/paihang/girl/new/date/'), qimao.ORIGIN + path,
+                                       '女频', board, scope)
+
 
 if __name__ == '__main__':
     unittest.main()

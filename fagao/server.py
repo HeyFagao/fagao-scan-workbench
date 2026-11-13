@@ -103,7 +103,12 @@ def collection_scope(platform, options):
     if options.get('limit') is None: options.pop('limit',None)
     options['max_pages']=options.get('max_pages') if options.get('max_pages') is not None else 100
     if options.get('detail_budget') is None: options.pop('detail_budget',None)
-    if platform=='ciweimao' and options['board']=='月票榜': options['period']=options.get('period') or '月榜'
+    if platform == 'ciweimao':
+        from .ciweimao_boards import rank_scope
+        try:
+            options['period'], _ = rank_scope(options['board'], options.get('period'))
+        except ValueError as exc:
+            raise AppError('invalid_options', str(exc)) from exc
     for key in ('limit','max_pages','detail_budget'):
         if key in options:
             value=options[key]

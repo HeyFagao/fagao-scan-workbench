@@ -13,13 +13,27 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
+from .qidian_boards import PLATFORM as QIDIAN_PLATFORM
 from .long_rankings import PLATFORMS as LONG_RANKING_PLATFORMS
 from .overseas import OVERSEAS_PLATFORMS
+from .ciweimao_boards import PLATFORM as CIWEIMAO_PLATFORM
+
+# Both 新书榜 and 阅读榜 publish these channel-specific categories on the official
+# rank pages. The collector also returns the live navigation for the chosen board.
+FANQIE_CATEGORIES_BY_CHANNEL = {
+    '女频': ['古风世情', '科幻末世', '游戏体育', '女频衍生', '玄幻言情', '种田', '年代', '现言脑洞', '宫斗宅斗',
+             '悬疑脑洞', '古言脑洞', '快穿', '青春甜宠', '星光璀璨', '女频悬疑', '职场婚恋', '豪门总裁', '民国言情'],
+    '男频': ['西方奇幻', '东方仙侠', '科幻末世', '都市日常', '都市修真', '都市高武', '历史古代', '战神赘婿',
+             '都市种田', '传统玄幻', '历史脑洞', '悬疑脑洞', '都市脑洞', '玄幻脑洞', '悬疑灵异', '抗战谍战',
+             '游戏体育', '动漫衍生', '男频衍生'],
+}
 
 PLATFORMS = [
-    {'id':'fanqie','name':'番茄小说','mode':'long','status':'available','message':'公开榜单；以实际采集结果为准'},
-    {'id':'qidian','name':'起点中文网','mode':'long','status':'available','message':'公开移动榜单；以实际采集结果为准'},
-    {'id':'ciweimao','name':'刺猬猫','mode':'long','status':'available','message':'公开榜单分页采集；实际覆盖以采集结果为准'},
+    {'id':'fanqie','name':'番茄小说','mode':'long','status':'available','message':'公开榜单；以实际采集结果为准',
+     'channels':list(FANQIE_CATEGORIES_BY_CHANNEL), 'boards':['新书榜','阅读榜'],
+     'categories_by_channel':FANQIE_CATEGORIES_BY_CHANNEL},
+    QIDIAN_PLATFORM,
+    CIWEIMAO_PLATFORM,
     *LONG_RANKING_PLATFORMS.values(),
     {'id':'heiyan','name':'黑岩故事会','mode':'short','status':'external','message':'打开腾讯文档书单，在原站完成登录','source_url':'https://docs.qq.com/sheet/DYVNwaVJZV2ZxTWl3?tab=q1ans7'},
     {'id':'fanqie_short','name':'番茄短故事','mode':'short','status':'unavailable','message':'热门故事入口待实机验证；可导入来源明确的书目'},

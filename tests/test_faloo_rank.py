@@ -22,6 +22,31 @@ def page(rows):
 
 
 class FalooRankTests(unittest.TestCase):
+    def test_independent_mobile_genre_uses_source_positions_and_only_its_list(self):
+        html = '''<span class="page_title"><a>玄幻榜</a></span><ul class="novelList"><li>
+          <a href="/888.html"><img class="cover" src="//img.faloo.com/Novel/332x470/1/2/3.jpg"></a>
+          <div class="bl_r1_tit"><a href="/888.html" title="远方的钟">远方…</a></div>
+          <p class="bl_r1_into"><a href="/888.html">开篇简介</a></p>
+          <div class="nl_r1_author"><a>测试作者</a><a>异世大陆</a></div></li></ul>'''
+        with patch.object(platform, 'fetch_page', return_value=html) as fetch:
+            snap = platform.collect({'board':'玄幻榜'})
+        fetch.assert_called_once_with('https://wap.faloo.com/bookrank_xuanhuan.html', encoding='gb18030')
+        self.assertEqual((snap['books'][0]['title'], snap['books'][0]['summary'], snap['books'][0]['tags']),
+                         ('远方的钟','开篇简介',['异世大陆']))
+        self.assertEqual((snap['books'][0]['source_position'], snap['books'][0]['rank_semantics']),
+                         (1, 'source_list_position'))
+        self.assertFalse(snap['complete'])
+        self.assertEqual(snap['pagination']['stop_reason'], 'first_page_only')
+        with self.assertRaises(CollectorError):
+            platform._mobile_books(html,'都市榜')
+        data = html.replace('玄幻榜','小说书库')
+        marker = '<a class="select" href="y_54_92_0_0_0_1.html">周点击</a>'
+        with self.assertRaises(CollectorError):
+            platform._mobile_books(data + marker, '女生周点击 · 女尊天下')
+        with patch.object(platform,'fetch_page',return_value=data + marker):
+            female = platform.collect({'board':'女生周点击 · 都市言情','limit':1})
+        self.assertEqual((female['period'], female['books'][0]['id'], female['complete']), ('周榜','888',True))
+
     def test_preserves_original_positions_scope_and_public_metadata(self):
         with patch.object(platform, 'fetch_page', return_value=page(row(11,1)+row(12,3))) as fetch:
             snap = platform.collect({'limit': 80})

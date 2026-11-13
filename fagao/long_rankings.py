@@ -23,21 +23,32 @@ def collection_options(platform, supplied):
         raise AppError('invalid_mode', '此平台提供长篇榜单。')
     defaults = spec['default_options']
     options = {'mode': 'long'}
-    for field, choices in (('channel', 'channels'), ('category', 'categories'), ('board', 'boards')):
+    for field, choices in (('channel', spec['channels']), ('board', spec['boards'])):
         value = supplied.get(field)
         if value is None or value == '':
             value = defaults[field]
-        if not isinstance(value, str) or value not in spec[choices]:
+        if not isinstance(value, str) or value not in choices:
             raise AppError('invalid_options', f"请选择{spec['name']}提供的频道、分类和榜型。")
         options[field] = value
 
-    fixed_period = spec.get('board_periods', {}).get(options['board'])
+    board = options['board']
+    categories = spec.get('categories_by_board', {}).get(board, spec['categories'])
+    category = supplied.get('category')
+    if category is None or category == '':
+        category = defaults['category'] if defaults['category'] in categories else categories[0]
+    if not isinstance(category, str) or category not in categories:
+        raise AppError('invalid_options', f"请选择{spec['name']}该榜提供的分类。")
+    options['category'] = category
+
+    fixed_period = spec.get('board_periods', {}).get(board)
+    periods = spec.get('periods_by_board', {}).get(board)
+    if periods is None:
+        periods = [fixed_period] if fixed_period else spec.get('periods', [])
     period = supplied.get('period')
     if period is None or period == '':
-        period = fixed_period or defaults.get('period')
+        period = defaults.get('period') if defaults.get('period') in periods else next(iter(periods), None)
     if period is not None:
-        choices = [fixed_period] if fixed_period else spec.get('periods', [defaults.get('period')])
-        if not isinstance(period, str) or period not in choices:
+        if not isinstance(period, str) or period not in periods:
             raise AppError('invalid_options', f"请选择{spec['name']}该榜提供的周期。")
         options['period'] = period
     for field, cap in (('limit', MAX_BOOKS), ('max_pages', 100)):

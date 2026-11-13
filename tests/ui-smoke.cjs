@@ -18,7 +18,7 @@ async function open({stale=false,freshSnapshot=null,history=false,expiredHeiyan=
   const dom=new JSDOM(await (await localFetch('/')).text(),{url:base+'/',runScripts:'outside-only',pretendToBeVisual:true,virtualConsole:vc});
   const makeHold=()=>{let release;const promise=new Promise(resolve=>{release=resolve});return {promise,release,captured:false}};
   let mockAuth=null;
-  const control={pending:null,viewPending:null,collectionPending:holdCollection?makeHold():null,stateRequests:0,holdNextState(){return this.pending=makeHold()},holdNextView(){return this.viewPending=makeHold()}};dom.control=control;
+  const control={pending:null,viewPending:null,collectionPending:holdCollection?makeHold():null,stateRequests:0,viewWrites:0,holdNextState(){return this.pending=makeHold()},holdNextView(){return this.viewPending=makeHold()}};dom.control=control;
   control.moreRequests=[];control.collectionJob=null;control.collectionPolls=0;
   control.overviewPolls=0;control.overviewReads=0;control.overviewJob=lateOverview?{id:'qa-overview-late',kind:'overview',status:'completed',message:'直采检查完成',public_source:{status:'running',snapshot_count:0,updated_at:'2026-11-09T12:00:00Z'}}:null;
   control.catalogRequests=[];control.textRequests=[];control.textAssets=[];control.textJob=null;control.textPolls=0;control.cancelCalls=0;control.downloadRequests=[];control.downloads=[];
@@ -44,6 +44,7 @@ async function open({stale=false,freshSnapshot=null,history=false,expiredHeiyan=
       const board = init.method === 'POST' ? JSON.parse(init.body).board : new URL(path, base).searchParams.get('board');
       return Response.json({board, status: 'empty', snapshot: null, history: []});
     }
+    if(pathname==='/api/view' && init.method==='POST')control.viewWrites++;
     if(pathname==='/api/view' && control.viewPending && !control.viewPending.captured){const held=control.viewPending;held.captured=true;await held.promise;}
     if(pathname==='/api/overview/refresh'){overviewUpdates.push(JSON.parse(init.body));return Response.json({status:'fresh',retry_after_seconds:900});}
     if(pathname==='/api/jobs/qa-overview-late'){control.overviewPolls++;return Response.json(control.overviewJob);}
@@ -475,5 +476,57 @@ async function open({stale=false,freshSnapshot=null,history=false,expiredHeiyan=
    await wait(()=>d.querySelector('.head-actions [data-action="collect"]')?.disabled===false,'Pending collection on '+id);
    checkedLong.push(id);dom.window.close();
  }
+ // A sparse saved Fanqie board must not narrow the choices on this book or on a different board.
+ const sparseScope={platform:'fanqie',channel:'男频',board:'新书榜',category:'历史脑洞'};
+ const sparse=await api('/api/import/snapshot',{snapshot:{...sparseScope,categories:['历史脑洞','来源新增题材'],
+   books:[{id:'scope-history',title:'仅属于历史新书榜',rank:1}]}});
+ await api('/api/view',{mode:'long',platform:'fanqie',snapshot_id:sparse.id,selected_id:null});
+ dom=await open();d=dom.window.document;
+ const values=id=>Array.from(d.querySelector(id).options,option=>option.value);
+ const choose=(id,value)=>{
+   const control=d.querySelector(id);assert(control && !control.disabled,'Missing choice '+id);
+   control.value=value;assert.equal(control.value,value,'Unavailable choice '+id+' '+value);
+   control.dispatchEvent(new dom.window.Event('change',{bubbles:true}));
+ };
+ const fullMale=registry.find(p=>p.id==='fanqie').categories_by_channel['男频'];
+ assert.equal(fullMale.length,19);
+ assert(fullMale.every(name=>values('#board-category').includes(name)),'Stored category list hid current male categories');
+ assert(values('#board-category').includes('来源新增题材'),'Lost newly discovered in-scope category');
+ assert(!values('#board-category').includes('民国言情'));
+ const beforeRepeat=dom.control.viewWrites, beforeDraft=collections.length;
+ choose('#board-channel','男频');
+ choose('#board-category','历史脑洞');
+ await pause(50);
+ assert.equal(dom.control.viewWrites,beforeRepeat,'Reselecting the active scope rewrote the current view');
+ assert.equal(collections.length,beforeDraft,'Reselecting the active scope started another collection');
+ assert.equal((await api('/api/state')).views.long.snapshot_id,sparse.id,'Reselecting the active scope cleared its books');
+ d.querySelector('[data-action="collection-options"]').click();
+ choose('#board','阅读榜');
+ assert(!values('#category').includes('来源新增题材'),'New-book-only metadata leaked into the reading chart');
+ choose('#channel','女频');
+ assert.equal(values('#category').length,18);
+ assert(!values('#category').includes('历史脑洞'));
+ choose('#category','职场婚恋');
+ assert.equal(collections.length,beforeDraft,'A settings draft started a collection');
+ assert.equal((await api('/api/state')).views.long.snapshot_id,sparse.id,'Draft replaced the displayed snapshot');
+ d.querySelector('#options-form').dispatchEvent(new dom.window.Event('submit',{bubbles:true,cancelable:true}));
+ await wait(()=>collections.slice(beforeDraft).some(c=>c.platform==='fanqie' && c.options.board==='阅读榜'
+   && c.options.channel==='女频' && c.options.category==='职场婚恋'),'Submitted collection did not match the chosen scope');
+ assert.equal(d.querySelector('#board-category').value,'职场婚恋');
+ assert(!d.querySelector('[data-book="scope-history"]'),'Previous genre books appeared under new selections');
+ choose('#board-channel','男频');
+ await wait(()=>d.querySelector('#board-channel')?.value==='男频' && values('#board-category').includes('东方仙侠'),'Male cold-start options missing');
+ assert.equal(values('#board-category').length,19);
+ choose('#board-category','东方仙侠');
+ await wait(()=>collections.slice(beforeDraft).some(c=>c.options.channel==='男频' && c.options.board==='阅读榜'
+   && c.options.category==='东方仙侠'),'Main controls did not request the selected male genre');
+ d.querySelector('[data-action="platform"][data-platform="ciweimao"]').click();
+ await wait(()=>d.querySelector('#board-kind')?.value==='月票榜','Missing Ciweimao options');
+ choose('#board-kind','点击榜');
+ await wait(()=>d.querySelector('#board-kind')?.value==='点击榜' && !values('#board-period').includes('总榜'),'Ciweimao retained an unsupported period');
+ assert.deepEqual(new Set(values('#board-period')),new Set(['周榜','月榜']));
+ choose('#board-period','周榜');
+ await wait(()=>collections.some(c=>c.platform==='ciweimao' && c.options.board==='点击榜' && c.options.period==='周榜'),'Ciweimao period was not sent with its board');
+ dom.window.close();
  assert.deepEqual(errors,[]);console.log(JSON.stringify({passed:true,checks:82+dashboardChecks+favoriteChecks+openingChecks+longChecks,dashboard_checks:dashboardChecks,favorite_checks:favoriteChecks,opening_checks:openingChecks,long_platform_checks:longChecks,long_platforms:checkedLong,layout_verified:false,external_platform_requests:0}));
 })().catch(e=>{console.error(e);process.exitCode=1;process.exit(1)});
