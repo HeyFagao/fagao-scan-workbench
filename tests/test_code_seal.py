@@ -475,6 +475,50 @@ print(json.dumps({'permit':membership.MAX_PERMIT_SECONDS,'network':network.POLIC
         self.assertEqual(discard.call_count, 1)
         self.assertNotIn('envelope', stream.getvalue())
 
+    def test_cli_success_with_chinese_data_path_is_safe_on_a_cp1252_stdout_pipe(self):
+        data = self.base / '本机资料'
+        data.mkdir()
+        protector = SecretProtector(data, purpose=seal.PURPOSE, native=False)
+        inventory = self.base / '原始清单.json'
+        inventory.write_text(json.dumps(self.originals), encoding='utf-8')
+        command = ['code_seal.py', 'seal-release', '--release', str(self.release),
+                   '--data-root', str(data), '--inventory-file', str(inventory)]
+        output = io.BytesIO()
+        narrow = io.TextIOWrapper(output, encoding='cp1252', errors='strict', write_through=True)
+        with patch.object(sys, 'argv', command), patch.object(seal, 'SecretProtector', return_value=protector), \
+                redirect_stdout(narrow):
+            result = seal.main()
+        encoded = output.getvalue()
+        narrow.detach()
+        self.assertEqual(result, 0)
+        self.assertTrue(encoded.isascii())
+        receipt = json.loads(encoded.decode('ascii'))
+        self.assertTrue(receipt['ok'])
+        self.assertEqual(receipt['code_seal']['data_root'], str(data.resolve()))
+        self.assertTrue(seal.verify_seal(self.release, receipt['code_seal'], self.originals, data,
+                                        protector=protector))
+
+    def test_cli_failure_keeps_chinese_diagnostic_safe_on_a_cp1252_stdout_pipe(self):
+        inventory = self.base / '原始清单.json'
+        damaged = dict(self.originals, **{'fagao/membership.py': '0' * 64})
+        inventory.write_text(json.dumps(damaged), encoding='utf-8')
+        command = ['code_seal.py', 'seal-release', '--release', str(self.release),
+                   '--data-root', str(self.base / '本机资料'), '--inventory-file', str(inventory)]
+        output = io.BytesIO()
+        narrow = io.TextIOWrapper(output, encoding='cp1252', errors='strict', write_through=True)
+        with patch.object(sys, 'argv', command), redirect_stdout(narrow), \
+                patch.object(seal, 'SecretProtector', side_effect=AssertionError('failure must precede OS access')):
+            result = seal.main()
+        encoded = output.getvalue()
+        narrow.detach()
+        self.assertEqual(result, 1)
+        self.assertTrue(encoded.isascii())
+        receipt = json.loads(encoded.decode('ascii'))
+        self.assertFalse(receipt['ok'])
+        self.assertEqual(receipt['error']['reason'], 'source_modified')
+        self.assertIn('已有资料仍保留', receipt['error']['message'])
+        self.assertTrue(receipt['error']['repair_required'])
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -112,6 +112,15 @@ def emit_json(value: dict, *, file=None) -> None:
     print(json.dumps(value, ensure_ascii=True), file=file, flush=True)
 
 
+def configure_output() -> None:
+    # -I ignores encoding environment variables, including when WorkBuddy
+    # captures the command in a Windows legacy-codepage pipe.
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8", errors="backslashreplace")
+
+
 def sanitize_environment(environment: dict) -> dict:
     """Keep runtime settings, but never inherit a terminal's proxy lifetime."""
     unsafe_python = {'pythonpath','pythonhome','pythonstartup','pythoninspect','pythonuserbase','pythonpycacheprefix'}
@@ -405,6 +414,7 @@ def run_foreground(data_dir: Path, port: int, readiness: dict, *, submissions: b
 
 
 def main() -> int:
+    configure_output()
     parser = argparse.ArgumentParser(description="启动或唤起发糕扫榜工作台")
     parser.add_argument("--data-dir", type=Path, default=default_data_dir())
     parser.add_argument("--port", type=int, default=18376)

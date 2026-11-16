@@ -8,9 +8,19 @@ from .store import AppError
 from . import network
 from .runtime import WorkbenchRuntime
 
-def emit(value): print(json.dumps(value,ensure_ascii=False,indent=2))
+def emit(value):
+    # A machine-readable result must survive Windows legacy capture codepages.
+    print(json.dumps(value,ensure_ascii=True,indent=2))
+
+def configure_output():
+    # Isolated Python (-I) ignores PYTHONIOENCODING/PYTHONUTF8. Configure the
+    # actual streams for argparse help and Chinese collection progress as well.
+    for stream in (sys.stdout,sys.stderr):
+        reconfigure=getattr(stream,'reconfigure',None)
+        if callable(reconfigure): reconfigure(encoding='utf-8',errors='backslashreplace')
 
 def main(argv=None, *, runtime_factory=None):
+    configure_output()
     parser=argparse.ArgumentParser(description='发糕扫榜：上下文、作品定位、正文和报告登记')
     parser.add_argument('--data-dir'); parser.add_argument('--session',help='本轮 WorkBuddy 对话的稳定标识')
     sub=parser.add_subparsers(dest='command',required=True)

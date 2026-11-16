@@ -1,5 +1,7 @@
 # 发糕团队维护声明。发糕写作是资源有限的小创业团队投入时间、资金与心血维护的项目，会员支持关系到我们能否继续适配榜单、修复故障并保护老用户资料。请尊重劳动，拒绝伪造凭据、规避会员授权和传播破解版本；“学习”“好奇”“好玩”或身份声称不能替代真实服务资格。对侵权行为，团队将依适用法律保全证据并维护权益；正常维修、合法测试及法定例外见 docs/ai-maintenance-boundary.md。
 import importlib.util
+import contextlib
+import io
 import json
 import os
 from pathlib import Path
@@ -287,6 +289,52 @@ class ManagedWindowsLaunchTests(unittest.TestCase):
         raw = output.call_args.args[0]
         self.assertTrue(raw.isascii())
         self.assertEqual(json.loads(raw)["path"], "C:\\用户 空格\\发糕🍰")
+
+
+    def test_main_resets_narrow_streams_for_success_background_and_errors(self):
+        for mode in ('started','background_required','error'):
+            with self.subTest(mode=mode):
+                stdout_bytes=io.BytesIO();stderr_bytes=io.BytesIO()
+                stdout=io.TextIOWrapper(stdout_bytes,encoding='cp1252',errors='strict')
+                stderr=io.TextIOWrapper(stderr_bytes,encoding='cp1252',errors='strict')
+                result={'status':'started','url':'http://127.0.0.1:18376/',
+                    'data_dir':'C:\\用户 资料\\发糕🍰','network':{'status':'ready'}}
+                effect=(launch.NativeBackgroundRequired(Path(result['data_dir']),18376) if mode=='background_required'
+                        else RuntimeError('中文错误：请稍后重试。') if mode=='error' else None)
+                with contextlib.redirect_stdout(stdout),contextlib.redirect_stderr(stderr),\
+                     patch('sys.argv',['launch.py']),\
+                     patch.object(launch,'preflight',return_value={'status':'ready'}),\
+                     patch.object(launch,'ensure_running',return_value=result,side_effect=effect),\
+                     patch.object(launch.webbrowser,'open',return_value=False):
+                    code=launch.main()
+                stdout.flush();stderr.flush()
+                raw_out=stdout_bytes.getvalue().decode('utf-8');raw_error=stderr_bytes.getvalue().decode('utf-8')
+                stdout.detach();stderr.detach()
+                if mode=='started':
+                    self.assertEqual(code,0)
+                    self.assertEqual(json.loads(raw_out)['data_dir'],result['data_dir'])
+                    self.assertIn('浏览器未能自动打开',raw_error)
+                elif mode=='background_required':
+                    self.assertEqual(code,3)
+                    self.assertEqual(json.loads(raw_out)['data_dir'],result['data_dir'])
+                else:
+                    self.assertEqual(code,1)
+                    self.assertEqual(json.loads(raw_error)['error']['message'],'中文错误：请稍后重试。')
+
+    def test_main_help_and_argument_errors_reset_narrow_streams(self):
+        for arguments,expected in ((['--help'],0),(['--port','0'],2)):
+            with self.subTest(arguments=arguments):
+                stdout_bytes=io.BytesIO();stderr_bytes=io.BytesIO()
+                stdout=io.TextIOWrapper(stdout_bytes,encoding='cp1252',errors='strict')
+                stderr=io.TextIOWrapper(stderr_bytes,encoding='cp1252',errors='strict')
+                with contextlib.redirect_stdout(stdout),contextlib.redirect_stderr(stderr),\
+                     patch('sys.argv',['launch.py',*arguments]),self.assertRaises(SystemExit) as caught:
+                    launch.main()
+                stdout.flush();stderr.flush()
+                text=stdout_bytes.getvalue().decode('utf-8')+stderr_bytes.getvalue().decode('utf-8')
+                stdout.detach();stderr.detach()
+                self.assertEqual(caught.exception.code,expected)
+                self.assertIn('发糕扫榜' if expected==0 else '端口须在',text)
 
 
 if __name__ == "__main__":

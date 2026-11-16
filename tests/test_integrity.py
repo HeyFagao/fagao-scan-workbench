@@ -201,6 +201,71 @@ class IntegrityTests(unittest.TestCase):
         self.assertEqual(wrong.returncode,1)
         self.assertEqual(json.loads(wrong.stdout)['error']['code'],'fixed_data_directory')
 
+    def test_fixed_cli_resets_narrow_streams_for_chinese_results_errors_and_progress(self):
+        self.package_fixture()
+        source='''import json, sys
+def main(arguments):
+    title = "盐选故事：发糕🍰"
+    print("正在读取：" + title, file=sys.stderr)
+    value = {"title":title,"data_dir":arguments[1]}
+    if "fail" in arguments:
+        value = {"error":{"message":"暂时无法读取，请重试。","candidates":[value]}}
+    print(json.dumps(value,ensure_ascii=False))
+    return 1 if "fail" in arguments else 0
+'''
+        target=self.write('fagao/__main__.py',source.encode('utf-8'))
+        self.metadata['files']['fagao/__main__.py']=hashlib.sha256(target.read_bytes()).hexdigest();self.receipt()
+        install=self.root.parent.parent
+        renamed=install.with_name('中文 安装🍰');install.rename(renamed)
+        self.root=renamed/'releases'/self.root.name;install=renamed
+        spec=importlib.util.spec_from_file_location('fagao_test_narrow_cli',SOURCE/'scripts/bootstrap.py')
+        bootstrap=importlib.util.module_from_spec(spec);spec.loader.exec_module(bootstrap)
+        entry=install/'open-cli.py';entry.write_text(bootstrap.OPEN_CLI_SCRIPT,encoding='utf-8')
+        data=str(self.base/'中文 资料🍰')
+        (install/'current.json').write_text(json.dumps({'app':integrity.APP,'release_id':self.root.name,
+            'data_dir':data,'interpreter':str(Path(sys.executable).resolve()),'port':18376}),encoding='utf-8')
+        driver=('import runpy,sys;'
+            'sys.stdout.reconfigure(encoding="cp1252",errors="strict");'
+            'sys.stderr.reconfigure(encoding="cp1252",errors="strict");'
+            'sys.argv=sys.argv[1:];runpy.run_path(sys.argv[0],run_name="__main__")')
+        for command,expected in (('state',0),('fail',1)):
+            with self.subTest(command=command):
+                result=subprocess.run([sys.executable,'-I','-B','-c',driver,str(entry),command],
+                    capture_output=True,timeout=10,
+                    env={**os.environ,'PYTHONIOENCODING':'ascii','PYTHONUTF8':'0'})
+                self.assertEqual(result.returncode,expected,result.stderr.decode('utf-8'))
+                value=json.loads(result.stdout.decode('utf-8'))
+                item=value if command=='state' else value['error']['candidates'][0]
+                self.assertEqual(item,{'title':'盐选故事：发糕🍰','data_dir':data})
+                self.assertIn('正在读取：盐选故事：发糕🍰',result.stderr.decode('utf-8'))
+
+    def test_cli_machine_result_remains_lossless_on_an_unconfigurable_narrow_stream(self):
+        from fagao.__main__ import emit
+        class NarrowCapture:
+            def __init__(self):self.raw=bytearray()
+            def write(self,text):self.raw.extend(text.encode('cp1252','strict'))
+            def flush(self):pass
+        stream=NarrowCapture()
+        value={'title':'知乎盐选🍰','error':{'message':'会员资料保留，请稍后重试。'}}
+        with contextlib.redirect_stdout(stream):emit(value)
+        self.assertTrue(bytes(stream.raw).isascii())
+        self.assertEqual(json.loads(stream.raw),value)
+
+    def test_cli_help_and_parser_errors_reset_narrow_streams(self):
+        from fagao.__main__ import main
+        for arguments,expected in ((['--help'],0),(['state','--中文参数'],2)):
+            with self.subTest(arguments=arguments):
+                stdout_bytes=io.BytesIO();stderr_bytes=io.BytesIO()
+                stdout=io.TextIOWrapper(stdout_bytes,encoding='cp1252',errors='strict')
+                stderr=io.TextIOWrapper(stderr_bytes,encoding='cp1252',errors='strict')
+                with contextlib.redirect_stdout(stdout),contextlib.redirect_stderr(stderr),self.assertRaises(SystemExit) as caught:
+                    main(arguments)
+                stdout.flush();stderr.flush()
+                output=stdout_bytes.getvalue().decode('utf-8')+stderr_bytes.getvalue().decode('utf-8')
+                stdout.detach();stderr.detach()
+                self.assertEqual(caught.exception.code,expected)
+                self.assertIn('发糕扫榜' if expected==0 else '中文参数',output)
+
     def test_secure_storage_deferred_reason_remains_recoverable(self):
         error=integrity.IntegrityError('key_locked',{'repair_required':False,'deferred':True,
             'recovery':'unlock_keychain','message':'系统安全存储暂时锁定。'})

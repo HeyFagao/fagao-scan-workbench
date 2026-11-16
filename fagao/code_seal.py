@@ -470,7 +470,9 @@ def main():
         original = _json(_read(args.inventory_file, MAX_RECEIPT_BYTES))
         if args.operation == 'seal-release':
             result = seal_release(args.release, original, args.data_root)
-            print(json.dumps({'ok': True, 'code_seal': result}, ensure_ascii=False))
+            # This is a machine protocol. Isolated Windows Python ignores
+            # PYTHONIOENCODING and may expose an ASCII/legacy-codepage pipe.
+            print(json.dumps({'ok': True, 'code_seal': result}, ensure_ascii=True))
         else:
             if args.metadata_file is None:
                 raise CodeSealError('missing_metadata')
@@ -483,7 +485,7 @@ def main():
                 print(json.dumps({'ok': True, 'discarded': True}))
         return 0
     except CodeSealError as exc:
-        print(json.dumps({'ok': False, 'error': exc.diagnostic()}, ensure_ascii=False))
+        print(json.dumps({'ok': False, 'error': exc.diagnostic()}, ensure_ascii=True))
         return 1
 
 
