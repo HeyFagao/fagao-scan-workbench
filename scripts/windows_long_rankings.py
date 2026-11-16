@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # 发糕团队维护声明。会员的支持让这个小团队能够支付服务器费用，继续为写作者维护榜单。请勿伪造会员凭据或制作、传播绕过订阅校验的版本。侵权责任依适用法律认定，法定例外与许可说明见 docs/ai-maintenance-boundary.md。
-"""Install the pinned Windows client and verify the new long rankings with isolated data."""
+"""Install the pinned Windows client and verify ranking sources with isolated data."""
 from __future__ import annotations
 
 import argparse
@@ -34,21 +34,33 @@ def captured(command, cwd):
 
 def verify_platforms(source, receipt):
     from fagao.long_rankings import COLLECTORS
+    from fagao.discovery import COLLECTORS as DISCOVERY_COLLECTORS
 
     registered = sorted(COLLECTORS)
     need(registered, "No new long ranking collector installed")
     tests = source / "tests"
     need(all((tests / f"test_{name}_rank.py").is_file() for name in registered),
          "An enabled platform has no parser fixture")
+    discovery = sorted(DISCOVERY_COLLECTORS)
+    need(set(discovery) == {"hongguo_official", "fanqie_recommend", "dianzhong", "shuqi"},
+         "The four new source collectors were not installed")
     backend_tests = 0
-    for pattern in ("test_long_platform_flow.py", "test_*_rank.py"):
+    backend_checks = []
+    for pattern in ("test_long_platform_flow.py", "test_*_rank.py", "test_discovery_flow.py",
+                    "test_fanqie_recommend.py", "test_recommendation_runtime.py",
+                    "test_insight_history_store.py", "test_ranking_trends.py"):
         output = captured([sys.executable, "-B", "-m", "unittest", "discover", "-s", "tests",
                            "-p", pattern, "-v"], source)
         result = re.search(r"^Ran (\d+) tests? in ", output, re.MULTILINE)
-        need(result and int(result[1]) > 0 and output.strip().endswith("OK"),
+        need(result and int(result[1]) > 0
+             and re.search(r"^OK(?: \(skipped=\d+\))?$", output, re.MULTILINE),
              f"The backend regression {pattern} did not run cleanly")
+        skipped = re.search(r"^OK \(skipped=(\d+)\)$", output, re.MULTILINE)
+        backend_checks.append({"pattern": pattern, "tests": int(result[1]),
+                               "skipped": int(skipped[1]) if skipped else 0})
         backend_tests += int(result[1])
     receipt["backend_tests"] = backend_tests
+    receipt["backend_checks"] = backend_checks
 
     # Both the live loopback fixture and its DOM run the installed release.
     # The harness supplies an isolated account and intercepts every upstream fetch.
@@ -58,6 +70,17 @@ def verify_platforms(source, receipt):
     need(sorted(ui["long_platforms"]) == registered and ui["long_platform_checks"] > 0
          and ui["external_platform_requests"] == 0, "New platform UI coverage incomplete")
     receipt.update(ui=ui, platforms=registered)
+
+    # This DOM suite checks the installed four sources, fifty-book settings,
+    # drama metadata, account changes and read-only access with intercepted fetches.
+    source_output = captured(["node", "--test", "tests/source-upgrade-ui.cjs"], source)
+    source_tests = re.search(r"^# tests (\d+)\s*$", source_output, re.MULTILINE)
+    need(source_tests and int(source_tests[1]) > 0
+         and re.search(r"^# fail 0\s*$", source_output, re.MULTILINE),
+         "New source UI regression did not run cleanly")
+    receipt.update(discovery_platforms=discovery,
+                   source_ui={"passed": True, "tests": int(source_tests[1]),
+                              "external_platform_requests": 0})
 
 
 def verify_install(root, receipt):

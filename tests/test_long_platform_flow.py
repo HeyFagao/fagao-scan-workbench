@@ -56,7 +56,7 @@ class LongPlatformFlowTests(unittest.TestCase):
                     self.assertEqual(code, 0, snap)
                     for dim in ('channel', 'category', 'board'):
                         self.assertEqual(received[0][dim], info[platform]['default_options'][dim])
-                    self.assertEqual(received[0]['limit'], 100)
+                self.assertEqual(received[0]['limit'], long_rankings.PLATFORMS[platform]['max_limit'])
                 self.assertEqual((snap['mode'], snap['data_date'], snap['books'][0]['rank']),
                                  ('long', None, 9))
                 store.toggle_favorite(snap['id'], '71', True)

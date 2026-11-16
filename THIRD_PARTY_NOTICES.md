@@ -103,3 +103,13 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ## 本地小说投稿
 
 [投稿组件第三方许可](docs/submission-third-party/NOTICE.txt)随组件提供。各平台发行归档另附对应 Electron、Chromium 和 JavaScript 依赖的许可文本。
+
+## 2026-11-16 新来源与趋势参考
+
+红果官方榜、点众排行榜和书旗当前榜的 Python 采集器由本工程独立实现，读取各自正常公开页面。红果的公开榜单结构和字段核查参考 [SentDz/drama-radar](https://github.com/SentDz/drama-radar)；书旗入口核查参考 [novel-author-platform](https://github.com/sssssssanmao/novel-author-platform)。核查时上述两仓库未发现独立许可证。本工程保留来源说明，仅自行实现页面适配。
+
+番茄短篇推荐通过正常浏览器呈现读取 [wen1701/FanqieRankTracker 的公开推荐页面](https://wen1701.github.io/FanqieRankTracker/shorts.html)，题材和作品资料以该页面实际返回为准。该项目 README 声明 MIT，核查时未见独立 LICENSE 文件。推荐页面依赖其运营方服务，工作台的浏览器适配器与卡片界面由本工程独立编写。
+
+番茄、七猫的追榜功能参考 [FanqieRankTracker](https://github.com/scoful/FanqieRankTracker) 和采用 MIT 许可的 [QiMaoRankTracker2](https://github.com/siweimidu/QiMaoRankTracker2) 的历史快照与趋势功能。本工程按已有不可变快照独立计算同来源、同范围的变化和历史曲线。
+
+浏览器准备使用本项目已锁定的 Playwright 1.62.1，采用 Apache-2.0 许可。通过官方 npm 包和 Playwright 浏览器下载机制准备的组件保留各自许可，运行资料和缓存保存在本机私有目录。

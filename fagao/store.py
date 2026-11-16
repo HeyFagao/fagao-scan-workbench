@@ -15,6 +15,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 from .qidian_boards import PLATFORM as QIDIAN_PLATFORM
 from .long_rankings import PLATFORMS as LONG_RANKING_PLATFORMS
+from .discovery import PLATFORMS as DISCOVERY_PLATFORMS
 from .overseas import OVERSEAS_PLATFORMS
 from .ciweimao_boards import PLATFORM as CIWEIMAO_PLATFORM
 
@@ -35,6 +36,7 @@ PLATFORMS = [
     QIDIAN_PLATFORM,
     CIWEIMAO_PLATFORM,
     *LONG_RANKING_PLATFORMS.values(),
+    *DISCOVERY_PLATFORMS.values(),
     {'id':'heiyan','name':'黑岩故事会','mode':'short','status':'external','message':'打开腾讯文档书单，在原站完成登录','source_url':'https://docs.qq.com/sheet/DYVNwaVJZV2ZxTWl3?tab=q1ans7'},
     {'id':'fanqie_short','name':'番茄短故事','mode':'short','status':'unavailable','message':'热门故事入口待实机验证；可导入来源明确的书目'},
 ] + OVERSEAS_PLATFORMS
@@ -328,7 +330,7 @@ class Store:
         snap={'id':uuid.uuid4().hex,'platform':platform,'mode':p['mode'],'channel':text(data.get('channel'),100),'category':text(data.get('category'),100),'board':text(data.get('board') or ('书库' if platform=='heiyan' else '未注明榜型'),100),'source_url':safe_url(data.get('source_url')),'data_date':text(data.get('data_date'),100) or None,'collected_at':data.get('collected_at') or timestamp,'created_at':timestamp,'imported':imported,'books':valid,'books_count':len(valid),'warnings':[text(x,1000) for x in warnings[:20]]}
         if p['mode']=='overseas':
             snap.update(language='en',content_type='short' if platform=='goodnovel_short' else 'long')
-        for key in ('requested_count','available_count','source_total'):
+        for key in ('requested_count','available_count','source_total','source_rows_seen'):
             if key in data and isinstance(data[key],int) and not isinstance(data[key],bool) and data[key]>=0: snap[key]=data[key]
         pagination=clean_pagination(data.get('pagination'))
         if pagination is not None: snap['pagination']=pagination
@@ -336,6 +338,8 @@ class Store:
         snap['rank_version']=text(data.get('rank_version'),100) or None
         snap['source_id']=text(data.get('source_id'),180) or 'direct'
         snap['source_revision']=text(data.get('source_revision'),180) or None
+        if data.get('source_label_date'):
+            snap['source_label_date']=text(data['source_label_date'],200)
         provenance=data.get('provenance')
         if isinstance(provenance,dict):
             snap['provenance']={key:text(provenance[key],800) for key in (
@@ -379,6 +383,25 @@ class Store:
         """Full ranking records only, without loading reports or user texts."""
         with self.connect() as c:
             return [json.loads(r[0]) for r in c.execute('SELECT body FROM snapshots ORDER BY created_at DESC')]
+
+    def insight_history(self, snapshot, limit=100):
+        """Read bounded, comparable book records after selecting their small metadata rows."""
+        from .insights import select_trend_history
+
+        if type(limit) is not int or not 1 <= limit <= 200:
+            raise AppError('invalid_history_limit', '趋势历史上限应为 1 到 200。')
+        with self.connect() as c:
+            metadata = c.execute('''
+                SELECT m.body FROM snapshot_metadata m JOIN snapshots s ON s.id=m.id
+                WHERE json_extract(m.body,'$.platform')=?
+                  AND json_extract(m.body,'$.mode')=?
+                  AND COALESCE(json_extract(m.body,'$.channel'),'')=?
+                  AND COALESCE(NULLIF(json_extract(m.body,'$.source_id'),''),'direct')=?
+                ORDER BY m.created_at DESC
+            ''', (snapshot.get('platform'), snapshot.get('mode'), snapshot.get('channel') or '',
+                  snapshot.get('source_id') or 'direct'))
+            ids = select_trend_history(snapshot, (json.loads(row[0]) for row in metadata), limit=limit)
+            return [self._snapshot(c, sid) for sid in ids]
 
     def overview_history(self):
         """Load current scopes and comparable baselines, not every page preview."""

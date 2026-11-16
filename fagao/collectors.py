@@ -996,6 +996,12 @@ def collect(platform, options, data_dir, progress=None):
     from .long_rankings import COLLECTORS, collection_options
     if platform in COLLECTORS:
         return COLLECTORS[platform].collect(collection_options(platform, options), progress)
+    from .discovery import COLLECTORS as DISCOVERY_COLLECTORS, collection_options as discovery_options
+    if platform in DISCOVERY_COLLECTORS:
+        selected = discovery_options(platform, options)
+        if platform == 'fanqie_recommend':
+            return DISCOVERY_COLLECTORS[platform].collect(selected, progress, data_dir=data_dir)
+        return DISCOVERY_COLLECTORS[platform].collect(selected, progress)
     from .overseas import OVERSEAS_PLATFORMS, collect_overseas
     if platform in {item['id'] for item in OVERSEAS_PLATFORMS}:
         return collect_overseas(platform, options, data_dir, progress)

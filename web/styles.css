@@ -717,3 +717,40 @@ dialog[data-kind="text"],dialog[data-kind="insights"]{width:min(850px,calc(100vw
   .appearance-panel { left: 0; right: auto; }
 }
 @media (pointer: coarse) { .appearance-trigger { min-height: 40px; } }
+
+/* Official drama metadata and saved ranking history. */
+.daily-title-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.drama-content .book-cover { width: 70px; height: 100px; border-radius: 5px; }
+.drama-content .book-row { align-items: start; }
+.drama-content .row-summary { -webkit-line-clamp: 3; line-height: 1.75; }
+.drama-content .book-meta:empty, .drama-content .author:empty { display: none; }
+.drama-content .detail .cover-large { width: 112px; height: 158px; }
+.drama-content .detail h2 { line-height: 1.55; }
+.book-trend-button { display: flex; align-items: center; justify-content: space-between; width: 100%; padding: 12px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); margin: 18px 0; color: var(--chart-link); text-align: left; font-size: 12px; }
+.book-trend-button:hover { color: var(--rose); }
+.trend-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 16px; }
+.trend-heading > span { color: var(--muted); font-size: 11px; }
+.trend-summary { display: flex; flex-wrap: wrap; gap: 16px 28px; padding: 12px 0; color: var(--muted); font-size: 12px; }
+.trend-summary strong { display: block; color: var(--ink); font-size: 22px; font-weight: 500; margin-top: 6px; font-variant-numeric: tabular-nums; }
+.trend-chart { display: block; width: 100%; max-height: 190px; margin: 18px 0; overflow: visible; }
+.trend-chart polyline { fill: none; stroke: var(--chart-blue); stroke-width: 2.5; stroke-linejoin: round; stroke-linecap: round; }
+.trend-chart circle { fill: var(--chart-blue); stroke: var(--surface); stroke-width: 2; }
+.trend-chart text { fill: var(--chart-label); font-size: 10px; }
+.trend-chart .trend-grid { fill: none; stroke: var(--line); stroke-width: 1; }
+.trend-history { max-height: 280px; }
+.trend-section > .insights-table:not(.trend-history) { max-height: 360px; }
+.trend-section .insights-table th { position: sticky; top: 0; z-index: 1; background: var(--surface); }
+.trend-first-seen { display: block; color: var(--muted); font-size: 10px; margin-top: 5px; }
+.trend-cross-board { border-top: 1px solid var(--line); padding-top: 12px; margin-top: 14px; font-size: 12px; }
+.trend-cross-board summary { cursor: pointer; color: var(--text-secondary); }
+.trend-cross-board summary > span { color: var(--muted); margin-left: 10px; }
+.trend-cross-board p { display: grid; gap: 5px; padding: 9px 0; }
+.trend-cross-board button { text-align: left; color: var(--chart-link); }
+.trend-cross-board p > span { color: var(--muted); font-size: 11px; line-height: 1.7; }
+@media (max-width:640px) {
+  .drama-content .book-cover { width: 52px; height: 75px; }
+  .drama-content .row-summary { -webkit-line-clamp: 2; }
+  .trend-summary { gap: 14px 24px; }
+  .trend-summary strong { font-size: 19px; }
+  .daily-title-actions { gap: 6px; }
+}

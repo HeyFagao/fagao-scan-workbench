@@ -8,7 +8,8 @@ from . import network
 from .collectors import CollectorError, USER_AGENT, _notify
 
 
-HOSTS = {'b.faloo.com', 'wap.faloo.com', 'www.qimao.com', 'www.jjwxc.net', 'book.zongheng.com'}
+HOSTS = {'b.faloo.com', 'wap.faloo.com', 'www.qimao.com', 'www.jjwxc.net', 'book.zongheng.com',
+         'hongguoduanju.com', 'www.ishugui.com', 'www.shuqi.com'}
 MAX_BYTES = 6 * 1024 * 1024
 
 

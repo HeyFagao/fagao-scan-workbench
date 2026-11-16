@@ -29,6 +29,8 @@ class ResolutionError(ValueError):
 PLATFORM_NAMES = {
     "fanqie": "番茄", "qidian": "起点", "ciweimao": "刺猬猫",
     "faloo": "飞卢", "qimao": "七猫", "jjwxc": "晋江", "zongheng": "纵横",
+    "hongguo_official": "红果短剧", "dianzhong": "点众短篇", "shuqi": "书旗小说",
+    "fanqie_recommend": "番茄短篇推荐",
     "heiyan": "黑岩故事会", "fanqie_short": "番茄短故事",
     "goodnovel":"GoodNovel", "goodnovel_short":"GoodNovel 短篇", "meganovel":"MegaNovel",
     "dreame":"Dreame", "webnovel":"Webnovel", "royalroad":"Royal Road", "scribblehub":"Scribble Hub",
@@ -38,12 +40,15 @@ PLATFORM_ALIASES = {
     "goodnovel": ("goodnovel", "good novel"), "meganovel": ("meganovel", "mega novel"),
     "dreame": ("dreame",), "webnovel": ("webnovel", "web novel"),
     "royalroad": ("royalroad", "royal road"), "scribblehub": ("scribblehub", "scribble hub"),
+    "fanqie_recommend": ("番茄短篇推荐", "番茄推荐", "fanqie_recommend"),
     "fanqie_short": ("番茄短故事", "番茄短篇", "fanqie_short"),
     "fanqie": ("番茄", "fanqie"), "qidian": ("起点", "qidian"),
     "ciweimao": ("刺猬猫", "ciweimao"),
     "faloo": ("飞卢", "faloo"), "qimao": ("七猫", "qimao"),
     "jjwxc": ("晋江", "jjwxc"), "zongheng": ("纵横", "zongheng"),
     "heiyan": ("黑岩", "heiyan"),
+    "hongguo_official": ("红果", "hongguo_official"),
+    "dianzhong": ("点众", "dianzhong"), "shuqi": ("书旗", "shuqi"),
 }
 OVERSEAS_IDS = {"goodnovel","goodnovel_short","meganovel","dreame","webnovel","royalroad","scribblehub"}
 CHANNEL_ALIASES = {
@@ -140,6 +145,7 @@ def _clock(context: dict):
 def _scope(snapshot: dict) -> str:
     return " · ".join(str(x) for x in (
         PLATFORM_NAMES.get(snapshot.get("platform"), snapshot.get("platform")),
+        "短剧" if snapshot.get('platform') == 'hongguo_official' else
         {"long":"长篇","short":"短篇","overseas":"海外网文"}.get(snapshot.get("mode"), snapshot.get("mode")),
         snapshot.get("channel"), snapshot.get("category"), snapshot.get("board"), snapshot.get("period"),
         snapshot.get("data_date") or snapshot.get("collected_at"),
@@ -172,6 +178,8 @@ def _book(snapshot: dict, book_id: Any) -> dict:
 
 def _constraints(query: str, snapshots: list[dict]) -> dict:
     from .long_rankings import PLATFORMS as domestic_lists
+    from .discovery import PLATFORMS as discovery_lists
+    registered_lists = {**domestic_lists, **discovery_lists}
 
     constraints: dict[str, str] = {}
     if re.search(r"长篇|(?<![a-z])long(?![a-z])", query):
@@ -182,7 +190,8 @@ def _constraints(query: str, snapshots: list[dict]) -> dict:
         constraints["mode"] = "short"
     for key, aliases in PLATFORM_ALIASES.items():
         if any(_contains(query, alias) for alias in aliases):
-            if (constraints.get("platform"),key) in (("fanqie_short","fanqie"),("goodnovel_short","goodnovel")):
+            if (constraints.get("platform"),key) in (("fanqie_short","fanqie"),("goodnovel_short","goodnovel"),
+                                                     ("fanqie_recommend","fanqie"),("fanqie_recommend","fanqie_short")):
                 continue
             if "platform" in constraints and constraints["platform"] != key:
                 raise ResolutionError("ambiguous_platform", "请指定这次分析的平台。")
@@ -201,11 +210,11 @@ def _constraints(query: str, snapshots: list[dict]) -> dict:
     if constraints.get("platform") == "fanqie" and constraints.get("mode") == "short":
         constraints["platform"] = "fanqie_short"
     platform = constraints.get("platform")
-    domestic = domestic_lists.get(platform)
-    if domestic and constraints.get("mode") == "short":
-        raise ResolutionError("incompatible_scope", "此平台在工作台提供长篇榜单。")
+    domestic = registered_lists.get(platform)
+    if domestic and constraints.get("mode") not in (None, domestic['mode']):
+        raise ResolutionError("incompatible_scope", "作品类型与所选平台不一致。")
     if (platform in ("fanqie", "qidian", "ciweimao") or domestic) and "mode" not in constraints:
-        constraints["mode"] = "long"
+        constraints["mode"] = domestic['mode'] if domestic else "long"
     if constraints.get("platform") in ("heiyan", "fanqie_short"):
         if constraints.get("mode") == "long":
             raise ResolutionError("incompatible_scope", "该来源是短篇书库，请指定对应的短篇作品。")
@@ -220,7 +229,7 @@ def _constraints(query: str, snapshots: list[dict]) -> dict:
             constraints[field] = detected[0]
     scoped_snapshots = [s for s in snapshots if not platform or s.get("platform") == platform]
     source_boards={_normalize(s.get("board")) for s in scoped_snapshots if s.get("board") and
-                   (s.get("mode")=="overseas" or s.get("platform") in domestic_lists)}
+                   (s.get("mode")=="overseas" or s.get("platform") in registered_lists)}
     if domestic:
         source_boards.update(domestic['boards'])
         for field, choices in (('channel', domestic['channels']), ('period', domestic.get('periods', []))):

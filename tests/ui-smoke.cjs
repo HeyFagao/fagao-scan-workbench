@@ -300,7 +300,7 @@ async function open({stale=false,freshSnapshot=null,history=false,expiredHeiyan=
  const beforeCustom=collections.length;dom=await open({storedOptions:{fanqie:{limit:75,max_pages:25}}});await wait(()=>collections.length>beforeCustom,'custom collection options did not initialize');assert.equal(collections.at(-1).options.limit,75);assert.equal(collections.at(-1).options.max_pages,25);dom.window.close();
  const beforeMigration=collections.length;dom=await open({storedOptions:{fanqie:{limit:1000,max_pages:100}}});await wait(()=>collections.length>beforeMigration,'previous default did not initialize');assert.equal(collections.at(-1).options.limit,10000);dom.window.close();
  // Observations use the real local statistics API, including truthful empty states.
- dom=await open();d=dom.window.document;d.querySelector('[data-action="insights"]').click();await wait(()=>d.querySelector('.insights-summary'),'observations not rendered');assert.match(d.querySelector('#dialog-body').textContent,/没有同时提供在读/);assert.match(d.querySelector('#dialog-body').textContent,/没有有效的来源数据日期/);assert(!d.querySelector('.insights-table'),'missing metrics were invented');dom.window.close();
+ dom=await open();d=dom.window.document;d.querySelector('[data-action="insights"]').click();await wait(()=>d.querySelector('.insights-summary'),'observations not rendered');assert.match(d.querySelector('#dialog-body').textContent,/没有同时提供在读/);assert.match(d.querySelector('#dialog-body').textContent,/没有有效的来源数据日期/);assert(!d.querySelector('[aria-label="每万字在读统计表"]'),'missing metrics were invented');assert(!d.querySelector('[aria-label="历史记录变化统计表"]'),'missing source dates were invented');dom.window.close();
  await api('/api/import/snapshot',{snapshot:{platform:'fanqie',channel:'女频',category:'古言脑洞',board:'新书榜',data_date:'2026-11-01',books:[{id:'qa-observe',title:'穿越后，我成为女帝',rank:2,metrics:[{name:'在读',value:100},{name:'字数',value:10000}]}]}});
  const observation=await api('/api/import/snapshot',{snapshot:{platform:'fanqie',channel:'女频',category:'古言脑洞',board:'新书榜',data_date:'2026-11-04',books:[{id:'qa-observe',title:'穿越后，我成为女帝',rank:1,metrics:[{name:'在读',value:150},{name:'字数',value:10000}]}]}});
  await api('/api/view',{mode:'long',platform:'fanqie',snapshot_id:observation.id,selected_id:null});dom=await open();d=dom.window.document;
@@ -436,12 +436,12 @@ async function open({stale=false,freshSnapshot=null,history=false,expiredHeiyan=
    longCheck(()=>{
      const requests=collections.slice(beforeClick);
      assert(requests.every(c=>c.platform===id));assert.equal(requests[0].options.board,spec.board);
-     assert.equal(requests[0].options.limit,100);assert.equal(d.querySelector('#board-kind').value,spec.board);
+     assert.equal(requests[0].options.limit,site.max_limit || 100);assert.equal(d.querySelector('#board-kind').value,spec.board);
      assert.equal(d.querySelector('.source-note a')?.href,site.source_url);
    });
    d.querySelector('[data-action="collection-options"]').click();
    longCheck(()=>{
-     const limit=d.querySelector('#options-form #limit');assert.equal(limit.max,'100');assert.equal(limit.value,'100');
+     const limit=d.querySelector('#options-form #limit');assert.equal(limit.max,String(site.max_limit || 100));assert.equal(limit.value,String(site.max_limit || 100));
      assert.equal(d.querySelector('#options-form #category').tagName,'SELECT');
    });
    d.querySelector('#options-form [data-action="close-dialog"]').click();

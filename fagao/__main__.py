@@ -132,7 +132,8 @@ def run_command(args,store):
         result=fetch_catalog(t['platform'],t['book_id'],store.directory)
     elif args.command=='insights':
         from .insights import build_insights
-        result=build_insights(store.snapshot(args.snapshot),store.state(full=True)['snapshots'])
+        snapshot=store.snapshot(args.snapshot)
+        result=build_insights(snapshot,store.insight_history(snapshot))
     elif args.command=='search':
         from .batch import search_snapshots
         result=search_snapshots(store.state(full=True)['snapshots'],args.query,args.limit)

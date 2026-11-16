@@ -46,10 +46,12 @@ class QimaoRankTests(unittest.TestCase):
     def collect(self, **options):
         return qimao.collect({'channel': '女频', 'board': '新书榜', 'period': '月榜', **options})
 
-    def test_official_scope_top100_and_numeric_units(self):
+    def test_official_scope_top50_and_numeric_units(self):
         snap = self.collect(limit=450)
-        self.assertEqual(self.pages, [1, 2, 3, 4, 5])
-        self.assertEqual([x['rank'] for x in snap['books']], list(range(1, 101)))
+        self.assertEqual(self.pages, [1, 2, 3])
+        self.assertEqual([x['rank'] for x in snap['books']], list(range(1, 51)))
+        self.assertEqual(snap['requested_count'], 50)
+        self.assertEqual(snap['pagination']['stop_reason'], 'requested_limit')
         self.assertEqual(snap['source_total'], 114)
         self.assertEqual(snap['data_date'], '2026-10')
         self.assertEqual(snap['books'][0]['metrics'], [

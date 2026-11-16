@@ -21,6 +21,7 @@ PLATFORM = {
     'id': 'qimao', 'name': '七猫中文网', 'mode': 'long', 'status': 'available',
     'message': '七猫男女频道公开榜单', 'source_url': ORIGIN + '/paihang/',
     'channels': list(CHANNELS), 'categories': ['全部'], 'boards': list(BOARDS),
+    'max_limit': 50, 'max_pages': 3,
     'periods': list(PERIODS), 'periods_by_board': BOARD_PERIODS,
     'default_options': {'channel': '男频', 'category': '全部', 'board': '大热榜', 'period': '日榜'},
 }
@@ -105,7 +106,7 @@ def collect(options, progress=None):
     period_slug, period_id = PERIODS[period]
     source = f'{ORIGIN}/paihang/{channel_slug}/{board_slug}/{period_slug}/'
     max_pages, limit = _page_options(options, 20)
-    max_pages, limit = min(5, max_pages), min(100, limit)
+    max_pages, limit = min(3, max_pages), min(50, limit)
     opening = _opening_ids(fetch_page(source), source, channel, board, period)
     params = {'is_girl': gender, 'rank_type': board_id, 'date_type': period_id}
     books, seen = [], set()

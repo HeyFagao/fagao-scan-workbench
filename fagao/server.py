@@ -76,6 +76,9 @@ def collection_scope(platform, options):
     from .long_rankings import COLLECTORS, collection_options
     if platform in COLLECTORS:
         return _collection_key(platform, collection_options(platform, options))
+    from .discovery import COLLECTORS as DISCOVERY_COLLECTORS, collection_options as discovery_options
+    if platform in DISCOVERY_COLLECTORS:
+        return _collection_key(platform, discovery_options(platform, options))
     options['mode']=mode
     overseas=next((item for item in PLATFORMS if item['id']==platform and item['mode']=='overseas'),None)
     if overseas:
@@ -943,7 +946,7 @@ class Handler(BaseHTTPRequestHandler):
         if path=='/api/insights':
             from .insights import build_insights
             snapshot=store.snapshot(data.get('snapshot_id'))
-            return build_insights(snapshot,store.state(full=True)['snapshots'])
+            return build_insights(snapshot,store.insight_history(snapshot))
         if path=='/api/view': return store.set_view(data)
         if path=='/api/favorite': return store.toggle_favorite(data.get('snapshot_id'),data.get('book_id'),bool(data.get('enabled')))
         if path=='/api/collect':

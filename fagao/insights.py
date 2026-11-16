@@ -6,7 +6,7 @@ views. Comparisons deliberately use one exact ranking scope and source dates.
 """
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 import math
 import re
 
@@ -137,6 +137,187 @@ def _reference(ident, book):
     return {'book_id': ident, 'title': str(book.get('title') or ''), 'rank': _rank(book)}
 
 
+def _trend_observation(snapshot):
+    source_day = _source_date(snapshot)
+    if source_day is not None:
+        return {'day': source_day.isoformat(), 'at': snapshot['data_date'], 'basis': 'source_date'}
+    value = snapshot.get('collected_at') or snapshot.get('created_at')
+    try:
+        observed = datetime.fromisoformat(str(value).replace('Z', '+00:00'))
+        if observed.tzinfo is None:
+            observed = observed.replace(tzinfo=timezone.utc)
+        return {'day': observed.astimezone(timezone(timedelta(hours=8))).date().isoformat(),
+                'at': observed.isoformat(), 'basis': 'collection_time'}
+    except (ValueError, TypeError, OverflowError):
+        return None
+
+
+def _trend_metric(snapshot):
+    if snapshot.get('platform') == 'qimao':
+        return {'收藏榜': ('收藏数', ''), '更新榜': ('更新字数', '字')}.get(
+            snapshot.get('board'), ('热度', ''))
+    return '在读', '人'
+
+
+def _trend_value(book, label):
+    units = {'在读': ('', '人', '万', '万人', '亿', '亿人'),
+             '热度': ('', '万', '亿'), '收藏数': ('', '万', '亿', '人', '万人', '亿人'),
+             '更新字数': ('', '字', '万', '万字', '亿', '亿字')}
+    for metric in book.get('metrics', []) if isinstance(book.get('metrics'), list) else []:
+        if isinstance(metric, dict) and metric.get('name') == label:
+            unit = str(metric.get('unit') or '')
+            if unit in units[label]:
+                raw = metric.get('value')
+                if isinstance(raw, str) and ((label != '更新字数' and raw.strip().endswith('字'))
+                                             or (label not in ('在读', '收藏数') and raw.strip().endswith('人'))):
+                    continue
+                value = _number(raw, unit)
+                if value is not None:
+                    return value
+    return None
+
+
+def _same_month_edition(snapshot, previous):
+    current_month = snapshot.get('data_date')
+    if isinstance(current_month, str) and re.fullmatch(r'\d{4}-(?:0[1-9]|1[0-2])', current_month):
+        return previous.get('data_date') == current_month
+    return True
+
+
+def _trend_candidates(snapshot, history_snapshots, *, same_scope):
+    """Keep only observations available when the selected snapshot was captured."""
+    current = _trend_observation(snapshot)
+    if current is None:
+        return []
+    collected = _collected_order(snapshot)
+    candidates = []
+    for previous in history_snapshots:
+        if not isinstance(previous, dict) or previous.get('id') == snapshot.get('id'):
+            continue
+        if (previous.get('platform') != snapshot.get('platform')
+                or previous.get('mode') != snapshot.get('mode')
+                or previous.get('channel') != snapshot.get('channel')
+                or _source_id(previous) != _source_id(snapshot)
+                or not _same_month_edition(snapshot, previous)
+                or (same_scope and _scope(previous) != _scope(snapshot))):
+            continue
+        observation = _trend_observation(previous)
+        if (observation is None or observation['basis'] != current['basis']
+                or observation['day'] > current['day']
+                or (collected and _collected_order(previous) > collected)):
+            continue
+        candidates.append((previous, observation))
+    candidates.append((snapshot, current))
+    return candidates
+
+
+def select_trend_history(snapshot, metadata, limit=100):
+    """Choose bounded daily records before the store loads their book lists."""
+    records = [record for record in metadata if isinstance(record, dict) and record.get('id')]
+    existing_ids = {record['id'] for record in records}
+    current = _trend_observation(snapshot)
+    current_id = snapshot.get('id')
+    if current is None:
+        return [current_id] if current_id in existing_ids else []
+    same_days, other_scopes = {}, {}
+    current_scope = _scope(snapshot)
+    for record, observation in _trend_candidates(snapshot, records, same_scope=False):
+        if record.get('id') not in existing_ids:
+            continue
+        if _scope(record) == current_scope:
+            key = observation['day']
+            target = same_days
+        elif observation['day'] == current['day']:
+            key = tuple(_scope(record).values())
+            target = other_scopes
+        else:
+            continue
+        previous = target.get(key)
+        if previous is None or _collected_order(record) > _collected_order(previous):
+            target[key] = record
+    if current_id in existing_ids:
+        same_days[current['day']] = snapshot
+    daily_records = [same_days[day] for day in sorted(same_days, reverse=True)[:min(90, limit)]]
+    extra_records = sorted(other_scopes.values(), key=_collected_order, reverse=True)
+    return [record['id'] for record in (daily_records + extra_records)[:limit]]
+
+
+def _cross_board_appearances(snapshot, history_snapshots):
+    current = _trend_observation(snapshot)
+    if current is None:
+        return {'items': []}
+    latest = {}
+    for record, observation in _trend_candidates(snapshot, history_snapshots, same_scope=False):
+        if observation['day'] != current['day']:
+            continue
+        scope = tuple(_scope(record).values())
+        if scope not in latest or _collected_order(record) > _collected_order(latest[scope][0]):
+            latest[scope] = record, observation
+    latest[tuple(_scope(snapshot).values())] = snapshot, current
+    results = []
+    for ident, book in _books(snapshot).items():
+        appearances = []
+        for record, observation in latest.values():
+            other = _books(record).get(ident)
+            if other is not None:
+                appearances.append({'snapshot_id': record.get('id'), 'board': record.get('board'),
+                                    'category': record.get('category'), 'period': record.get('period'),
+                                    'rank': _rank(other), 'at': observation['at']})
+        if len(appearances) >= 2:
+            appearances.sort(key=lambda row: (str(row['board']), str(row['category']), str(row['period'])))
+            results.append({**_reference(ident, book), 'appearances': appearances})
+    results.sort(key=lambda item: (-len(item['appearances']), item['rank'] or 10**9, item['book_id']))
+    return {'items': results}
+
+
+def build_trends(snapshot, history_snapshots=()):
+    """Return daily source or collection observations for each current book."""
+    history_snapshots = tuple(history_snapshots or ())
+    label, unit = _trend_metric(snapshot)
+    current = _trend_observation(snapshot)
+    result = {'basis': current['basis'] if current else None,
+              'basis_label': ('来源日期' if current['basis'] == 'source_date' else '采集日观察') if current else '',
+              'metric_label': label, 'metric_unit': unit, 'current_at': current['at'] if current else None,
+              'baseline_snapshot_id': None, 'baseline_at': None, 'items': [], 'cross_board': {'items': []}}
+    if snapshot.get('platform') not in ('fanqie', 'qimao') or current is None:
+        return result
+    by_day = {}
+    for record, observation in _trend_candidates(snapshot, history_snapshots, same_scope=True):
+        key = observation['day']
+        if key not in by_day or _collected_order(record) > _collected_order(by_day[key][0]):
+            by_day[key] = record, observation
+    # The chosen snapshot defines the current point even if it predates another
+    # observation on that day. Earlier-day samples keep their final observation.
+    by_day[current['day']] = snapshot, current
+    ordered = [by_day[day] for day in sorted(by_day)[-90:]]
+    baseline, baseline_observation = ordered[-2] if len(ordered) >= 2 else (None, None)
+    previous_books = _books(baseline) if baseline else {}
+    result.update(baseline_snapshot_id=baseline.get('id') if baseline else None,
+                  baseline_at=baseline_observation['at'] if baseline else None)
+    for ident, book in _books(snapshot).items():
+        points = []
+        for record, observation in ordered:
+            previous = _books(record).get(ident)
+            if previous is not None:
+                points.append({'snapshot_id': record.get('id'), 'at': observation['at'],
+                               'data_date': record.get('data_date'), 'rank': _rank(previous),
+                               'metric_value': _trend_value(previous, label)})
+        previous = previous_books.get(ident)
+        rank, previous_rank = _rank(book), _rank(previous) if previous else None
+        metric = _trend_value(book, label)
+        prior_metric = _trend_value(previous, label) if previous else None
+        delta = metric - prior_metric if metric is not None and prior_metric is not None else None
+        result['items'].append({**_reference(ident, book), 'previous_rank': previous_rank,
+                                'rank_delta': previous_rank - rank if previous_rank is not None and rank is not None else None,
+                                'metric_value': metric, 'previous_metric_value': prior_metric,
+                                'metric_delta': delta,
+                                'metric_delta_rate': round(delta * 100 / prior_metric, 2) if delta is not None and prior_metric > 0 else None,
+                                'history_available': len(points) > 1,
+                                'first_seen_in_sample': bool(baseline and previous is None), 'points': points})
+    result['cross_board'] = _cross_board_appearances(snapshot, history_snapshots)
+    return result
+
+
 def _changes(snapshot, history_snapshots, current):
     current_date = _source_date(snapshot)
     empty = {'available': False, 'reason': '', 'baseline_snapshot_id': None,
@@ -188,6 +369,7 @@ def build_insights(snapshot, history_snapshots=()):
     """Return source-bounded statistics. Inputs are never changed."""
     if not isinstance(snapshot, dict):
         raise ValueError('snapshot must be a dictionary')
+    history_snapshots = tuple(history_snapshots or ())
     books = _books(snapshot)
     titles = [title for book in books.values() if (title := _title(book))]
     reads = [value for book in books.values() if (value := _metric(book, '在读')) is not None]
@@ -220,12 +402,14 @@ def build_insights(snapshot, history_snapshots=()):
                    'average_title_length': round(sum(len(re.sub(r'\s', '', title)) for title in titles) / len(titles), 2) if titles else None},
         'keywords': keywords[:20], 'title_patterns': patterns, 'efficiency': efficiency[:20],
         'changes': _changes(snapshot, history_snapshots, books),
+        'trends': build_trends(snapshot, history_snapshots),
         'methods': [
             '仅统计当前快照实际保存的作品；缺失指标不当作零，在读合计不是去重读者人数。',
             '标题关键词使用固定词表，按含该词的书名数量计数；句式使用明确文字规则，一本书可以命中多项，占比之和不必等于100%。',
             '每万字在读=来源在读数÷（来源字数÷10000）；只作样本排序参考，不表示收入、转化率或写作因果效果。',
             '变化只比较同平台、频道、分类、榜型与周期、不同来源数据日期的同一作品；显示真实间隔，不将同日重复采集当作增长。',
             '变化列表按在读增量降序展示最多20本；每万字在读列表同样最多20本。没有相同比较对象时不推算涨跌。',
+            '追榜轨迹按同来源、同榜范围逐日保存；来源没有具体日期时标为采集日观察。样本新出现仅指前次保存的样本未见，同日跨榜出现保留各自榜型与名次。',
             '这里是可复核的统计，不是AI拆书或市场建议。',
         ],
     }

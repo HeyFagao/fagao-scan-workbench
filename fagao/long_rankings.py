@@ -6,33 +6,44 @@ from . import faloo_rank, jjwxc_rank, qimao_rank, zongheng_rank
 MAX_BOOKS = 100
 COLLECTORS = {module.PLATFORM['id']: module for module in (faloo_rank, qimao_rank, jjwxc_rank, zongheng_rank)}
 PLATFORMS = {
-    key: {**module.PLATFORM, 'max_limit': MAX_BOOKS,
-          'default_options': {'limit': MAX_BOOKS, 'max_pages': 100, **module.PLATFORM['default_options']}}
+    key: {**module.PLATFORM, 'max_limit': module.PLATFORM.get('max_limit', MAX_BOOKS),
+          'default_options': {'limit': module.PLATFORM.get('max_limit', MAX_BOOKS),
+                              'max_pages': module.PLATFORM.get('max_pages', 100),
+                              **module.PLATFORM['default_options']}}
     for key, module in COLLECTORS.items()
 }
 
 
 def collection_options(platform, supplied):
     """Use identical effective options for direct CLI calls and shared background jobs."""
+    return options_for_spec(PLATFORMS[platform], supplied)
+
+
+def options_for_spec(spec, supplied):
+    """Validate selected source filters before a server or CLI job is started."""
     from .store import AppError
 
-    spec = PLATFORMS[platform]
     if not isinstance(supplied, dict):
         raise AppError('invalid_options', '采集条件应为一个对象。')
-    if supplied.get('mode') not in (None, 'long'):
-        raise AppError('invalid_mode', '此平台提供长篇榜单。')
+    if supplied.get('mode') not in (None, spec['mode']):
+        raise AppError('invalid_mode', '作品类型与采集平台不一致。')
     defaults = spec['default_options']
-    options = {'mode': 'long'}
-    for field, choices in (('channel', spec['channels']), ('board', spec['boards'])):
+    options = {'mode': spec['mode']}
+    for field in ('channel', 'board'):
+        if field == 'channel':
+            choices = spec['channels']
+        else:
+            choices = spec.get('boards_by_channel', {}).get(options['channel'], spec['boards'])
         value = supplied.get(field)
         if value is None or value == '':
-            value = defaults[field]
+            value = defaults[field] if defaults[field] in choices else choices[0]
         if not isinstance(value, str) or value not in choices:
             raise AppError('invalid_options', f"请选择{spec['name']}提供的频道、分类和榜型。")
         options[field] = value
 
     board = options['board']
-    categories = spec.get('categories_by_board', {}).get(board, spec['categories'])
+    categories = spec.get('categories_by_channel', {}).get(options['channel'], spec['categories'])
+    categories = spec.get('categories_by_board', {}).get(board, categories)
     category = supplied.get('category')
     if category is None or category == '':
         category = defaults['category'] if defaults['category'] in categories else categories[0]
@@ -51,7 +62,7 @@ def collection_options(platform, supplied):
         if not isinstance(period, str) or period not in periods:
             raise AppError('invalid_options', f"请选择{spec['name']}该榜提供的周期。")
         options['period'] = period
-    for field, cap in (('limit', MAX_BOOKS), ('max_pages', 100)):
+    for field, cap in (('limit', spec.get('max_limit', MAX_BOOKS)), ('max_pages', spec.get('max_pages', 100))):
         value = supplied.get(field)
         if value is None:
             value = defaults[field]
