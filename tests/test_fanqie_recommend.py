@@ -120,10 +120,16 @@ class RecommendationTests(unittest.TestCase):
         if not node:
             self.skipTest('Node is needed for the process lifecycle check')
         children = []
+        cleanup_commands = []
         original_popen = subprocess.Popen
         def start(*args, **kwargs):
             child = original_popen(*args, **kwargs)
-            children.append(child)
+            command = args[0] if args else kwargs.get('args')
+            if isinstance(command, (list, tuple)):
+                if len(command) > 1 and str(command[0]) == node and Path(command[1]) == worker:
+                    children.append(child)
+                elif Path(command[0]).name.lower() == 'taskkill.exe':
+                    cleanup_commands.append(list(command))
             return child
         checks = []
         def authorization():
@@ -144,7 +150,15 @@ class RecommendationTests(unittest.TestCase):
             self.assertEqual(caught.exception.code, 'membership_expired')
             self.assertEqual(len(children), 1)
             self.assertIsNotNone(children[0].poll())
-            self.assertLess(time.monotonic() - began, 5)
+            if os.name == 'nt':
+                self.assertTrue(cleanup_commands)
+                for command in cleanup_commands:
+                    self.assertEqual(command[1:4], ['/PID', str(children[0].pid), '/T'])
+                    self.assertIn(command[4:], ([], ['/F']))
+                # Windows grants the worker up to eight seconds before forcing its tree closed.
+                self.assertLess(time.monotonic() - began, 15)
+            else:
+                self.assertLess(time.monotonic() - began, 5)
 
     def test_windows_cleanup_targets_only_own_tree_and_uses_force_after_timeout(self):
         child = Mock(pid=48261)
