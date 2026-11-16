@@ -202,10 +202,11 @@ class RecommendationTests(unittest.TestCase):
 @unittest.skipUnless(os.environ.get('FAGAO_SYNTHETIC_BROWSER_TEST') == '1', 'opt in to an isolated browser fixture')
 class RecommendationBrowserTests(unittest.TestCase):
     def test_normal_page_dom_worker_has_no_profile_and_extracts_cards(self):
+        from fagao.recommendation_runtime import _system_browser
         root = Path(__file__).resolve().parents[1]
         node = shutil.which('node')
         self.assertTrue(node)
-        module = root / 'node_modules/playwright'
+        module = Path(os.environ.get('FAGAO_QA_NODE_MODULES') or root / 'node_modules') / 'playwright'
         self.assertTrue(module.is_dir())
         row = sample(1)['items'][0]
         html = ('<!doctype html><meta charset="utf-8"><h2 id="short-feed-title">男生生活</h2>'
@@ -232,9 +233,9 @@ class RecommendationBrowserTests(unittest.TestCase):
             runtime = {'node': node, 'module_path': str(fixture_module), 'env': {},
                        'proxy': {'server': 'http://127.0.0.1:32199', 'username': 'fixture-user',
                                  'password': 'fixture-password'}}
-            chrome = Path('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome')
-            if chrome.is_file():
-                runtime['executable_path'] = str(chrome)
+            browser = _system_browser()
+            if browser:
+                runtime['executable_path'] = browser
             with patch('fagao.recommendation_runtime.ensure_runtime', return_value=runtime):
                 snapshot = recommend.collect({'category': '男生生活', 'limit': 100}, data_dir=directory)
             self.assertEqual(snapshot['books'][0]['title'], '测试故事1')

@@ -24,9 +24,9 @@ from windows_install_smoke import (
 PORT = 18376
 
 
-def captured(command, cwd):
+def captured(command, cwd, *, env=None):
     run = subprocess.run(command, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                         text=True, encoding="utf-8", errors="replace", timeout=210)
+                         text=True, encoding="utf-8", errors="replace", timeout=210, env=env)
     if run.returncode:
         raise RuntimeError("Acceptance command failed: " + run.stdout[-2000:])
     return run.stdout
@@ -49,13 +49,20 @@ def verify_platforms(source, receipt):
     for pattern in ("test_long_platform_flow.py", "test_*_rank.py", "test_discovery_flow.py",
                     "test_fanqie_recommend.py", "test_recommendation_runtime.py",
                     "test_insight_history_store.py", "test_ranking_trends.py"):
+        # Opt in only for this isolated fixture process; its browser document is
+        # supplied locally and every upstream request is intercepted by the test.
+        environment = ({**os.environ, "FAGAO_SYNTHETIC_BROWSER_TEST": "1"}
+                       if pattern == "test_fanqie_recommend.py" else None)
         output = captured([sys.executable, "-B", "-m", "unittest", "discover", "-s", "tests",
-                           "-p", pattern, "-v"], source)
+                           "-p", pattern, "-v"], source, env=environment)
         result = re.search(r"^Ran (\d+) tests? in ", output, re.MULTILINE)
         need(result and int(result[1]) > 0
              and re.search(r"^OK(?: \(skipped=\d+\))?$", output, re.MULTILINE),
              f"The backend regression {pattern} did not run cleanly")
         skipped = re.search(r"^OK \(skipped=(\d+)\)$", output, re.MULTILINE)
+        if pattern == "test_fanqie_recommend.py":
+            need(not skipped, "The isolated recommendation browser fixture was skipped")
+            receipt["synthetic_browser"] = True
         backend_checks.append({"pattern": pattern, "tests": int(result[1]),
                                "skipped": int(skipped[1]) if skipped else 0})
         backend_tests += int(result[1])

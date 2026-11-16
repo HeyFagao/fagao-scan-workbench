@@ -171,7 +171,7 @@ class AuthorizationTests(unittest.TestCase):
                 patch.object(runtime.subprocess, 'run') as terminate:
             runtime._stop_process(process)
         arguments = terminate.call_args.args[0]
-        self.assertEqual(arguments, ['/fixture/windows/System32/taskkill.exe',
+        self.assertEqual(arguments, [str(Path('/fixture/windows') / 'System32' / 'taskkill.exe'),
                                      '/PID', '43210', '/T', '/F'])
         self.assertEqual(terminate.call_args.kwargs['timeout'], 3)
         process.communicate.assert_called_once_with(timeout=2)
@@ -182,8 +182,14 @@ class AuthorizationTests(unittest.TestCase):
             directory = Path(temporary)
             installer = directory / 'npm-cli.js'
             leftover = directory / 'orphan-child'
-            child_code = ('import pathlib,time;time.sleep(0.8);pathlib.Path(' +
-                          repr(str(leftover)) + ').write_text("leftover")')
+            ready = directory / 'child-ready'
+            probe = directory / 'child-probe'
+            child_code = ('import pathlib,time\n'
+                'ready=pathlib.Path(' + repr(str(ready)) + ')\n'
+                'probe=pathlib.Path(' + repr(str(probe)) + ')\n'
+                'ready.write_text("ready")\n'
+                'while not probe.exists(): time.sleep(0.02)\n'
+                'pathlib.Path(' + repr(str(leftover)) + ').write_text("leftover")\n')
             installer.write_text('import pathlib,subprocess,sys,time\n'
                 'stage=pathlib.Path(sys.argv[sys.argv.index("--prefix")+1])\n'
                 '(stage/"partial").write_text("fixture")\n'
@@ -193,12 +199,19 @@ class AuthorizationTests(unittest.TestCase):
             original_popen = subprocess.Popen
             def start(*args, **kwargs):
                 process = original_popen(*args, **kwargs)
-                processes.append(process)
+                arguments = args[0]
+                if (len(arguments) > 1 and Path(arguments[0]) == Path(sys.executable)
+                        and Path(arguments[1]) == installer):
+                    processes.append(process)
                 return process
             started = time.monotonic()
+            revoked = []
             def authorization():
-                if time.monotonic() - started > 0.3:
+                if ready.exists():
+                    if not revoked:
+                        revoked.append(time.monotonic())
                     raise AppError('membership_expired', '使用资格已到期')
+                self.assertLess(time.monotonic() - started, 5, 'installer child did not become ready')
             with patch.object(runtime, 'ROOT', directory / 'source'), \
                     patch.object(runtime, '_environment', return_value={}), \
                     patch.object(runtime, '_find_node', return_value=Path(sys.executable)), \
@@ -209,9 +222,13 @@ class AuthorizationTests(unittest.TestCase):
                 with self.assertRaises(AppError) as caught:
                     runtime.ensure_runtime(directory / 'data')
             self.assertEqual(caught.exception.code, 'membership_expired')
-            self.assertLess(time.monotonic() - started, 5)
+            self.assertLess(revoked[0] - started, 5)
+            # Windows may use taskkill's 3s budget followed by two 2s pipe waits.
+            self.assertLess(time.monotonic() - revoked[0], 8 if sys.platform == 'win32' else 5)
+            self.assertTrue(ready.exists(), 'the installer child was not exercised')
             self.assertEqual(len(processes), 1)
             self.assertIsNotNone(processes[0].poll())
+            probe.write_text('probe', encoding='utf-8')
             time.sleep(0.6)
             self.assertFalse(leftover.exists(), 'the installer child survived cancellation')
             base = runtime.tools_directory(directory / 'data')
@@ -223,14 +240,17 @@ class AuthorizationTests(unittest.TestCase):
 
     def test_installer_timeout_is_bounded_and_reaps_process(self):
         processes = []
+        target = [sys.executable, '-c', 'import time;time.sleep(60)']
         original_popen = subprocess.Popen
         def start(*args, **kwargs):
             process = original_popen(*args, **kwargs)
-            processes.append(process)
+            if args[0] == target:
+                processes.append(process)
             return process
         with patch.object(runtime.subprocess, 'Popen', side_effect=start):
             with self.assertRaises(CollectorError):
-                runtime._run([sys.executable, '-c', 'import time;time.sleep(60)'], {}, timeout=0.15)
+                runtime._run(target, {}, timeout=0.15)
+        self.assertEqual(len(processes), 1)
         self.assertIsNotNone(processes[0].poll())
 
 
