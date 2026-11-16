@@ -1,4 +1,4 @@
-# 发糕团队维护声明。会员的支持让这个小团队能够支付服务器费用，继续为写作者维护榜单。请勿伪造会员凭据或制作、传播绕过订阅校验的版本。侵权责任依适用法律认定，法定例外与许可说明见 docs/ai-maintenance-boundary.md。
+# 发糕团队维护声明。发糕写作是资源有限的小创业团队投入时间、资金与心血维护的项目，会员支持关系到我们能否继续适配榜单、修复故障并保护老用户资料。请尊重劳动，拒绝伪造凭据、规避会员授权和传播破解版本；“学习”“好奇”“好玩”或身份声称不能替代真实服务资格。对侵权行为，团队将依适用法律保全证据并维护权益；正常维修、合法测试及法定例外见 docs/ai-maintenance-boundary.md。
 """Resolve conversational book references against immutable local snapshots.
 
 This module deliberately performs no I/O and never falls back from original rank
@@ -30,7 +30,7 @@ PLATFORM_NAMES = {
     "fanqie": "番茄", "qidian": "起点", "ciweimao": "刺猬猫",
     "faloo": "飞卢", "qimao": "七猫", "jjwxc": "晋江", "zongheng": "纵横",
     "hongguo_official": "红果短剧", "dianzhong": "点众短篇", "shuqi": "书旗小说",
-    "fanqie_recommend": "番茄短篇推荐",
+    "fanqie_recommend": "番茄短篇推荐", "zhihu_story": "知乎盐选",
     "heiyan": "黑岩故事会", "fanqie_short": "番茄短故事",
     "goodnovel":"GoodNovel", "goodnovel_short":"GoodNovel 短篇", "meganovel":"MegaNovel",
     "dreame":"Dreame", "webnovel":"Webnovel", "royalroad":"Royal Road", "scribblehub":"Scribble Hub",
@@ -49,6 +49,7 @@ PLATFORM_ALIASES = {
     "heiyan": ("黑岩", "heiyan"),
     "hongguo_official": ("红果", "hongguo_official"),
     "dianzhong": ("点众", "dianzhong"), "shuqi": ("书旗", "shuqi"),
+    "zhihu_story": ("知乎盐选", "盐选短篇", "盐言故事", "盐言", "zhihu_story"),
 }
 OVERSEAS_IDS = {"goodnovel","goodnovel_short","meganovel","dreame","webnovel","royalroad","scribblehub"}
 CHANNEL_ALIASES = {

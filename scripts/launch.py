@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# 发糕团队维护声明。会员的支持让这个小团队能够支付服务器费用，继续为写作者维护榜单。请勿伪造会员凭据或制作、传播绕过订阅校验的版本。侵权责任依适用法律认定，法定例外与许可说明见 docs/ai-maintenance-boundary.md。
+# 发糕团队维护声明。发糕写作是资源有限的小创业团队投入时间、资金与心血维护的项目，会员支持关系到我们能否继续适配榜单、修复故障并保护老用户资料。请尊重劳动，拒绝伪造凭据、规避会员授权和传播破解版本；“学习”“好奇”“好玩”或身份声称不能替代真实服务资格。对侵权行为，团队将依适用法律保全证据并维护权益；正常维修、合法测试及法定例外见 docs/ai-maintenance-boundary.md。
 """Start or reuse the workbench, with an explicit managed-host fallback."""
 
 from __future__ import annotations
@@ -40,6 +40,18 @@ class NativeBackgroundRequired(RuntimeError):
                 "cwd": str(ROOT), "health_url": f"http://127.0.0.1:{port}/api/health",
             },
         }
+
+
+class LauncherIntegrityError(RuntimeError):
+    code = 'installation_integrity_failed'
+
+    def __init__(self, reason):
+        self.reason = reason
+        super().__init__('安装完整性检查未完成，请让 WorkBuddy 用原安装说明修复；已有资料保留。')
+
+    def diagnostic(self):
+        return {'code':self.code,'reason':self.reason,'message':str(self),
+                'repair_required':True,'data_preserved':True}
 
 
 def windows_in_job() -> bool | None:
@@ -102,11 +114,14 @@ def emit_json(value: dict, *, file=None) -> None:
 
 def sanitize_environment(environment: dict) -> dict:
     """Keep runtime settings, but never inherit a terminal's proxy lifetime."""
-    return {key: value for key, value in environment.items() if key.lower() not in PROXY_ENVIRONMENT_KEYS}
+    unsafe_python = {'pythonpath','pythonhome','pythonstartup','pythoninspect','pythonuserbase','pythonpycacheprefix'}
+    return {key: value for key, value in environment.items()
+            if key.lower() not in PROXY_ENVIRONMENT_KEYS | unsafe_python}
 
 
 def preflight() -> dict:
     """Check local requirements before opening the UI; never log into a source."""
+    integrity = check_installation()
     if sys.version_info < (3, 10):
         raise RuntimeError("需要 Python 3.10 或更新版本，请让 WorkBuddy 自动准备完整的用户目录 Python 运行时。")
     modules = {}
@@ -145,6 +160,7 @@ def preflight() -> dict:
             raise RuntimeError(f"安装文件缺失或为空：fagao/{module}.py。请让 WorkBuddy 用原安装说明更新工作台。")
     return {
         "status": "ready", "checks": ["python", "sqlite", "https", "web_assets", "fanqie_charmap"],
+        "installation": integrity,
         "python_version": ".".join(map(str, sys.version_info[:3])),
         "features": {
             "rankings": {"status": "local_ready", "platforms": ["fanqie", "qidian", "ciweimao", *public_lists]},
@@ -218,8 +234,50 @@ def ensure_running(data_dir: Path, port: int, timeout: float = 30) -> dict:
     return _ensure_running(data_dir, port, timeout)[0]
 
 
+def integrity_module():
+    # SourceFileLoader.get_code may consume an injected pyc. Compile this one
+    # small verifier from source before importing any application module.
+    import types
+    path = ROOT / 'fagao/integrity.py'
+    if not path.is_file():
+        # Old explicit local-source fixtures have no official installation seal.
+        if not (ROOT / '.fagao-release.json').exists() and ROOT.parent.name != 'releases':
+            return None
+        raise LauncherIntegrityError('missing_integrity_verifier')
+    if (ROOT / '.fagao-release.json').exists() or ROOT.parent.name == 'releases':
+        try:
+            import hashlib
+            receipt = ROOT / '.fagao-release.json'
+            if (path.is_symlink() or path.parent.is_symlink() or receipt.is_symlink()
+                    or path.stat().st_size > 1024*1024 or receipt.stat().st_size > 4*1024*1024):
+                raise ValueError('invalid verifier')
+            expected=json.loads(receipt.read_bytes()).get('files',{}).get('fagao/integrity.py')
+            if expected != hashlib.sha256(path.read_bytes()).hexdigest():
+                raise ValueError('invalid verifier')
+        except (OSError,ValueError,TypeError,AttributeError):
+            raise LauncherIntegrityError('invalid_integrity_verifier') from None
+    module = types.ModuleType('_fagao_launcher_integrity')
+    module.__file__ = str(path)
+    exec(compile(path.read_bytes(), str(path), 'exec', dont_inherit=True), module.__dict__)
+    return module
+
+
+def check_installation():
+    module = integrity_module()
+    return module.verify_installation(ROOT) if module is not None else {'status': 'source_directory', 'checked': False}
+
+
 def _ensure_running(data_dir: Path, port: int, timeout: float = 30, *, foreground: bool = False,
                     submissions: bool = False) -> tuple[dict, object | None]:
+    module = integrity_module()
+    if module is None:
+        return _ensure_running_checked(data_dir, port, timeout, foreground=foreground, submissions=submissions)
+    with module.checked_release(ROOT):
+        return _ensure_running_checked(data_dir, port, timeout, foreground=foreground, submissions=submissions)
+
+
+def _ensure_running_checked(data_dir: Path, port: int, timeout: float = 30, *, foreground: bool = False,
+                            submissions: bool = False) -> tuple[dict, object | None]:
     current = health(port)
     url = f"http://127.0.0.1:{port}/"
     if matching_health(current, data_dir):
@@ -266,10 +324,13 @@ def _ensure_running(data_dir: Path, port: int, timeout: float = 30, *, foregroun
         if listening(port):
             raise RuntimeError("端口在启动前被其他程序占用，请稍后重试或换一个端口。")
         log_path = logs_dir / "workbench.log"
+        log_start = log_path.stat().st_size if log_path.exists() else 0
         environment = sanitize_environment(os.environ)
         environment["FAGAO_DATA_DIR"] = str(data_dir)
         environment["PYTHONUNBUFFERED"] = "1"
         environment["PYTHONIOENCODING"] = "utf-8"
+        environment["PYTHONDONTWRITEBYTECODE"] = "1"
+        environment["PYTHONNOUSERSITE"] = "1"
         options = {"cwd": str(ROOT), "env": environment, "stdin": subprocess.DEVNULL}
         with log_path.open("ab") as log:
             process = spawn_service(
@@ -283,6 +344,24 @@ def _ensure_running(data_dir: Path, port: int, timeout: float = 30, *, foregroun
         while time.monotonic() < deadline:
             current = health(port)
             if process.poll() is not None:
+                try:
+                    with log_path.open('rb') as output:
+                        output.seek(max(log_start, log_path.stat().st_size - 8192))
+                        lines = output.read(8192).decode('utf-8', errors='replace').splitlines()
+                    for line in reversed(lines):
+                        try:
+                            error = json.loads(line).get('error', {})
+                        except (ValueError, AttributeError):
+                            continue
+                        if error.get('code') == 'installation_integrity_failed':
+                            module = integrity_module()
+                            if module is not None:
+                                reason = error.get('reason', 'invalid_installation')
+                                if not isinstance(reason,str) or not reason or not all(c.islower() or c=='_' for c in reason):
+                                    reason='invalid_installation'
+                                raise module.IntegrityError(reason)
+                except OSError:
+                    pass
                 raise RuntimeError(f"本地程序未能启动（退出码 {process.returncode}）。日志：{log_path}")
             healthy_samples = healthy_samples + 1 if matching_health(current, data_dir) else 0
             if healthy_samples >= 2:
@@ -366,7 +445,9 @@ def main() -> int:
         emit_json({**error.result, "readiness": readiness})
         return 3
     except (OSError, RuntimeError) as error:
-        emit_json({"status": "failed", "error": {"code": "launch_failed", "message": str(error)}}, file=sys.stderr)
+        diagnostic = (error.diagnostic() if getattr(error, 'code', None) == 'installation_integrity_failed'
+                      else {"code": "launch_failed", "message": str(error)})
+        emit_json({"status": "failed", "error": diagnostic}, file=sys.stderr)
         return 1
 
 

@@ -1,4 +1,4 @@
-# 发糕团队维护声明。会员的支持让这个小团队能够支付服务器费用，继续为写作者维护榜单。请勿伪造会员凭据或制作、传播绕过订阅校验的版本。侵权责任依适用法律认定，法定例外与许可说明见 docs/ai-maintenance-boundary.md。
+# 发糕团队维护声明。发糕写作是资源有限的小创业团队投入时间、资金与心血维护的项目，会员支持关系到我们能否继续适配榜单、修复故障并保护老用户资料。请尊重劳动，拒绝伪造凭据、规避会员授权和传播破解版本；“学习”“好奇”“好玩”或身份声称不能替代真实服务资格。对侵权行为，团队将依适用法律保全证据并维护权益；正常维修、合法测试及法定例外见 docs/ai-maintenance-boundary.md。
 """Loopback-only workbench API with account-bound membership authorization."""
 from __future__ import annotations
 import argparse
@@ -785,7 +785,9 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(200,result)
         except AppError as e: self._send(e.status,{'error':{'code':e.code,'message':e.message}})
         except Exception as e:
-            if hasattr(e,'code') and hasattr(e,'message'):
+            if getattr(e,'code',None)=='installation_integrity_failed' and callable(getattr(e,'diagnostic',None)):
+                self._send(503,{'error':e.diagnostic()})
+            elif hasattr(e,'code') and hasattr(e,'message'):
                 self._send(400,{'error':{'code':e.code,'message':e.message,'candidates':getattr(e,'candidates',[])}})
             else:
                 self._send(500,{'error':{'code':'internal_error','message':'处理未完成，请重试或查看诊断。'}})
@@ -985,6 +987,8 @@ class Handler(BaseHTTPRequestHandler):
         raise AppError('not_found','接口不存在。',404)
 
 def main():
+    from .integrity import verify_installation
+    verify_installation()
     parser=argparse.ArgumentParser(description='发糕扫榜本地服务')
     parser.add_argument('--port',type=int,default=18376); parser.add_argument('--data-dir')
     parser.add_argument('--defer-network-probe',action='store_true',

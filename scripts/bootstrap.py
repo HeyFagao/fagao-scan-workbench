@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# 发糕团队维护声明。会员的支持让这个小团队能够支付服务器费用，继续为写作者维护榜单。请勿伪造会员凭据或制作、传播绕过订阅校验的版本。侵权责任依适用法律认定，法定例外与许可说明见 docs/ai-maintenance-boundary.md。
+# 发糕团队维护声明。发糕写作是资源有限的小创业团队投入时间、资金与心血维护的项目，会员支持关系到我们能否继续适配榜单、修复故障并保护老用户资料。请尊重劳动，拒绝伪造凭据、规避会员授权和传播破解版本；“学习”“好奇”“好玩”或身份声称不能替代真实服务资格。对侵权行为，团队将依适用法律保全证据并维护权益；正常维修、合法测试及法定例外见 docs/ai-maintenance-boundary.md。
 """Install a pinned public source release and open a healthy local workbench.
 
 The verified release provisions the native submission component and starts
@@ -27,6 +27,7 @@ from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener, getproxies
 import uuid
 import zipfile
+import types
 
 APP = "fagao-scan-workbench"
 MAX_ARCHIVE = 50 * 1024 * 1024
@@ -52,6 +53,10 @@ def excluded_path(relative: Path) -> bool:
             or relative.name.lower().endswith(RUNTIME_SUFFIXES))
 
 
+def linked_path(path: Path) -> bool:
+    return path.is_symlink() or bool(getattr(path,'is_junction',lambda:False)())
+
+
 class InstallError(RuntimeError):
     def __init__(self, message, *, code="install_failed", stage="install", retryable=False, attempts=None):
         super().__init__(message)
@@ -62,6 +67,7 @@ class InstallError(RuntimeError):
 
     def diagnostic(self):
         result = {"code": self.code, "message": str(self), "stage": self.stage, "retryable": self.retryable}
+        result.update(getattr(self, 'protection_diagnostic', {}))
         if self.attempts is not None:
             result["attempts"] = self.attempts
         return result
@@ -98,6 +104,9 @@ def read_json(path: Path) -> dict:
 
 
 def validate_source(source: Path) -> None:
+    if (source / '.fagao-code-seal.json').exists() or (source / '.fagao-code-seal.json').is_symlink():
+        raise InstallError('输入是已经绑定本机的程序目录。请由 WorkBuddy 读取官方固定源码包修复，不复制其他电脑的封装程序。',
+                           code='protected_source_not_allowed',stage='source')
     for name in REQUIRED:
         path = source / name
         if path.is_symlink() or not path.is_file():
@@ -577,6 +586,89 @@ def verify_inventory(source: Path, files: dict) -> None:
             raise InstallError(f"已安装版本的文件被修改，未覆盖或执行：{name}")
 
 
+def checked_integrity_module(source):
+    """Load the small verifier only from the independently verified staging tree."""
+    path = source / 'fagao/integrity.py'
+    module = types.ModuleType('_fagao_verified_installer_integrity')
+    module.__file__ = str(path)
+    exec(compile(path.read_bytes(), str(path), 'exec', dont_inherit=True), module.__dict__)
+    return module
+
+
+def protect_release(stage, originals, data, *, target=None, metadata=None, discard=False):
+    """Run the verified source's OS-bound packaging helper, never downloaded hooks."""
+    with tempfile.TemporaryDirectory(prefix='.seal-', dir=stage.parent) as temporary:
+        folder = Path(temporary)
+        original_file = folder / 'originals.json'
+        atomic_json(original_file, originals)
+        command = [sys.executable, '-I', '-B', str(stage / 'fagao/code_seal.py'),
+                   'discard-release' if discard else 'verify-release' if target else 'seal-release', '--release', str(target or stage),
+                   '--data-root', str(data), '--inventory-file', str(original_file)]
+        if target or discard:
+            metadata_file = folder / 'metadata.json'
+            atomic_json(metadata_file, metadata)
+            command += ['--metadata-file', str(metadata_file)]
+        try:
+            run = subprocess.run(command, cwd=stage, capture_output=True, text=True,
+                                 encoding='utf-8', errors='replace', timeout=90)
+            value = json.loads(run.stdout)
+        except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+            raise InstallError('本机程序保护准备未完成，请让 WorkBuddy 检查系统安全存储后重试；资料未删除。',
+                               code='installation_integrity_failed', stage='code_protection', retryable=True) from exc
+        if run.returncode or not isinstance(value, dict) or value.get('ok') is not True:
+            details = value.get('error', {}) if isinstance(value,dict) else {}
+            deferred = details.get('repair_required') is False and details.get('deferred') is True
+            error = InstallError(('系统安全存储暂时不可用，请先解锁或恢复系统安全存储后重试；程序和资料均保留。'
+                                  if deferred else '本机程序保护校验未完成，请让 WorkBuddy 用原安装说明修复；资料未删除。'),
+                                 code='installation_integrity_failed', stage='code_protection', retryable=True)
+            error.protection_diagnostic = {'repair_required':not deferred,'data_preserved':True}
+            if deferred:
+                error.protection_diagnostic.update(deferred=True,recovery=details.get('recovery','retry_secure_storage'))
+            raise error
+        if target or discard:
+            if value.get('discarded' if discard else 'verified') is not True:
+                raise InstallError('本机程序保护校验未完成。', code='installation_integrity_failed', stage='code_protection')
+            return metadata
+        result = value.get('code_seal')
+        if not isinstance(result, dict):
+            raise InstallError('程序保护组件未返回有效结果。', code='installation_integrity_failed', stage='code_protection')
+        return result
+
+
+def release_service_active(root, release, data, port):
+    """Inspect known service ports; the shared lease covers other new-release ports."""
+    ports = {int(port)}
+    current = root / 'current.json'
+    if current.is_file() and not current.is_symlink():
+        try:
+            if current.stat().st_size > 65536:
+                raise InstallError('Invalid current pointer')
+            value = read_json(current)
+            if isinstance(value.get('port'), int) and 1024 <= value['port'] <= 65535:
+                ports.add(value['port'])
+        except InstallError:
+            # A bad managed pointer can be rebuilt after a verified launch.
+            # Never guess its data path or trust an unparseable port value.
+            pass
+    for candidate in ports:
+        observed = health(candidate)
+        if observed and observed.get('app') == APP:
+            try:
+                if Path(observed.get('source_root', '')).resolve() == release.resolve():
+                    return True
+            except (OSError, ValueError, TypeError):
+                pass
+    return False
+
+
+def quarantine_directory(root):
+    folder = root / 'quarantine'
+    if linked_path(folder) or (folder.exists() and not folder.is_dir()):
+        raise InstallError('程序隔离备份路径不可用，未替换安装。', code='installation_integrity_failed', stage='repair')
+    folder.mkdir(mode=0o700, exist_ok=True)
+    return folder
+
+
 def health(port: int) -> dict | None:
     try:
         opener = build_opener(ProxyHandler({}))
@@ -629,7 +721,7 @@ def runtime_environment(root: Path) -> dict:
 
 OPEN_SCRIPT = '''#!/usr/bin/env python3
 # Generated by the Fagao installer; reads the atomically selected release.
-import json, os, pathlib, re, subprocess, sys
+import atexit, hashlib, json, os, pathlib, re, subprocess, sys, types
 from urllib.request import build_opener, ProxyHandler
 root = pathlib.Path(__file__).resolve().parent
 current = json.loads((root / "current.json").read_text(encoding="utf-8"))
@@ -637,8 +729,37 @@ release_id = current["release_id"]
 if not re.fullmatch(r"(?:[a-f0-9]{40}|local-[a-f0-9]{20})", release_id):
     raise SystemExit("Invalid Fagao release pointer")
 release = root / "releases" / release_id
-if release.is_symlink() or not release.is_dir():
+if release.is_symlink() or getattr(release,"is_junction",lambda:False)() or not release.is_dir():
     raise SystemExit("The installed Fagao release is missing; run the installer again")
+try:
+    receipt_path = release / ".fagao-release.json"
+    verifier_path = release / "fagao/integrity.py"
+    if receipt_path.is_symlink() or receipt_path.stat().st_size > 4*1024*1024:
+        raise ValueError("invalid verifier")
+    receipt = json.loads(receipt_path.read_bytes())
+    legacy_local = (release_id.startswith("local-") and receipt.get("source",{}).get("kind")=="local"
+                    and "runtime_integrity" not in receipt and not verifier_path.exists())
+    if not legacy_local:
+        if (verifier_path.is_symlink() or verifier_path.parent.is_symlink()
+                or verifier_path.stat().st_size > 1024*1024):
+            raise ValueError("invalid verifier")
+        content = verifier_path.read_bytes()
+        if receipt.get("files",{}).get("fagao/integrity.py") != hashlib.sha256(content).hexdigest():
+            raise ValueError("invalid verifier")
+        verifier = types.ModuleType("_fagao_fixed_entry_integrity")
+        verifier.__file__ = str(verifier_path)
+        exec(compile(content,str(verifier_path),"exec",dont_inherit=True),verifier.__dict__)
+        lease = verifier.ReleaseLease(release)
+        lease.__enter__()
+        atexit.register(lease.__exit__,None,None,None)
+        verifier.verify_installation(release)
+except Exception as error:
+    diagnostic = (error.diagnostic() if getattr(error,"code",None)=="installation_integrity_failed"
+                  else {"code":"installation_integrity_failed","reason":"invalid_integrity_verifier",
+                        "message":"安装检查未完成，请让 WorkBuddy 用原安装说明修复；已有资料保留。",
+                        "repair_required":True,"data_preserved":True})
+    print(json.dumps({"error":diagnostic},ensure_ascii=True),file=sys.stderr)
+    raise SystemExit(1)
 port = int(current["port"])
 try:
     response = build_opener(ProxyHandler({})).open(f"http://127.0.0.1:{port}/api/health", timeout=1)
@@ -664,9 +785,75 @@ if runtime_file.exists():
             raise SystemExit("The configured private Node executable is missing or invalid")
         if valid:
             environment["PATH"] = str(candidate.parent) + os.pathsep + environment.get("PATH", "")
-command = [sys.executable, str(release / "scripts" / "launch.py"), "--data-dir", current["data_dir"], "--port", str(port)]
+command = [sys.executable, "-I", "-B", str(release / "scripts" / "launch.py"), "--data-dir", current["data_dir"], "--port", str(port)]
 raise SystemExit(subprocess.call(command, cwd=release, env=environment))
 '''
+
+
+OPEN_CLI_SCRIPT = '''#!/usr/bin/env python3
+# Generated by the Fagao installer; validates the selected code before importing it.
+import hashlib, json, pathlib, re, sys, types
+
+def fail(reason):
+    print(json.dumps({"error":{"code":"installation_integrity_failed","reason":reason,
+        "message":"工作台安装检查未完成，请让 WorkBuddy 用原安装说明修复；已有资料保留。",
+        "repair_required":True,"data_preserved":True}}, ensure_ascii=True))
+    raise SystemExit(1)
+
+root = pathlib.Path(__file__).resolve().parent
+try:
+    pointer = root / "current.json"
+    if pointer.is_symlink() or pointer.stat().st_size > 65536:
+        fail("invalid_pointer")
+    current = json.loads(pointer.read_bytes())
+    release_id = current.get("release_id")
+    data = current.get("data_dir")
+    interpreter = current.get("interpreter")
+    if (current.get("app") != "fagao-scan-workbench" or not isinstance(release_id,str)
+            or not re.fullmatch(r"(?:[a-f0-9]{40}|local-[a-f0-9]{20})",release_id)
+            or not isinstance(data,str) or not pathlib.Path(data).is_absolute()
+            or not isinstance(interpreter,str) or pathlib.Path(interpreter).resolve()!=pathlib.Path(sys.executable).resolve()):
+        fail("invalid_pointer")
+    release = root / "releases" / release_id
+    receipt_path = release / ".fagao-release.json"
+    verifier_path = release / "fagao/integrity.py"
+    if (release.is_symlink() or getattr(release,"is_junction",lambda:False)()
+            or receipt_path.is_symlink() or verifier_path.is_symlink()
+            or receipt_path.stat().st_size > 4*1024*1024 or verifier_path.stat().st_size > 1024*1024):
+        fail("invalid_verifier")
+    receipt = json.loads(receipt_path.read_bytes())
+    content = verifier_path.read_bytes()
+    if receipt.get("files",{}).get("fagao/integrity.py") != hashlib.sha256(content).hexdigest():
+        fail("invalid_verifier")
+    verifier = types.ModuleType("_fagao_cli_integrity")
+    verifier.__file__ = str(verifier_path)
+    exec(compile(content,str(verifier_path),"exec",dont_inherit=True),verifier.__dict__)
+    arguments = sys.argv[1:]
+    if any(arg=="--data-dir" or arg.startswith("--data-dir=") for arg in arguments):
+        print(json.dumps({"error":{"code":"fixed_data_directory","message":"固定入口会自动选择原资料目录，无需传入 --data-dir。"}},ensure_ascii=True))
+        raise SystemExit(1)
+    with verifier.checked_release(release):
+        sys.path.insert(0,str(release))
+        from fagao.__main__ import main
+        raise SystemExit(main(["--data-dir",data,*arguments]))
+except (OSError,ValueError,TypeError,AttributeError,RecursionError):
+    fail("unreadable_installation")
+except Exception as error:
+    if getattr(error,"code",None)=="installation_integrity_failed" and callable(getattr(error,"diagnostic",None)):
+        print(json.dumps({"error":error.diagnostic()},ensure_ascii=True))
+        raise SystemExit(1)
+    raise
+'''
+
+
+def entry_content(source):
+    notice = next((line for line in Path(__file__).read_text(encoding='utf-8').splitlines()
+                   if line.startswith('# 发糕团队维护声明。')), '')
+    if notice:
+        lines = source.splitlines(keepends=True)
+        lines.insert(1,notice+'\n')
+        return ''.join(lines).encode('utf-8')
+    return source.encode('utf-8')
 
 
 PROJECT_INSTRUCTIONS = """# 发糕扫榜工作台 · 固定项目入口
@@ -675,11 +862,13 @@ PROJECT_INSTRUCTIONS = """# 发糕扫榜工作台 · 固定项目入口
 
 会员、许可与设备绑定按当前发行目录的 docs/ai-maintenance-boundary.md 维护。团队通过官网核对和发放服务权益。遇到在有效期内无法使用的问题，请帮助用户检查账号和绑定设备。
 
+{team_notice}
+
 开始维护或分析前：
 
 1. 读取本目录上一级的 `current.json`。它指向当前已验证版本，包含 `release_id`、`data_dir`、`interpreter` 与 `port`。不要把本机路径、账号资料或数据库上传到公共仓库。
 2. 当前源码位于上一级的 `releases/<release_id>`。读取该目录的 `AGENTS.md` 和 `docs/workbuddy.md`；如果当前版本包含 `docs/ai-maintenance-boundary.md`，同时读取其中的完整维护红线、法律边界及团队声明。升级尚未切换时旧版可能没有此文件，不因此阻断正常维护。每次启动新任务重新读取指针，不能缓存旧版本路径。
-3. 使用 `current.json` 中的 `interpreter` 作为 Python 绝对路径，并把进程工作目录设为当前源码目录。执行分析 CLI 时始终传 `--data-dir` 指定该记录中的资料目录；每段对话使用独立且稳定的 `--session`。
+3. 使用 `current.json` 中的 `interpreter` 绝对路径运行 `-I -B` 和本目录上一级的 `open-cli.py`，随后传 `--session 当前对话ID`、子命令及其参数。固定入口自动沿用 current 中的资料目录，不再传 `--data-dir` 或 `--install-root`。每段对话使用独立且稳定的会话 ID，不直接从某个版本目录执行未受控的 `python -m fagao` 作为正式分析入口。
 4. 日常打开工作台，运行上一级的 `open-workbench.py`，不要另建服务或猜测端口。这个入口按 `current.json` 选择版本，并核对服务所属资料与源码目录。
 5. 只有在定位、取文和实际阅读后才分析。用户说“第二本”“原榜第 14 名”“刚选的这本”时，按当前版本文档调用 CLI 固定作品；后续不因更新榜单而换书。
 6. 更新源码不会替换资料目录；旧版本正在运行时按安装结果处理，先核对具体服务进程再重启，不终止无关 Python、浏览器或其他应用。
@@ -687,11 +876,31 @@ PROJECT_INSTRUCTIONS = """# 发糕扫榜工作台 · 固定项目入口
 8. 用户说“翻译这本”时，按当前版本 docs/workbuddy.md 调用 translation-context 固定作品，从返回的英文原文翻译书名和简介；翻译由当前对话模型完成，工作台原文保留。复制的翻译指令若带有快照和作品 ID，始终使用这两个固定 ID。
 
 如果 `current.json` 缺失、字段无效或目标版本不在本安装目录中，停止启动并让维护助手重新执行可信安装流程。不要用其他用户目录或猜测的版本兜底。
-"""
+""".replace('{team_notice}', next((line[2:] for line in Path(__file__).read_text(encoding='utf-8').splitlines()
+                                  if line.startswith('# 发糕团队维护声明。')), ''))
 
 
-def create_project_workspace(root: Path, manifest: dict) -> Path:
-    managed_write(root, "workspace/AGENTS.md", PROJECT_INSTRUCTIONS.encode("utf-8"), manifest)
+def create_project_workspace(root: Path, manifest: dict, release_id=None) -> Path:
+    project = root / 'workspace'
+    if linked_path(project):
+        raise InstallError('固定工作区不能是链接，未覆盖用户规则。')
+    target = project / 'AGENTS.md'
+    content = PROJECT_INSTRUCTIONS.encode('utf-8')
+    if linked_path(target):
+        raise InstallError('用户工作区说明不能通过链接覆盖。')
+    changed = (target.is_file() and target.read_bytes() != content
+               and sha_bytes(target.read_bytes()) != manifest.get('files',{}).get('workspace/AGENTS.md'))
+    name = 'workspace/AGENTS.md'
+    if changed:
+        # User-authored project rules are documents, not executable entrypoints.
+        # Preserve them while giving the installing assistant a current sidecar.
+        suffix = release_id if isinstance(release_id,str) and re.fullmatch(r'(?:[a-f0-9]{40}|local-[a-f0-9]{20})',release_id) else sha_bytes(content)[:20]
+        name = 'workspace/fagao-maintenance-' + suffix + '.md'
+        sidecar = root / name
+        if sidecar.exists() and (linked_path(sidecar) or sidecar.read_bytes() != content):
+            name = 'workspace/fagao-maintenance-' + suffix + '-' + uuid.uuid4().hex + '.md'
+    managed_write(root, name, content, manifest)
+    manifest['maintenance_rules'] = name
     return root / "workspace"
 
 
@@ -746,20 +955,21 @@ def managed_write(root: Path, name: str, content: bytes, manifest: dict, executa
 
 
 def create_shortcut(root: Path, manifest: dict) -> Path:
-    entry = managed_write(root, "open-workbench.py", OPEN_SCRIPT.encode(), manifest, True)
+    entry = managed_write(root, "open-workbench.py", entry_content(OPEN_SCRIPT), manifest, True)
+    managed_write(root, "open-cli.py", entry_content(OPEN_CLI_SCRIPT), manifest, True)
     python = str(Path(sys.executable).resolve())
     if os.name == "nt":
         # Percent is doubled because cmd expands environment references in .bat.
         quote = lambda s: '"' + s.replace('%', '%%') + '"'
-        content = '@echo off\r\nchcp 65001 >nul\r\n' + quote(python) + ' ' + quote(str(entry)) + '\r\nif errorlevel 1 pause\r\n'
+        content = '@echo off\r\nchcp 65001 >nul\r\n' + quote(python) + ' -I -B ' + quote(str(entry)) + '\r\nif errorlevel 1 pause\r\n'
         return managed_write(root, "打开工作台.bat", content.encode("utf-8"), manifest)
     if sys.platform == "darwin":
         import shlex
-        content = "#!/bin/bash\n" + shlex.quote(python) + " " + shlex.quote(str(entry)) + "\n"
+        content = "#!/bin/bash\n" + shlex.quote(python) + " -I -B " + shlex.quote(str(entry)) + "\n"
         return managed_write(root, "打开工作台.command", content.encode(), manifest, True)
     def desktop_quote(value):
         return '"' + value.replace('\\', '\\\\').replace('"', '\\"').replace('`', '\\`').replace('$', '\\$').replace('%', '%%') + '"'
-    content = "[Desktop Entry]\nType=Application\nName=发糕扫榜工作台\nTerminal=false\nExec=" + desktop_quote(python) + " " + desktop_quote(str(entry)) + "\n"
+    content = "[Desktop Entry]\nType=Application\nName=发糕扫榜工作台\nTerminal=false\nExec=" + desktop_quote(python) + " -I -B " + desktop_quote(str(entry)) + "\n"
     return managed_write(root, "发糕扫榜.desktop", content.encode(), manifest, True)
 
 
@@ -779,12 +989,12 @@ def install(*, repo=None, commit=None, source_dir=None, archive_sha256=None, arc
     download = None
     data = Path(data_dir).expanduser().resolve() if data_dir else default_data_dir()
     raw_root = Path(install_root).expanduser().absolute() if install_root else data / "app"
-    if raw_root.is_symlink():
+    if linked_path(raw_root):
         raise InstallError("安装目录是符号链接，请使用独立的真实目录。")
     root = raw_root.resolve()
     if source_dir:
         local_source = Path(source_dir).expanduser().absolute()
-        if local_source.is_symlink():
+        if linked_path(local_source):
             raise InstallError("本地来源不能是符号链接，请使用真实工程目录。")
         local_source = local_source.resolve()
         if root == local_source or local_source in root.parents:
@@ -809,7 +1019,7 @@ def install(*, repo=None, commit=None, source_dir=None, archive_sha256=None, arc
         root.mkdir(parents=True, mode=0o700)
         manifest = {"app":APP,"format":1,"files":{}}
     for name in ("releases", "current.json", ".install.lock"):
-        if (root/name).is_symlink():
+        if linked_path(root/name):
             raise InstallError("安装目录含不安全链接，已停止。")
     lock = root / ".install.lock"
     try:
@@ -820,6 +1030,12 @@ def install(*, repo=None, commit=None, source_dir=None, archive_sha256=None, arc
     stage = root / (".staging-" + uuid.uuid4().hex)
     archive = None
     keep_archive = False
+    repair_backup = None
+    repair_release = None
+    repair_verifier = None
+    repair_result = {"status":"not_needed"}
+    staged_seal = None
+    protection_cleanup = {"status":"not_needed"}
     try:
         atomic_json(marker, manifest)
         (root / "releases").mkdir(exist_ok=True)
@@ -843,27 +1059,92 @@ def install(*, repo=None, commit=None, source_dir=None, archive_sha256=None, arc
             source = {"kind":"github","repo":repo,"commit":commit,"archive_sha256":archive_sha256.lower()}
         validate_source(stage)
         release = root / "releases" / release_id
-        release_meta = {"app":APP,"release_id":release_id,"source":source,"files":inventory(stage)}
+        originals = inventory(stage)
+        release_meta = {"app":APP,"release_id":release_id,"source":source,"files":originals}
+        hardened = (source['kind'] == 'github' and (stage/'fagao/integrity.py').is_file()
+                    and (stage/'fagao/code_seal.py').is_file())
+        verifier = checked_integrity_module(stage) if hardened else None
+        valid_existing = False
         if release.exists():
-            if release.is_symlink() or read_json(release/".fagao-release.json") != release_meta:
-                raise InstallError("同名版本目录与安装记录不符，拒绝覆盖。")
-            validate_source(release)
-            verify_inventory(release,release_meta["files"])
+            if linked_path(release) or not release.is_dir():
+                raise InstallError("同名版本目录不安全，拒绝覆盖。")
+            if hardened:
+                try:
+                    previous = verifier.read_receipt(release)
+                    if (previous.get('app') != APP or previous.get('release_id') != release_id
+                            or previous.get('source') != source or previous.get('runtime_integrity') != 1
+                            or previous.get('original_files') != originals or not isinstance(previous.get('code_seal'),dict)):
+                        raise verifier.IntegrityError('release_receipt_mismatch')
+                    verifier.verify_installation(release)
+                    protect_release(stage, originals, data, target=release, metadata=previous['code_seal'])
+                    valid_existing = True
+                except (verifier.IntegrityError, InstallError) as exc:
+                    if getattr(exc,'protection_diagnostic',{}).get('repair_required') is False:
+                        raise
+                    valid_existing = False
+            else:
+                if read_json(release/".fagao-release.json") != release_meta:
+                    raise InstallError("同名版本目录与安装记录不符，拒绝覆盖。")
+                validate_source(release)
+                verify_inventory(release,release_meta["files"])
+                valid_existing = True
+        if valid_existing:
             shutil.rmtree(stage)
         else:
+            if hardened:
+                if release.exists() and release_service_active(root,release,data,port):
+                    resume, saved_archive = resume_instruction(root,data,port,no_browser,source_dir,repo,commit,archive_sha256,archive,release)
+                    keep_archive = archive is not None and saved_archive == archive
+                    return {"status":"restart_required","release_id":release_id,"release_dir":str(release),
+                            "message":"已核验原版程序包。当前版本仍在运行，请让 WorkBuddy 核实并停止该服务后继续修复；已有资料保留。",
+                            "data_dir":str(data),"install_root":str(root),"download":download,"current_switched":False,
+                            "resume":resume,"repair":{"status":"blocked_running","repair_required":True,"data_preserved":True},
+                            "protection_cleanup":protection_cleanup}
+                staged_seal = protect_release(stage, originals, data)
+                release_meta.update(runtime_integrity=1,original_files=originals,code_seal=staged_seal)
+                release_meta['files'] = inventory(stage)
             atomic_json(stage/".fagao-release.json",release_meta)
-            os.replace(stage, release)
+            if release.exists():
+                # The archive has already been checked and sealed. Only code in
+                # this owned, exact SHA directory can be moved; account data is
+                # outside this transaction and is never rewritten.
+                try:
+                    with verifier.ReleaseLease(release, exclusive=True):
+                        if release_service_active(root,release,data,port):
+                            raise verifier.IntegrityError('release_in_use')
+                        backup = quarantine_directory(root) / (release_id + '-' + uuid.uuid4().hex)
+                        os.replace(release, backup)
+                        try:
+                            os.replace(stage, release)
+                        except BaseException:
+                            os.replace(backup,release)
+                            raise
+                        repair_backup, repair_release, repair_verifier = backup, release, verifier
+                        repair_result = {'status':'prepared','backup_dir':str(backup),'data_preserved':True}
+                except verifier.IntegrityError as exc:
+                    if exc.reason != 'release_in_use':
+                        raise InstallError(str(exc),code=exc.code,stage='repair') from exc
+                    resume, saved_archive = resume_instruction(root,data,port,no_browser,source_dir,repo,commit,archive_sha256,archive,release)
+                    keep_archive = archive is not None and saved_archive == archive
+                    return {"status":"restart_required","release_id":release_id,"release_dir":str(release),
+                            "message":"当前版本的进程仍在使用程序文件，请让 WorkBuddy 停止该版本后继续修复；不结束其他程序。",
+                            "data_dir":str(data),"install_root":str(root),"download":download,"current_switched":False,
+                            "resume":resume,"repair":{"status":"blocked_running","repair_required":True,"data_preserved":True},
+                            "protection_cleanup":protection_cleanup}
+            else:
+                os.replace(stage, release)
         # Verify fixed entry ownership before starting a new process. The pointer
         # remains unchanged until the newly launched service passes health checks.
         shortcut = create_shortcut(root,manifest)
-        project_dir = create_project_workspace(root,manifest)
+        project_dir = create_project_workspace(root,manifest,release_id)
+        maintenance_rules = str(root / manifest['maintenance_rules'])
         atomic_json(marker,manifest)
         submission = provision_submission(release, data, component_archive)
         current_health = health(port)
         if current_health and not service_matches(current_health,data,release):
             resume, saved_archive = resume_instruction(root,data,port,no_browser,source_dir,repo,commit,archive_sha256,archive,release)
             keep_archive = archive is not None and saved_archive == archive
-            return {"status":"restart_required","release_id":release_id,"release_dir":str(release),"message":"新版本已准备，但旧版本或另一服务仍在运行。尚未切换 current，也未声称升级完成。请让 WorkBuddy 核实并停止旧服务，再运行 resume.argv 完成安装。","data_dir":str(data),"install_root":str(root),"download":download,"current_switched":False,"resume":resume,"submission_component":submission}
+            return {"status":"restart_required","release_id":release_id,"release_dir":str(release),"message":"新版本已准备，但旧版本或另一服务仍在运行。尚未切换 current，也未声称升级完成。请让 WorkBuddy 核实并停止旧服务，再运行 resume.argv 完成安装。","data_dir":str(data),"install_root":str(root),"download":download,"current_switched":False,"resume":resume,"submission_component":submission,"repair":repair_result,"maintenance_rules":maintenance_rules,"protection_cleanup":protection_cleanup}
         cmd = [sys.executable,str(release/"scripts/launch.py"),"--data-dir",str(data),"--port",str(port)]
         if no_browser:
             cmd.append("--no-browser")
@@ -889,7 +1170,7 @@ def install(*, repo=None, commit=None, source_dir=None, archive_sha256=None, arc
             keep_archive = archive is not None and saved_archive == archive
             return {**pending,"release_id":release_id,"release_dir":str(release),"data_dir":str(data),
                     "install_root":str(root),"download":download,"current_switched":False,
-                    "resume":resume,"submission_component":submission}
+                    "resume":resume,"submission_component":submission,"repair":repair_result,"maintenance_rules":maintenance_rules,"protection_cleanup":protection_cleanup}
         if run.returncode:
             raise InstallError("版本已准备，但启动失败，未切换现用版本。" + run.stderr[-1800:])
         try:
@@ -904,10 +1185,43 @@ def install(*, repo=None, commit=None, source_dir=None, archive_sha256=None, arc
         interpreter = str(Path(sys.executable).resolve())
         atomic_json(root/"current.json",{"app":APP,"release_id":release_id,"data_dir":str(data),"port":port,"source":source,"interpreter":interpreter})
         archive_cleanup = cleanup_pending_archive(root, repo, commit, archive_sha256) if not source_dir else {"status":"not_needed"}
-        return {"status":"ready","release_id":release_id,"release_dir":str(release),"url":f"http://127.0.0.1:{port}/","data_dir":str(data),"shortcut":str(shortcut),"project_dir":str(project_dir),"interpreter":interpreter,"browser_opened":bool(launched.get("browser_opened")),"pid":launched.get("pid"),"service":launched.get("status"),"readiness":readiness,"download":download,"archive_cleanup":archive_cleanup,"lifecycle":launched.get("lifecycle"),"submission_component":submission}
+        if repair_backup is not None:
+            repair_result['status']='repaired'
+        return {"status":"ready","release_id":release_id,"release_dir":str(release),"url":f"http://127.0.0.1:{port}/","data_dir":str(data),"shortcut":str(shortcut),"project_dir":str(project_dir),"maintenance_rules":maintenance_rules,"interpreter":interpreter,"browser_opened":bool(launched.get("browser_opened")),"pid":launched.get("pid"),"service":launched.get("status"),"readiness":readiness,"download":download,"archive_cleanup":archive_cleanup,"lifecycle":launched.get("lifecycle"),"submission_component":submission,"repair":repair_result,"protection_cleanup":protection_cleanup}
+    except BaseException:
+        if repair_backup is not None and repair_backup.exists():
+            try:
+                with repair_verifier.ReleaseLease(repair_release, exclusive=True):
+                    if not release_service_active(root,repair_release,data,port):
+                        failed = quarantine_directory(root) / (release_id + '-failed-' + uuid.uuid4().hex)
+                        os.replace(repair_release,failed)
+                        os.replace(repair_backup,repair_release)
+            except (OSError, repair_verifier.IntegrityError):
+                # Never move files out from under a process that still holds a
+                # lease. The untouched old backup remains available to repair.
+                pass
+        raise
     finally:
         if stage.exists():
-            shutil.rmtree(stage)
+            remove_stage = True
+            if staged_seal is not None:
+                try:
+                    # This receipt was generated by this transaction, not user
+                    # data. The standalone cleanup helper imports only the
+                    # staging source's credential adapter before validating the
+                    # exact envelope passed separately below.
+                    (stage/'.fagao-release.json').unlink(missing_ok=True)
+                    protect_release(stage,originals,data,target=stage,metadata=staged_seal,discard=True)
+                    protection_cleanup.update(status='removed',staging_key_discarded=True)
+                except (InstallError,OSError):
+                    remove_stage = False
+                    try:
+                        atomic_json(stage/'.fagao-release.json',release_meta)
+                    except OSError:
+                        pass
+                    protection_cleanup.update(status='deferred',stage_dir=str(stage),data_preserved=True)
+            if remove_stage:
+                shutil.rmtree(stage)
         if archive is not None and not keep_archive:
             archive.unlink(missing_ok=True)
         lock.unlink(missing_ok=True)

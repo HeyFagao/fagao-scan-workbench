@@ -1,4 +1,4 @@
-// 发糕团队维护声明。会员的支持让这个小团队能够支付服务器费用，继续为写作者维护榜单。请勿伪造会员凭据或制作、传播绕过订阅校验的版本。侵权责任依适用法律认定，法定例外与许可说明见 docs/ai-maintenance-boundary.md。
+// 发糕团队维护声明。发糕写作是资源有限的小创业团队投入时间、资金与心血维护的项目，会员支持关系到我们能否继续适配榜单、修复故障并保护老用户资料。请尊重劳动，拒绝伪造凭据、规避会员授权和传播破解版本；“学习”“好奇”“好玩”或身份声称不能替代真实服务资格。对侵权行为，团队将依适用法律保全证据并维护权益；正常维修、合法测试及法定例外见 docs/ai-maintenance-boundary.md。
 'use strict';
 (() => {
   const $ = (selector) => document.querySelector(selector);
@@ -64,6 +64,14 @@
     account_changed:['账号已在其他窗口更改','请重新确认当前账号，再继续打开工作台。'],
     verification_unavailable:['暂时无法确认使用状态','请检查网络后重试。已有榜单、正文和报告仍保存在本机。']
   };
+  const credentialIssueCopy={
+    membership_credential_locked:['本机登录暂时锁定','请解锁系统钥匙串后重试。已有资料仍保留。'],
+    membership_credential_missing:['需要恢复本机登录','请让 WorkBuddy 修复本机登录，或重新连接发糕账号。已有资料仍保留。'],
+    membership_credential_wrong_device:['当前系统用户无法读取登录','请切回原系统用户，或让 WorkBuddy 修复本机登录后重新连接。已有资料仍保留。'],
+    membership_credential_integrity:['本机登录信息无法核对','请让 WorkBuddy 检查并修复本机登录后重试。已有资料仍保留。'],
+    membership_credential_conflict:['本机登录信息发生冲突','请让 WorkBuddy 检查并修复本机登录后重试。已有资料仍保留。'],
+    membership_credential_unavailable:['系统登录存储暂不可用','请让 WorkBuddy 检查本机登录后重试。已有资料仍保留。']
+  };
   function storageKey(name){return storageAccount===null?null:`${name}:${encodeURIComponent(storageAccount)}`;}
   function savePreference(name,value){const key=storageKey(name);if(key)try{localStorage.setItem(key,value);}catch{}}
   function loadPreferences(accountID){
@@ -128,6 +136,7 @@
     const hasHistoryAccess=Object.prototype.hasOwnProperty.call(value,'history_access_expires_at');
     const historyEnd=hasHistoryAccess?value.history_access_expires_at:value.history_membership_expires_at;
     const result={allowed:false,can_read_history:false,access_mode:'none',access_basis:knownBasis?basis:null,reason:membershipCopy[reason]?reason:'verification_unavailable',account,generation:typeof value.generation==='string' || typeof value.generation==='number'?String(value.generation):'',membership_expires_at:value.membership_expires_at,access_expires_at:accessEnd,permit_expires_at:value.permit_expires_at,identity_expires_at:value.identity_expires_at,history_eligible:value.history_eligible===true,history_membership_expires_at:value.history_membership_expires_at,history_access_expires_at:historyEnd,server_time:value.server_time,policy_version:value.policy_version};
+    result.credential_storage_issue=!value.allowed && reason==='verification_unavailable' && !value.can_read_history && typeof value.credential_storage_issue==='string' && Object.hasOwn(credentialIssueCopy,value.credential_storage_issue)?value.credential_storage_issue:null;
     const time=raw=>typeof raw==='string' && /(?:Z|[+-]\d{2}:\d{2})$/.test(raw)?Date.parse(raw):NaN;
     const validDates=['membership_expires_at','access_expires_at','history_membership_expires_at','history_access_expires_at','identity_expires_at','permit_expires_at'].every(key=>value[key]==null || Number.isFinite(time(value[key])));
     const memberBasis=basis==='paid_membership' || basis==='experimental_membership';
@@ -171,7 +180,8 @@
     });
   }
   function renderMembership(){
-    const info=membershipCopy[membership.reason] || membershipCopy.verification_unavailable, account=membership.account;
+    const storageIssue=membership.credential_storage_issue;
+    const info=credentialIssueCopy[storageIssue] || membershipCopy[membership.reason] || membershipCopy.verification_unavailable, account=membership.account;
     document.body.classList.toggle('membership-locked',!readable());document.body.classList.toggle('membership-read-only',membership.can_read_history===true);document.body.classList.toggle('legacy-pending',legacyBlocked());
     const sidebar=$('.sidebar');sidebar.inert=!readable() || legacyBlocked();sidebar.setAttribute('aria-disabled',String(sidebar.inert));
     const experience=membership.access_basis==='free_trial' || membership.access_basis==='word_pack';
@@ -191,8 +201,9 @@
     if(readable())return;
     const checking=membership.reason==='checking', reconnect=['not_authenticated','device_revoked','device_limit'].includes(membership.reason);
     const expired=membership.reason==='expired';
-    const action=expired?renewActions:reconnect?`<button class="button primary" data-action="membership-connect" ${membershipBusy?'disabled':''}>${membershipBusy?'正在连接…':'连接发糕账号'}</button>`:`<a class="button primary" href="${WORKBENCH_SITE}" target="_blank" rel="noopener noreferrer">${membership.reason==='not_eligible'?'前往官网开始体验':'前往发糕写作'} ↗</a>`;
-    $('#content').innerHTML=`<section id="membership-card" class="membership-card membership-welcome" aria-labelledby="membership-title">${checking?'<div class="membership-symbol" aria-hidden="true"><span class="spinner"></span></div>':mascot}<span class="membership-eyebrow">发糕扫榜工作台</span><h1 id="membership-title">${escape(info[0])}</h1><p>${escape(info[1])}</p>${account?`<div class="membership-current">${escape(account.display_name || '已连接账号')}</div>`:''}<div class="membership-actions">${checking?'':action}${checking?'':`<button class="button ${reconnect || expired?'quiet-button':'secondary'}" data-action="membership-refresh" ${membershipBusy?'disabled':''}>${membershipBusy?'正在确认…':'重新确认状态'}</button>`}</div><small>${reconnect?'将在官网完成登录，工作台不会索取你的密码。':'账号恢复权益后可继续使用，无需重新安装。'}</small></section>`;
+    const storageReconnect=['membership_credential_missing','membership_credential_wrong_device'].includes(storageIssue);
+    const action=storageIssue?`<button class="button primary" data-action="membership-refresh" ${membershipBusy?'disabled':''}>${membershipBusy?'正在确认…':'重试'}</button>${storageReconnect?`<button class="button secondary" data-action="membership-connect" ${membershipBusy?'disabled':''}>重新连接发糕账号</button>`:''}`:expired?renewActions:reconnect?`<button class="button primary" data-action="membership-connect" ${membershipBusy?'disabled':''}>${membershipBusy?'正在连接…':'连接发糕账号'}</button>`:`<a class="button primary" href="${WORKBENCH_SITE}" target="_blank" rel="noopener noreferrer">${membership.reason==='not_eligible'?'前往官网开始体验':'前往发糕写作'} ↗</a>`;
+    $('#content').innerHTML=`<section id="membership-card" class="membership-card membership-welcome" aria-labelledby="membership-title">${checking?'<div class="membership-symbol" aria-hidden="true"><span class="spinner"></span></div>':mascot}<span class="membership-eyebrow">发糕扫榜工作台</span><h1 id="membership-title">${escape(info[0])}</h1><p>${escape(info[1])}</p>${account?`<div class="membership-current">${escape(account.display_name || '已连接账号')}</div>`:''}<div class="membership-actions">${checking?'':action}${checking || storageIssue?'':`<button class="button ${reconnect || expired?'quiet-button':'secondary'}" data-action="membership-refresh" ${membershipBusy?'disabled':''}>${membershipBusy?'正在确认…':'重新确认状态'}</button>`}</div><small>${storageIssue?'修复本机登录后可恢复访问，无需重新安装。':reconnect?'将在官网完成登录，工作台不会索取你的密码。':'账号恢复权益后可继续使用，无需重新安装。'}</small></section>`;
   }
   function renderLegacy(){
     if(!membership.allowed || !legacyBlocked())return;
@@ -305,7 +316,7 @@
       if(readable() && (unlocked || reload || !state))await refresh();
     }catch(error){
       if(request!==membershipRequest || error.code==='stale_account')return;
-      applyMembership({...membership,allowed:false,can_read_history:false,access_mode:'none',reason:'verification_unavailable'});
+      applyMembership({...membership,allowed:false,can_read_history:false,access_mode:'none',reason:'verification_unavailable',credential_storage_issue:null});
     }finally{if(request===membershipRequest){scheduleMembership();if(callbackNotice){notice(callbackNotice);callbackNotice='';}}}
   }
   async function connectMembership(){
@@ -336,6 +347,12 @@
   const isDrama = (id=platformID()) => platforms().some(p=>p.id===id && p.group==='drama');
   const itemUnit = (id=platformID()) => isDrama(id)?'部':'本';
   const isRecommendation = (id=platformID()) => id==='fanqie_recommend';
+  const archiveForSource = id => ({hongguo_official:'hongguo',zhihu_story:'zhihu'})[id];
+  const directSourceForArchive = board => {
+    const id=({hongguo:'hongguo_official',zhihu:'zhihu_story'})[board];
+    return platforms().find(p=>p.id===id);
+  };
+  const omitMissingAuthor = (id=platformID()) => isDrama(id) || id==='zhihu_story';
   const defaultsFor = (id) => ({limit:10000,max_pages:100,...defaults[id],...platforms().find(p=>p.id===id)?.default_options});
   const channelsFor = (id) => platforms().find(p=>p.id===id)?.channels || (id==='fanqie'?['女频','男频']:[defaultsFor(id).channel || '全部']);
   const nameOf = (id) => platforms().find((p) => p.id === id)?.name || fallbackPlatforms.find((p) => p.id === id)?.name || id;
@@ -447,6 +464,7 @@
   function readableWarning(value){return String(value).replace(/[a-z]+(?:_[a-z]+)+/g,key=>stopReasons[key] || key);}
   function paginationSummary(item){
     const page=item?.pagination;
+    if(page?.stop_reason==='source_first_batch')return `来源首批已读取 · 收录 ${item.books?.length ?? item.books_count ?? 0} ${itemUnit(item.platform)}短篇`;
     if(page?.stop_reason==='imported_page')return `${Number.isInteger(page.source_page) && page.source_page>0?`已导入第 ${page.source_page} 页`:'已导入保存的榜单页'} · 本页 ${item.books?.length ?? item.books_count ?? 0} ${itemUnit(item.platform)} · ${item.data_date?'来源日期：'+item.data_date:'来源更新时间未知'}`;
     if(!page || !Number.isFinite(page.pages_fetched))return '';
     if(platform().max_limit && page.stop_reason==='requested_limit'){
@@ -591,8 +609,8 @@
       const selected = feedOpen ? dailyView.board === id : section === 'browse' && platformID() === 'fanqie_short' && id === 'fanqie_story';
       return `<button class="platform-button" data-action="daily-board" data-board="${id}" aria-current="${selected}"><span class="platform-mark" aria-hidden="true">${escape(label[0])}</span><span class="platform-name">${escape(label)}</span></button>`;
     };
-    const registered = platforms().filter(p => p.mode === domesticMode && p.id !== 'fanqie_short' && p.group!=='drama');
-    const shorts = domesticMode === 'short' ? shortBoards.map(boardButton).join('') : '';
+    const registered = platforms().filter(p => p.mode === domesticMode && !['fanqie_short','zhihu_story'].includes(p.id) && p.group!=='drama');
+    const shorts = domesticMode === 'short' ? shortBoards.map(entry=>directSourceForArchive(entry[0])?platformButton(directSourceForArchive(entry[0])):boardButton(entry)).join('') : '';
     setPlatformButtons($('#platforms'), shorts + registered.map(platformButton).join(''));
     const officialDrama=platforms().find(p=>p.id==='hongguo_official');
     setPlatformButtons($('#drama-platforms'), dramaBoards.map(entry=>entry[0]==='hongguo' && officialDrama?platformButton(officialDrama):boardButton(entry)).join(''));
@@ -603,6 +621,7 @@
     $('#content').classList.toggle('overseas-content',overseasActive && section==='browse');
     $('#content').classList.toggle('drama-content',section==='browse' && isDrama());
     $('#content').classList.toggle('recommendation-content',section==='browse' && isRecommendation());
+    $('#content').classList.toggle('zhihu-content',section==='browse' && platformID()==='zhihu_story');
     document.querySelectorAll('[data-action="section"]').forEach((el) => el.setAttribute('aria-current',String(el.dataset.section === section)));
     $('#favorite-count').textContent = state.favorites.length; $('#report-count').textContent = state.reports.length;
     const mainURL = safeURL(state.config?.main_site) || 'https://www.fagaochuangzuo.com/'; $('#main-site').href = mainURL;
@@ -687,7 +706,8 @@
     const cursor=active?.id==='daily-query'?[active.selectionStart,active.selectionEnd]:null;
     const sameTable=wrap.querySelector('.daily-boards')?.dataset.board===target.board;
     const previousOffset=sameTable?wrap.querySelector('.daily-table-wrap')?.scrollLeft:0;
-    const officialLink=target.board==='hongguo' && platforms().some(p=>p.id==='hongguo_official')?'<button class="button secondary small" data-action="platform" data-platform="hongguo_official">查看官方榜单</button>':'';
+    const direct=directSourceForArchive(target.board);
+    const officialLink=direct?`<button class="button secondary small" data-action="platform" data-platform="${escape(direct.id)}">${direct.id==='zhihu_story'?'查看知乎盐选':'查看官方榜单'}</button>`:'';
     const refresh=`${officialLink}${membership.allowed && !target.revision?`<button class="button secondary small" data-action="daily-refresh" ${target.busy?'disabled':''}>${target.busy?'检查更新中…':'更新榜单'}</button>`:''}`;
     const firstDownloadFailed=!snap && !target.revision && membership.allowed && dailyChecks.get(target.board)?.downloadFailed;
     let body='';
@@ -778,7 +798,8 @@
     const options=optionsFor(), key=scopeKey();
     const title = isLibrary ? '黑岩故事会 · 选题书单' : `${nameOf(p.id)} · ${options.board || '作品发现'}`;
     const sub = membership.can_read_history ? '查看这台电脑上已保存的榜单与作品资料。' : isLibrary ? '直接打开腾讯文档书单，在原页面登录后查看。' : isDrama()?'从热门短剧里，发现下一份创作灵感。':isRecommendation()?'选一个题材，发现值得读的短故事。':mode()==='overseas' ? '英文书名与简介 · 中文分类浏览 · 选中后可回 WorkBuddy 翻译或分析' : '持续更新平台榜单，发现值得阅读与研究的作品。';
-    const action = isLibrary ? '' : `${p.id==='hongguo_official'?'<button class="quiet-button" data-action="daily-board" data-board="hongguo">已存榜单</button>':''}${snapshot && mode()!=='overseas'?'<button class="button secondary" data-action="insights">榜单观察</button>':''}<button class="button secondary" data-action="collection-options" aria-label="调整采集设置">采集设置</button><button class="button secondary" data-action="collect" ${job || activeRequest || unsupported ? 'disabled' : ''}>${job ? (job.waiting_for_more?'已加载 · 向下继续':'<span class="spinner"></span>正在读取') : '↻ '+(isRecommendation()?'更新推荐':'更新榜单')}</button>`;
+    const archive=archiveForSource(p.id);
+    const action = isLibrary ? '' : `${archive?`<button class="quiet-button" data-action="daily-board" data-board="${archive}">已存榜单</button>`:''}${snapshot && mode()!=='overseas'?'<button class="button secondary" data-action="insights">榜单观察</button>':''}<button class="button secondary" data-action="collection-options" aria-label="调整采集设置">采集设置</button><button class="button secondary" data-action="collect" ${job || activeRequest || unsupported ? 'disabled' : ''}>${job ? (job.waiting_for_more?'已加载 · 向下继续':'<span class="spinner"></span>正在读取') : '↻ '+(isRecommendation()?'更新推荐':'更新榜单')}</button>`;
     let body = pageHead(title,sub,action)+(isLibrary ? heiyanBooklistCard(!!snapshot) : renderBoardControls());
     const freshResult=latestResults.get(key);
     if(freshResult && freshResult!==snapshot?.id)body+=`<div class="new-results"><span>新的榜单已更新。当前选中的作品仍保留在原记录中。</span><button data-action="show-latest" data-id="${escape(freshResult)}">查看最新榜单 →</button></div>`;
@@ -806,7 +827,7 @@
       const start = (Math.min(page,pages)-1)*size, end=Math.min(books.length,start+(page===1?listWindow.count:size)), sliced = books.slice(start,end);
       body += '<div class="book-layout"><div class="book-list"><div class="list-key"><span>列表序号 / 作品</span><span>'+ (isLibrary ? '资料来源' : isRecommendation()?'推荐顺序':usesSourcePositions(snapshot)?'来源位置':mode()==='overseas'?'来源名次':'原榜名次') +'</span></div>';
       if (!books.length) body += empty('没有匹配的作品','换个关键词，或清除筛选条件。','<button class="button secondary small" data-action="clear-filters">清除筛选</button>','⌕','compact');
-      else body += sliced.map((b,i) => `<button class="book-row" data-action="select-book" data-book="${escape(b.id)}" aria-pressed="${b.id===view().selected_id}"><span class="list-number">${String(start+i+1).padStart(2,'0')}</span>${cover(b)}<span class="row-content"><span class="book-title">${escape(b.title)}${favorite(b) ? '<span class="star" aria-label="已收藏"> ♡</span>' : ''}</span><span class="book-meta">${[b.author || (isDrama()?'':'作者未提供'),Array.isArray(b.tags)?b.tags.slice(0,2).join(' · '):b.tags,b.status].filter(Boolean).map(escape).join('<span>·</span>')}</span><span class="row-summary">${escape(b.summary || '本次来源未提供简介')}</span><span class="row-metrics">${metricsHTML(b)}</span></span><span class="rank">${isLibrary ? '书库' : Number.isFinite(b.rank) ? (isRecommendation()?'推荐 ':'# ')+b.rank : isRecommendation()?'推荐':'—'}</span></button>`).join('');
+      else body += sliced.map((b,i) => `<button class="book-row" data-action="select-book" data-book="${escape(b.id)}" aria-pressed="${b.id===view().selected_id}"><span class="list-number">${String(start+i+1).padStart(2,'0')}</span>${cover(b)}<span class="row-content"><span class="book-title">${escape(b.title)}${favorite(b) ? '<span class="star" aria-label="已收藏"> ♡</span>' : ''}</span><span class="book-meta">${[b.author || (omitMissingAuthor()?'':'作者未提供'),Array.isArray(b.tags)?b.tags.slice(0,2).join(' · '):b.tags,b.status].filter(Boolean).map(escape).join('<span>·</span>')}</span><span class="row-summary">${escape(b.summary || '本次来源未提供简介')}</span><span class="row-metrics">${metricsHTML(b)}</span></span><span class="rank">${isLibrary ? '书库' : Number.isFinite(b.rank) ? (isRecommendation()?'推荐 ':'# ')+b.rank : isRecommendation()?'推荐':'—'}</span></button>`).join('');
       const continuation=membership.allowed?continuationJob():null;
       if(page===1 && (end<books.length || continuation))body+=`<div class="list-load-more" id="list-end"><button class="button secondary" data-action="load-more">${end<books.length?`加载更多作品（已显示 ${end} / ${books.length}）`:'继续读取后续作品'}</button><small>${end<books.length?'向下浏览时继续显示后续作品':'已取得的作品可先浏览，继续向下时再读取后续页面'}</small></div>`;
       if (books.length) body += `<div class="pagination"><span>共 ${books.length} ${itemUnit()} · 序号跨页连续</span><div><button data-action="page" data-page="${page-1}" aria-label="上一页" ${page<=1?'disabled':''}>‹</button><span>${Math.min(page,pages)} / ${pages}</span><button data-action="page" data-page="${page+1}" aria-label="下一页" ${page>=pages?'disabled':''}>›</button></div></div>`;
@@ -1008,7 +1029,7 @@
     if (!b) return '<aside class="detail" aria-label="作品详情">'+empty('选一本，进一步了解','点击左侧作品，查看简介和准确的榜单位置。','','▤','compact')+'</aside>';
     const position = visible.findIndex((x) => x.id === b.id)+1, url = safeURL(b.url), metrics = Array.isArray(b.metrics) ? b.metrics : [];
     const reports = state.reports.filter((r) => r.book_id === b.id && (!r.platform || r.platform === snapshot.platform));
-    return `<aside class="detail" aria-label="作品详情" data-book="${escape(b.id)}" data-snapshot="${escape(snapshot.id)}"><div class="detail-top"><span>已选中的作品</span><button class="favorite-button" data-action="favorite" data-book="${escape(b.id)}" aria-pressed="${favorite(b)}">${favorite(b)?'♥ 已收藏':'♡ 收藏'}</button></div>${cover(b,true)}<h2>${escape(b.title)}</h2><p class="author">${escape(b.author || (isDrama()?'':'作者未提供'))}${b.status?' · '+escape(b.status):''}</p><div class="positions"><span>${position?'列表第 '+position+' '+itemUnit():'已被当前筛选隐藏'}</span>${snapshot.platform!=='heiyan' && Number.isFinite(b.rank)?`<span class="original">${b.rank_semantics==='source_list_position'?`来源${isRecommendation()?'推荐':'列表'}第 ${b.rank} ${itemUnit()}`:`${mode()==='overseas'?'来源榜单':'原榜'}第 ${b.rank} 名`}</span>`:''}</div>${mode()==='overseas' && membership.allowed?`<div class="translation-card"><span class="translation-mark" aria-hidden="true">译</span><div><strong>回 WorkBuddy 说“翻译这本”</strong><p>翻译所选作品的英文书名与简介。</p><button class="button secondary small" data-action="translation-context">复制翻译请求</button></div></div>`:''}<p class="summary">${escape(b.summary || '本次来源未提供简介，可在作品原页查看。')}</p>${metrics.length?`<div class="metrics">${metrics.map((m)=>`<span>${escape(m.name)} <strong>${escape(m.value)}</strong>${escape(m.unit || '')}</span>`).join('')}</div>`:''}${['fanqie','qimao'].includes(snapshot.platform)?`<button class="book-trend-button" data-action="book-trend" data-book="${escape(b.id)}">查看追榜记录 <span aria-hidden="true">↗</span></button>`:''}<div class="detail-actions">${url?`<a class="source-link" href="${escape(url)}" target="_blank" rel="noopener noreferrer">打开作品原页 ↗</a>`:''}${hasOpeningReader(snapshot.platform)?'<button class="button primary small" data-action="catalog">目录与正文</button>':''}<button class="button secondary small" data-action="import-text">导入正文</button></div><p class="text-status">${escape(membership.can_read_history?'当前查看已保存资料，续费后恢复分析与正文获取。':mode()==='overseas'?'已选对象已保存，可回到 WorkBuddy 继续分析。':favoriteGuide(b))}</p>${renderTextAssets(b)}${reports.map((r)=>`<button class="report-item" data-action="report" data-id="${escape(r.id)}">▤ ${escape(r.title || '拆书报告')}<br><small>${escape(r.scope || '')}</small></button>`).join('')}</aside>`;
+    return `<aside class="detail" aria-label="作品详情" data-book="${escape(b.id)}" data-snapshot="${escape(snapshot.id)}"><div class="detail-top"><span>已选中的作品</span><button class="favorite-button" data-action="favorite" data-book="${escape(b.id)}" aria-pressed="${favorite(b)}">${favorite(b)?'♥ 已收藏':'♡ 收藏'}</button></div>${cover(b,true)}<h2>${escape(b.title)}</h2><p class="author">${escape(b.author || (omitMissingAuthor()?'':'作者未提供'))}${b.status?' · '+escape(b.status):''}</p><div class="positions"><span>${position?'列表第 '+position+' '+itemUnit():'已被当前筛选隐藏'}</span>${snapshot.platform!=='heiyan' && Number.isFinite(b.rank)?`<span class="original">${b.rank_semantics==='source_list_position'?`来源${isRecommendation()?'推荐':'列表'}第 ${b.rank} ${itemUnit()}`:`${mode()==='overseas'?'来源榜单':'原榜'}第 ${b.rank} 名`}</span>`:''}</div>${mode()==='overseas' && membership.allowed?`<div class="translation-card"><span class="translation-mark" aria-hidden="true">译</span><div><strong>回 WorkBuddy 说“翻译这本”</strong><p>翻译所选作品的英文书名与简介。</p><button class="button secondary small" data-action="translation-context">复制翻译请求</button></div></div>`:''}<p class="summary">${escape(b.summary || '本次来源未提供简介，可在作品原页查看。')}</p>${metrics.length?`<div class="metrics">${metrics.map((m)=>`<span>${escape(m.name)} <strong>${escape(m.value)}</strong>${escape(m.unit || '')}</span>`).join('')}</div>`:''}${['fanqie','qimao'].includes(snapshot.platform)?`<button class="book-trend-button" data-action="book-trend" data-book="${escape(b.id)}">查看追榜记录 <span aria-hidden="true">↗</span></button>`:''}<div class="detail-actions">${url?`<a class="source-link" href="${escape(url)}" target="_blank" rel="noopener noreferrer">打开作品原页 ↗</a>`:''}${hasOpeningReader(snapshot.platform)?'<button class="button primary small" data-action="catalog">目录与正文</button>':''}<button class="button secondary small" data-action="import-text">导入正文</button></div><p class="text-status">${escape(membership.can_read_history?'当前查看已保存资料，续费后恢复分析与正文获取。':mode()==='overseas'?'已选对象已保存，可回到 WorkBuddy 继续分析。':favoriteGuide(b))}</p>${renderTextAssets(b)}${reports.map((r)=>`<button class="report-item" data-action="report" data-id="${escape(r.id)}">▤ ${escape(r.title || '拆书报告')}<br><small>${escape(r.scope || '')}</small></button>`).join('')}</aside>`;
   }
   function empty(title,text,actions='',symbol='▤',extra='') { return `<div class="empty ${extra}"><div class="empty-symbol" aria-hidden="true">${symbol}</div><h2>${escape(title)}</h2><p>${escape(text)}</p>${actions?`<div class="actions">${actions}</div>`:''}</div>`; }
   function heiyanBooklistCard(compact=false){
@@ -1046,7 +1067,7 @@
   }
   function collectionOptions() {
     const id=platformID(), p=platform(), maxLimit=p.max_limit || 10000, current=optionsFor(id);
-    const hint=p.max_limit?`按${isRecommendation()?'推荐':'原榜'}顺序最多读取 ${maxLimit} ${itemUnit()}，以来源实际数量为准。`:'先显示首批作品，向下浏览时继续读取；最多读取 100 页，以来源实际提供数量为准。';
+    const hint=p.max_limit?`按${isRecommendation()?'推荐':id==='zhihu_story'?'来源列表':'原榜'}顺序最多读取 ${maxLimit} ${itemUnit()}，以来源实际数量为准。`:'先显示首批作品，向下浏览时继续读取；最多读取 100 页，以来源实际提供数量为准。';
     const scopeFields=['channel','board','category','period'].map((key,i)=>`<div class="field"><label for="${key}">${['频道','榜单','分类','周期'][i]}</label><select id="${key}" name="${key}"></select></div>`).join('');
     showDialog('采集设置',`<form id="options-form"><div class="form-grid">${scopeFields}<div class="field"><label for="limit">最大采集数量</label><input id="limit" name="limit" type="number" min="1" max="${maxLimit}" value="${Math.min(current.limit || maxLimit,maxLimit)}" required></div></div><p class="help-inline">${escape(hint)}</p><div class="form-actions"><button class="button secondary" type="button" data-action="close-dialog">取消</button><button class="button primary" type="submit">保存条件</button></div></form>`);
     const form=$('#options-form');

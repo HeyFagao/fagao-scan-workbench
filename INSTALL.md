@@ -80,11 +80,19 @@ PYTHON_ABSOLUTE_PATH bootstrap.py --repo REPO --commit SOURCE_COMMIT --archive-s
 
 读取安装器的 JSON 返回值。`status=ready` 且 `readiness.status=ready` 只说明安装器检查时本地环境和服务已就绪，尚不能证明宿主结束安装命令后服务仍在。GitHub 安装还须核对返回的 `release_id` 等于已选定的 `source_commit`，本机 `/api/health` 的 `version` 等于发行指针的 `app_version`、`source_root` 等于返回的 `release_dir`，且 `data_dir` 为预期资料目录。`readiness.features` 分别标明三家榜单与番茄正文的 `local_ready`，以及黑岩的 `external_link`。`network_verified=false` 表示这里没有替用户登录或验证外站网络，不把依赖自检当成全部平台可用。记录 `url`、`data_dir`、`release_dir`、`project_dir`、`interpreter`、`shortcut`。
 
+固定 CLI 位于 `install_root/open-cli.py`。后续正式命令使用安装记录中的解释器，按 `PYTHON_ABSOLUTE_PATH -I -B OPEN_CLI_ABSOLUTE_PATH --session SESSION_ID COMMAND [COMMAND_ARGUMENTS]` 的参数数组调用；所有大写项由助手替换为真实绝对路径、当前对话 ID 和操作参数。Windows 使用相同参数顺序。入口先核对当前指针及程序完整性，再载入业务代码，自动使用原资料目录，不接受 `--data-dir`、`--install-root` 或环境变量覆盖。旧 `python -m fagao` 保留源码开发兼容，不能当作固定入口的安全边界。
+
 **必须在安装命令返回后另起一次独立工具调用**，再次检查上述健康身份和页面响应。随后复用固定入口，确认打开的是同一份资料与同一版本；服务若已退出，先按第 5 节处理宿主后台运行，再继续验收。不能在同一个尚未结束的安装命令里连续请求两次，就声称已验证跨命令存活。
 
 `browser_opened=true` 只表示系统接受了打开请求；若助手拥有浏览器能力，还要检查窗口是否实际出现、页面是否是工作台。`browser_opened=false` 时，用宿主的打开网页能力访问返回的本机 URL。不要把远程服务器上的 localhost 地址当成用户电脑的工作台。
 
 首次应看到连接官网账号的入口。由用户在官网登录并确认，工作台只接收专用授权，不读取密码、验证码或普通浏览器 Cookie。具有官网返回的当前体验、字数包、会员或实验使用资格的账号连接成功后，若发现旧匿名资料，先请用户选择认领或跳过，再启动自动采集。之后显示本账号三家平台汇总首页，也能进入长篇/短篇列表。除指定的独立实验账号外，到期账号核验身份后只显示已有资料；不能以本地服务 ready 冒充授权可用。客户端不得靠改本机配置开启实验模式。“我的收藏”上方提供独立的“海外网文”入口，中文分类、英文书名和简介；海外采集也只依赖 Python 标准库，缺少两个 overseas 模块时启动自检会报错，维护助手应重新下载完整版本。番茄汇总只含男女频新书榜，阅读榜保留单独浏览；首次没有真实数据时显示真实读取状态。不要自动加载虚构榜单，不要强迫用户每次选择“本次任务类型”。初次完成后给用户固定启动入口；后续只说“打开发糕工作台”即可复用该入口。
+
+### 同版本程序修复
+
+出现 `installation_integrity_failed` 与 `repair_required` 时，保留资料，沿用第 3 节原安装命令，不增加修复参数。安装器重新核验相同固定提交及 SHA-256 的可信归档，只修复它管理的程序版本。对应版本仍运行时返回 `restart_required`，保持当前指针不变；精确停止该工作台后用同一命令继续，不批量结束无关进程。
+
+原程序隔离保留在安装根目录的 `quarantine/`；成功返回 `repair.status=repaired`。账号资料、授权状态、正文、报告及用户修改的 WorkBuddy 项目规则不覆盖。开发者 `--source-dir` 安装损坏仍停止；不能把任意本地目录当作可信远程归档自动修复。代码封装密钥锁定或系统存储暂时不可用时先恢复系统存储，不删除程序。凭据丢失与显式重连流程见[本机保护与恢复](docs/local-protection.md)。
 
 ## 4. 保留后续对话入口
 

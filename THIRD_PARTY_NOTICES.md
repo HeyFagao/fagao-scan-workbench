@@ -98,7 +98,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 固定来源为 [PyPI pyaes 1.6.1](https://pypi.org/project/pyaes/1.6.1/) 的官方 `pyaes-1.6.1.tar.gz`，归档 SHA-256：`02c1b1405c38d3c370b085fb952dd8bea3fadcee6411ad99f312cc129c536d8f`。`fagao/_vendor/pyaes/` 中四个 Python 运行文件与许可证均逐字保留；[UPSTREAM.json](fagao/_vendor/pyaes/UPSTREAM.json) 记录原始下载地址、逐文件大小和 SHA-256。发行版以 PyPI 归档的 `PKG-INFO` 为准；上游 `__init__.py` 中较旧的 `VERSION` 常量也原样保留，未据此伪造版本号。
 
-本工程的 `fagao/reader_crypto.py` 只调用其 CBC 解密，并独立严格检查 PKCS#7 填充、密钥／IV 长度及输入大小。没有使用上游宽松的去填充函数。此依赖不用于凭据、本机资料加密或设计新密码协议，不包含安装钩子，不在用户电脑上运行 pip、Node、编译或依赖下载。验证覆盖 NIST SP 800-38A 的 AES-128/192/256 CBC 向量，以及独立生成的合法和非法填充样例。
+本工程的 `fagao/reader_crypto.py` 只调用其 CBC 解密，并独立严格检查 PKCS#7 填充、密钥／IV 长度及输入大小。没有使用上游宽松的去填充函数。本机凭据密封和关键模块封装也使用此依赖的 AES-CBC，实现按公开 Fernet 格式组织的认证密文；数据库、正文和报告未因此批量加密。本依赖不包含安装钩子，不在用户电脑上运行 pip、Node、编译或依赖下载。验证覆盖 NIST SP 800-38A 的 AES-128/192/256 CBC 向量，以及独立生成的合法和非法填充样例。
 
 ## 本地小说投稿
 
@@ -113,3 +113,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 番茄、七猫的追榜功能参考 [FanqieRankTracker](https://github.com/scoful/FanqieRankTracker) 和采用 MIT 许可的 [QiMaoRankTracker2](https://github.com/siweimidu/QiMaoRankTracker2) 的历史快照与趋势功能。本工程按已有不可变快照独立计算同来源、同范围的变化和历史曲线。
 
 浏览器准备使用本项目已锁定的 Playwright 1.62.1，采用 Apache-2.0 许可。通过官方 npm 包和 Playwright 浏览器下载机制准备的组件保留各自许可，运行资料和缓存保存在本机私有目录。
+
+## 2026-11-16 知乎盐选与本机保护
+
+知乎公开故事榜的接口线索参考 [AnkioTomas/moon](https://github.com/AnkioTomas/moon) 的公开接口入口；该参考项目的 [LICENSE](https://github.com/AnkioTomas/moon/blob/main/LICENSE) 为 GPL-3.0。工作台的 `zhihu_story_rank.py` 由本工程独立实现，只读取已核验的匿名故事榜首批元数据，不复制该项目代码、界面或正文获取功能。来源的内容权利和访问要求继续适用；工作台不因参考一个开源项目而取得付费正文权限。
+
+本机凭据及代码封装由本工程自行实现。Windows DPAPI 与 macOS Keychain 调用系统接口，Linux 使用权限受限的本机密钥文件。认证密文格式依据 [Fernet 公开规范](https://github.com/fernet/spec/blob/master/Spec.md)，AES-CBC 使用上述保留完整 MIT 许可的 pyaes；没有将规范或系统接口文档作为第三方代码打包。保护与恢复边界见[本机保护说明](docs/local-protection.md)。

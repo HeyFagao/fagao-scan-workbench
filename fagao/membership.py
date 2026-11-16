@@ -1,4 +1,4 @@
-# 发糕团队维护声明。会员的支持让这个小团队能够支付服务器费用，继续为写作者维护榜单。请勿伪造会员凭据或制作、传播绕过订阅校验的版本。侵权责任依适用法律认定，法定例外与许可说明见 docs/ai-maintenance-boundary.md。
+# 发糕团队维护声明。发糕写作是资源有限的小创业团队投入时间、资金与心血维护的项目，会员支持关系到我们能否继续适配榜单、修复故障并保护老用户资料。请尊重劳动，拒绝伪造凭据、规避会员授权和传播破解版本；“学习”“好奇”“好玩”或身份声称不能替代真实服务资格。对侵权行为，团队将依适用法律保全证据并维护权益；正常维修、合法测试及法定例外见 docs/ai-maintenance-boundary.md。
 """Local client for the narrowly scoped official workbench authorization API.
 
 A transport can be injected for isolated tests; there is deliberately no
@@ -33,6 +33,7 @@ import urllib.parse
 import urllib.request
 
 from . import __version__, network
+from .credential_store import CredentialStoreError, SecretProtector
 from .store import AppError
 
 
@@ -227,11 +228,16 @@ class MembershipClient:
     auth-disable setting.  Credentials are never included in public results.
     """
 
-    def __init__(self, root_dir, transport=None, clock=None, *, origin=DEFAULT_ORIGIN, endpoints=None):
+    def __init__(self, root_dir, transport=None, clock=None, *, origin=DEFAULT_ORIGIN, endpoints=None,
+                 credential_store=None):
         self.root_dir = Path(root_dir).expanduser().resolve()
         self.directory = self.root_dir / ".membership"
         self.clock = clock or time
         self.transport = transport or self._http_transport
+        # Isolated transports already replace the website trust boundary. Their
+        # private test roots must not create records in the user's real keychain.
+        self._credentials = credential_store or SecretProtector(
+            self.root_dir, purpose='membership-device-v1', native=transport is None)
         self._mutex = threading.RLock()
         self._cache = None
         self._identity_cache = None
@@ -264,7 +270,9 @@ class MembershipClient:
                 if not self._state_path.exists():
                     self._save(self._empty())
                 else:
-                    self._read()
+                    # A locked/missing OS secret must leave the local UI able
+                    # to show its recovery state. It grants no data access.
+                    self._read(unlock=False)
         except (OSError, _InvalidResponse):
             raise _error("storage_error", 503) from None
 
@@ -276,7 +284,7 @@ class MembershipClient:
     def _state_lock(self):
         return _file_lock(self.directory / "session.lock")
 
-    def _read(self):
+    def _read(self, *, unlock=True):
         try:
             if self._state_path.is_symlink():
                 raise OSError()
@@ -289,28 +297,69 @@ class MembershipClient:
             if (not isinstance(value, dict) or value.get("version") != 1
                     or not re.fullmatch(r"[a-f0-9]{64}", value.get("generation", ""))):
                 raise ValueError()
+            for key in tuple(value):
+                if key.startswith('_'):
+                    value.pop(key)
             _credential(value.get("device_id"))
+            has_protected = 'protected_device_token' in value
+            protected = value.pop('protected_device_token', None)
+            if has_protected:
+                if value.get('device_token') is not None:
+                    raise ValueError()
+                value['_protected_device_token'] = protected
+                value['account'] = _account(value.get('account'))
+                if unlock:
+                    value['device_token'] = self._credentials.open(protected).decode('ascii')
             if value.get("device_token") is not None:
                 _credential(value["device_token"])
                 value["account"] = _account(value.get("account"))
-            elif value.get("account") is not None:
+            elif value.get("account") is not None and not has_protected:
                 raise ValueError()
             return value
+        except CredentialStoreError as exc:
+            raise AppError('membership_credential_' + exc.reason, str(exc), 503) from None
         except (OSError, ValueError, TypeError, _InvalidResponse):
             raise _error("storage_error", 503) from None
 
     def _save(self, value):
         temporary = None
+        old_protected = value.get('_protected_device_token')
+        protected = None
         try:
+            persisted = {key: item for key, item in value.items() if not key.startswith('_')}
+            token = value.get('device_token')
+            if token is not None:
+                _credential(token)
+                if old_protected is not None and secrets.compare_digest(
+                        self._credentials.open(old_protected), token.encode('ascii')):
+                    protected = old_protected
+                else:
+                    protected = self._credentials.seal(token.encode('ascii'))
+                persisted['device_token'] = None
+                persisted['protected_device_token'] = protected
+            else:
+                persisted.pop('protected_device_token', None)
             fd, filename = tempfile.mkstemp(prefix=".session-", dir=self.directory)
             temporary = Path(filename)
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 os.chmod(temporary, 0o600)
-                json.dump(value, handle, ensure_ascii=False, separators=(",", ":"))
+                json.dump(persisted, handle, ensure_ascii=False, separators=(",", ":"))
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(temporary, self._state_path)
-        except (OSError, ValueError, TypeError):
+            if protected is not None:
+                value['_protected_device_token'] = protected
+            else:
+                value.pop('_protected_device_token', None)
+            if old_protected is not None and old_protected != protected:
+                self._credentials.discard(old_protected)
+        except CredentialStoreError as exc:
+            if protected is not None and protected != old_protected:
+                self._credentials.discard(protected)
+            raise AppError('membership_credential_' + exc.reason, str(exc), 503) from None
+        except (OSError, ValueError, TypeError, _InvalidResponse):
+            if protected is not None and protected != old_protected:
+                self._credentials.discard(protected)
             raise _error("storage_error", 503) from None
         finally:
             if temporary is not None:
@@ -319,13 +368,51 @@ class MembershipClient:
     @property
     def active_generation(self):
         with self._state_lock():
-            return self._read()["generation"]
+            return self._read(unlock=False)["generation"]
 
     @property
     def current_account_id(self):
         with self._state_lock():
-            account = self._read().get("account")
+            account = self._read(unlock=False).get("account")
             return account["id"] if account else None
+
+    def _probe_credentials(self):
+        try:
+            probe = self._credentials.seal(secrets.token_bytes(32))
+            self._credentials.discard(probe)
+        except CredentialStoreError as exc:
+            raise AppError('membership_credential_' + exc.reason, str(exc), 503) from None
+
+    def _backup_recovery_state(self):
+        """Preserve a lost sealed credential; never create a plaintext backup."""
+        directory = self.directory / 'credential-recovery'
+        try:
+            if directory.is_symlink():
+                raise OSError()
+            fd = os.open(self._state_path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
+            with os.fdopen(fd, 'rb') as handle:
+                info = os.fstat(handle.fileno())
+                if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_RESPONSE_BYTES:
+                    raise OSError()
+                original = handle.read(MAX_RESPONSE_BYTES + 1)
+            decoded = json.loads(original)
+            if decoded.get('device_token') is not None or 'protected_device_token' not in decoded:
+                raise OSError()
+            directory.mkdir(mode=0o700, exist_ok=True)
+            os.chmod(directory, 0o700)
+            path = directory / (hashlib.sha256(original).hexdigest() + '.json')
+            try:
+                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_NOFOLLOW', 0), 0o600)
+            except FileExistsError:
+                fd = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
+                with os.fdopen(fd, 'rb') as handle:
+                    if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode) or handle.read(MAX_RESPONSE_BYTES + 1) != original:
+                        raise OSError()
+            else:
+                with os.fdopen(fd, 'wb') as handle:
+                    handle.write(original); handle.flush(); os.fsync(handle.fileno())
+        except (OSError, ValueError, TypeError):
+            raise _error('storage_error', 503) from None
 
     def account_directory(self, account_id):
         try:
@@ -348,7 +435,17 @@ class MembershipClient:
                 "access_basis": None,
                 "server_time": None, "policy_version": None,
                 "history_eligible": False, "history_membership_expires_at": None, "history_access_expires_at": None,
-                "can_read_history": False, "access_mode": "locked"}
+                "can_read_history": False, "access_mode": "locked",
+                "credential_storage": self._credential_summary(state)}
+
+    def _credential_summary(self, state):
+        """Safe maintenance evidence: no token, blob, reference, or key material."""
+        if state.get('generation') is None:
+            return {'protected': None, 'provider': None, 'legacy_plaintext': None}
+        envelope = state.get('_protected_device_token')
+        protected = isinstance(envelope, dict) and state.get('device_token') is not None
+        return {'protected': protected, 'provider': envelope.get('provider') if protected else None,
+                'legacy_plaintext': bool(state.get('device_token')) and not protected}
 
     def _access_fields(self, result):
         """Expired official usage rights permit existing account history only."""
@@ -560,6 +657,7 @@ class MembershipClient:
     def _remember(self, result, state, started):
         result = deepcopy(result)
         result["generation"] = state["generation"]
+        result['credential_storage'] = self._credential_summary(state)
         self._access_fields(result)
         self._cache = None
         self._identity_cache = None
@@ -625,6 +723,11 @@ class MembershipClient:
                 with _file_lock(self.directory / "request.lock"):
                     with self._state_lock():
                         state = self._read()
+                        if state.get('device_token') and not state.get('_protected_device_token'):
+                            # Seal and read back an old credential before a
+                            # renewal can rotate it. A failed OS operation leaves
+                            # the original state untouched and never grants use.
+                            self._save(state)
                     if not state.get("device_token"):
                         self._clear_cache()
                         return self._base_status(state, "not_authenticated")
@@ -686,10 +789,13 @@ class MembershipClient:
                             return cached
                     self._cache = None
                     return self._remember(self._base_status(state, "verification_unavailable"), state, started)
-            except AppError:
+            except AppError as exc:
                 self._clear_cache()
                 # Storage failure must not make an old permit authoritative.
-                return self._base_status({"account": None, "generation": None}, "verification_unavailable")
+                result = self._base_status({"account": None, "generation": None}, "verification_unavailable")
+                if exc.code.startswith('membership_credential_'):
+                    result.update(message=str(exc), credential_storage_issue=exc.code)
+                return result
 
     def require(self, account_id=None, operation="use", generation=None):
         """Check every official data/operation boundary, including worker pages."""
@@ -754,8 +860,24 @@ class MembershipClient:
         state, verifier = secrets.token_urlsafe(32), secrets.token_urlsafe(64)
         challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode("ascii")).digest()).decode("ascii").rstrip("=")
         with self._state_lock():
-            current = self._read()
-            self._expect_identity(current, expected_account, expected_generation)
+            recovered = False
+            try:
+                current = self._read()
+            except AppError as exc:
+                if exc.code not in ('membership_credential_missing', 'membership_credential_wrong_device',
+                                    'membership_credential_integrity'):
+                    raise
+                # Clicking Connect is the explicit recovery action. Preserve
+                # the old sealed record and all account data, confirm the OS can
+                # store a replacement, then require a fresh website PKCE grant.
+                previous = self._read(unlock=False)
+                self._expect_identity(previous, expected_account, expected_generation)
+                self._probe_credentials()
+                self._backup_recovery_state()
+                current = self._empty(previous['device_id'])
+                recovered = True
+            if not recovered:
+                self._expect_identity(current, expected_account, expected_generation)
             current["pending"] = {"state": state, "verifier": verifier, "redirect_uri": redirect_uri,
                                   "created_at": self.clock.time()}
             current["exchange_id"] = None
@@ -784,6 +906,10 @@ class MembershipClient:
                 current["pending"] = None
                 self._save(current)
                 raise _error("authorization_expired", 400)
+            # Fail before exchanging a one-use website code when the native
+            # secret store is locked or unavailable. No credential is persisted
+            # by this disposable capability check.
+            self._probe_credentials()
             current["pending"] = None
             exchange_id = current["exchange_id"] = secrets.token_hex(32)
             self._save(current)
@@ -802,16 +928,29 @@ class MembershipClient:
         except (_Unavailable, _InvalidResponse):
             raise _error("verification_unavailable", 503) from None
         with self._mutex:
-            with self._state_lock():
-                latest = self._read()
-                if latest["generation"] != current["generation"] or latest.get("exchange_id") != exchange_id:
-                    stale = True
-                else:
-                    stale = False
-                    latest.update({"generation": secrets.token_hex(32), "account": result["account"],
-                                   "device_token": token, "pending": None, "exchange_id": None})
-                    _note_restriction(latest, None if result["allowed"] else result["access_mode"])
-                    self._save(latest)
+            commit_error = None
+            try:
+                with self._state_lock():
+                    latest = self._read()
+                    if latest["generation"] != current["generation"] or latest.get("exchange_id") != exchange_id:
+                        stale = True
+                    else:
+                        stale = False
+                        latest.update({"generation": secrets.token_hex(32), "account": result["account"],
+                                       "device_token": token, "pending": None, "exchange_id": None})
+                        _note_restriction(latest, None if result["allowed"] else result["access_mode"])
+                        self._save(latest)
+            except AppError as exc:
+                commit_error = exc
+            if commit_error is not None:
+                # A website credential which could not be durably stored must
+                # not leave an otherwise inaccessible new device session behind.
+                self._clear_cache()
+                try:
+                    self._request('revoke', {'device_id': current['device_id']}, token)
+                except (_Unavailable, _InvalidResponse):
+                    pass
+                raise commit_error
             if stale:
                 try:
                     self._request("revoke", {"device_id": current["device_id"]}, token)
@@ -853,9 +992,21 @@ class MembershipClient:
     def logout(self, *, expected_account=None, expected_generation=None):
         # Clear local identity before a possibly slow/offline revocation request.
         with self._state_lock():
-            previous = self._read()
+            credential_unavailable = False
+            try:
+                previous = self._read()
+            except AppError as exc:
+                if not exc.code.startswith('membership_credential_'):
+                    raise
+                # Signing out is an explicit local action even when an OS item
+                # cannot be read. Retain its sealed backup for maintenance.
+                previous = self._read(unlock=False)
+                self._backup_recovery_state()
+                credential_unavailable = True
             self._expect_identity(previous, expected_account, expected_generation)
             current = self._empty(previous["device_id"])
+            if previous.get('_protected_device_token') is not None:
+                current['_protected_device_token'] = previous['_protected_device_token']
             self._save(current)
         result = self._base_status(current, "not_authenticated")
         if previous.get("device_token"):
@@ -863,6 +1014,8 @@ class MembershipClient:
                 self._request("revoke", {"device_id": previous["device_id"]}, previous["device_token"])
             except (_Unavailable, _InvalidResponse):
                 result["revocation_pending"] = True
+        elif credential_unavailable:
+            result['revocation_pending'] = True
         # Avoid waiting on an instance's in-flight network request: generation
         # mismatch makes its cached permit unusable even before cache clearing.
         return result

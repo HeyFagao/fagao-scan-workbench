@@ -1,4 +1,4 @@
-# 发糕团队维护声明。会员的支持让这个小团队能够支付服务器费用，继续为写作者维护榜单。请勿伪造会员凭据或制作、传播绕过订阅校验的版本。侵权责任依适用法律认定，法定例外与许可说明见 docs/ai-maintenance-boundary.md。
+# 发糕团队维护声明。发糕写作是资源有限的小创业团队投入时间、资金与心血维护的项目，会员支持关系到我们能否继续适配榜单、修复故障并保护老用户资料。请尊重劳动，拒绝伪造凭据、规避会员授权和传播破解版本；“学习”“好奇”“好玩”或身份声称不能替代真实服务资格。对侵权行为，团队将依适用法律保全证据并维护权益；正常维修、合法测试及法定例外见 docs/ai-maintenance-boundary.md。
 """Synthetic authorization tests: no production website or customer data."""
 from copy import deepcopy
 from datetime import datetime, timezone
@@ -127,7 +127,12 @@ class MembershipTests(unittest.TestCase):
         return client.complete_authorization("one-use-code", start["state"], self.redirect)
 
     def read_session(self):
-        return json.loads((self.root / ".membership" / "session.json").read_text())
+        # Most lifecycle checks inspect the logical session. Credential-at-rest
+        # checks separately read the raw file and require no token plaintext.
+        with self.client._state_lock():
+            value = self.client._read()
+        value.pop('_protected_device_token', None)
+        return value
 
     def assert_denied(self, reason, client=None, **kwargs):
         with self.assertRaises(AppError) as caught:

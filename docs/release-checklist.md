@@ -18,7 +18,7 @@
 该仓库使用 [Gitleaks](https://github.com/gitleaks/gitleaks) 检查凭据。发布者检查待发行提交的 Secret Scan 结果，并在发行前按同一版本和仓库配置扫描暂存区。报告开启完全脱敏；如发现真实凭据，先停止发布并撤销该凭据，再处理受影响的版本。
 
 1. 检查 `git status --short`、`git diff --cached --stat` 与实际暂存差异。仅加入本次源码和文档；不要打包整个用户数据目录。
-2. 确认暂存文件没有 `.env`、密钥、Cookie、令牌、SQLite 数据库、浏览器 profiles、正文、报告、日志、本机绝对路径或下载产生的运行状态。特别检查 `.membership/`、`accounts/`、`legacy-claims/`、`legacy-claim.json`、`legacy-decisions.json`、`.legacy-claim.lock` 和 `network.json`；确认忽略规则、安装器复制与归档拒绝规则都生效。核对压缩包目录与已批准的 Git 文件清单一致，不打包整个交接目录或主站私有源码。
+2. 确认暂存文件没有 `.env`、密钥、Cookie、令牌、SQLite 数据库、浏览器 profiles、正文、报告、日志、本机绝对路径或下载产生的运行状态。特别检查 `.membership/`、`accounts/`、`legacy-claims/`、`legacy-claim.json`、`legacy-decisions.json`、`.legacy-claim.lock`、`network.json` 和 `.fagao-code-seal.json`；确认忽略规则、安装器复制与归档拒绝规则都生效。核对压缩包目录与已批准的 Git 文件清单一致，不打包整个交接目录或主站私有源码。程序封装清单包含本机安全存储引用和资料路径，只能在安装时生成；不得从已封装的安装目录反向制作源码包，也不得将三个加载文件冒充原始源码发行。
 3. 使用已核实的 Python 3.10+ 运行 `python3 -m unittest discover -s tests -v`，并运行会员 UI、国内 UI、海外 UI 验证。安装器、启动器、平台采集有改动时，执行对应实测并更新 `docs/acceptance.md`；未实测的 Windows/macOS 和 WorkBuddy 客户端保持如实标注。
 4. 确认安装文档中的仓库、原始文件、版本或压缩包链接实际存在，安装后健康检查成功，再宣布可运行；不把文档中写出的命令当作已完成客户端验证。
 5. 确认本地 HTTP 与浏览器控制仅监听 `127.0.0.1`，主站返回地址正确，积分站未配置时不可点击；代码公开不等于将用户资料服务公开。

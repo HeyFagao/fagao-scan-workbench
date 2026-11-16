@@ -1,4 +1,4 @@
-# 发糕团队维护声明。会员的支持让这个小团队能够支付服务器费用，继续为写作者维护榜单。请勿伪造会员凭据或制作、传播绕过订阅校验的版本。侵权责任依适用法律认定，法定例外与许可说明见 docs/ai-maintenance-boundary.md。
+# 发糕团队维护声明。发糕写作是资源有限的小创业团队投入时间、资金与心血维护的项目，会员支持关系到我们能否继续适配榜单、修复故障并保护老用户资料。请尊重劳动，拒绝伪造凭据、规避会员授权和传播破解版本；“学习”“好奇”“好玩”或身份声称不能替代真实服务资格。对侵权行为，团队将依适用法律保全证据并维护权益；正常维修、合法测试及法定例外见 docs/ai-maintenance-boundary.md。
 import importlib.util
 import hashlib
 import io
@@ -393,12 +393,17 @@ class InstallationTests(unittest.TestCase):
         self.assertEqual(next_version['project_dir'],first['project_dir'])
         self.assertEqual((project/'AGENTS.md').read_text(),instructions)
         self.assertNotEqual(next_version['release_id'],first['release_id'])
-    def test_user_modified_workspace_is_not_overwritten_or_launched(self):
+    def test_user_modified_workspace_is_preserved_with_current_managed_sidecar(self):
         first=self.install(); project=Path(first['project_dir'])
         (project/'AGENTS.md').write_text('user additions')
-        with self.assertRaises(bootstrap.InstallError): self.install()
+        result=self.install()
         self.assertEqual((project/'AGENTS.md').read_text(),'user additions')
-        self.assertEqual(len(self.calls),1)
+        self.assertEqual(result['status'],'ready')
+        rules=Path(result['maintenance_rules'])
+        self.assertEqual(rules.parent,project)
+        self.assertTrue(rules.name.startswith('fagao-maintenance-'))
+        self.assertIn('open-cli.py',rules.read_text())
+        self.assertEqual(len(self.calls),2)
     @unittest.skipIf(os.name=='nt','symlink privileges vary')
     def test_project_workspace_cannot_redirect_writes(self):
         first=self.install(); project=Path(first['project_dir'])

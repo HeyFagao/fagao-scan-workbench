@@ -1,4 +1,4 @@
-// 发糕团队维护声明。会员的支持让这个小团队能够支付服务器费用，继续为写作者维护榜单。请勿伪造会员凭据或制作、传播绕过订阅校验的版本。侵权责任依适用法律认定，法定例外与许可说明见 docs/ai-maintenance-boundary.md。
+// 发糕团队维护声明。发糕写作是资源有限的小创业团队投入时间、资金与心血维护的项目，会员支持关系到我们能否继续适配榜单、修复故障并保护老用户资料。请尊重劳动，拒绝伪造凭据、规避会员授权和传播破解版本；“学习”“好奇”“好玩”或身份声称不能替代真实服务资格。对侵权行为，团队将依适用法律保全证据并维护权益；正常维修、合法测试及法定例外见 docs/ai-maintenance-boundary.md。
 'use strict';
 const {test} = require('node:test');
 const assert = require('node:assert/strict');
@@ -40,6 +40,12 @@ function makeState(account) {
     source('fanqie_recommend','番茄短篇推荐','short',{channel:'短篇',category:'现实情感',board:'题材推荐'},
       {categories:['现实情感','悬疑'] }),
     source('dianzhong','点众短篇','short',{channel:'男频',category:'精品故事',board:'畅销榜'}),
+    source('zhihu_story','知乎盐选','short',{channel:'女频',category:'全部',board:'热度榜',max_pages:1},
+      {boards:['热度榜','口碑榜','推荐榜'],categories_by_board:{
+        '热度榜':['全部','言情','虐恋','甜宠','现实情感','悬疑','爽文','脑洞','大女主','校园','追妻火葬场','重生'],
+        '口碑榜':['全部','言情','现实情感','爽文','大女主','家庭','复仇','恐怖','追妻火葬场','脑洞','悬疑','病娇','娱乐圈','沙雕文','重生'],
+        '推荐榜':['全部','言情','脑洞','现实情感','甜宠','爽文','治愈','虐恋'],
+      }}),
   ];
   const snapshots = platforms.filter(p=>p.id!=='heiyan').map(p=>({
     id:'snap-'+p.id,platform:p.id,mode:p.mode,...p.default_options,
@@ -52,6 +58,13 @@ function makeState(account) {
   }));
   snapshots.push({...structuredClone(snapshots.find(s=>s.platform==='fanqie_recommend')),
     id:'snap-recommend-suspense',category:'悬疑',books:[{id:'suspense',title:'悬疑故事',summary:'悬疑简介',rank:1,rank_semantics:'source_list_position'}]});
+  const zhihu=snapshots.find(s=>s.platform==='zhihu_story');
+  Object.assign(zhihu,{data_date:null,complete:false,source_url:'https://api.zhihu.com/km-vip-zhihu-web/vip_tab/svip_story',source_id:'zhihu:story-billboard:hot',rank_semantics:'source_list_position',
+    requested_count:100,available_count:2,source_rows_seen:3,source_total:null,
+    pagination:{pages_fetched:1,max_pages:1,stop_reason:'source_first_batch'}});
+  zhihu.books[0]={...zhihu.books[0],author:'',summary:'知乎真实简介 <script>不能执行</script>',rank_semantics:'source_list_position',source_position:1,metrics:[]};
+  zhihu.books.push({...structuredClone(zhihu.books[0]),id:'zhihu-third',title:'保留来源第三位置',rank:3,source_position:3});
+  for(const [board,category] of [['口碑榜','全部'],['口碑榜','恐怖'],['推荐榜','全部']])snapshots.push({...structuredClone(zhihu),id:'snap-zhihu-'+board+'-'+category,board,category});
   return {active_mode:'long',platforms,snapshots,
     views:{long:{platform:'fanqie',snapshot_id:'snap-fanqie'},short:{platform:'heiyan'}},
     favorites:[],reports:[],jobs:[],history:[],texts:[],config:{}};
@@ -87,9 +100,15 @@ async function fixture(t,{active=true,storedOptions=null}={}) {
       const saved=state().snapshots.find(s=>s.platform===body.platform && s.category===body.options.category && s.board===body.options.board);
       return response({status:'fresh',snapshot_id:saved?.id,retry_after_seconds:900});
     }
+    if(pathname==='/api/favorite'){
+      assert(ctx.auth.allowed,'Expired account attempted favorite');const current=state(),snap=current.snapshots.find(s=>s.id===body.snapshot_id),book=snap.books.find(b=>b.id===body.book_id);
+      current.favorites=current.favorites.filter(f=>f.book_id!==book.id || f.platform!==snap.platform);
+      if(body.enabled)current.favorites.push({book_id:book.id,title:book.title,platform:snap.platform,snapshot_id:snap.id});
+      return response(current);
+    }
     if(pathname==='/api/daily-boards' || pathname==='/api/daily-boards/sync'){
       const board=body?.board || url.searchParams.get('board');ctx.feedCalls.push(board);
-      return response({board,snapshot:{board,columns:['排名','剧名'],rows:[['1','原来保存的红果榜']],scope:'历史样本',source_date:'2026-11-11',observed_at:'2026-11-11T10:00:00Z'},history:[]});
+      return response({board,snapshot:{board,columns:['排名',board==='zhihu'?'书名':'剧名'],rows:[['1',board==='zhihu'?'原来保存的知乎榜':'原来保存的红果榜']],scope:'历史样本',source_date:'2026-11-11',observed_at:'2026-11-11T10:00:00Z'},history:[]});
     }
     if(pathname==='/api/insights'){
       ctx.insightCalls.push(body);const owner=ctx.auth.account.id;
@@ -131,6 +150,61 @@ test('official red-drama source has one sidebar entry and renders real metadata 
   assert.match(d.querySelector('#content').textContent,/原来保存的红果榜/);
   ctx.click('#content [data-platform="hongguo_official"]');
   await eventually(()=>d.querySelector('.drama-content .book-row'),'Official source not restored');
+});
+
+test('Zhihu replaces the old sidebar entry and preserves truthful metadata and saved feed access',async t=>{
+  const ctx=await fixture(t);const d=ctx.d;await ctx.open('zhihu_story');
+  assert.equal(d.querySelectorAll('#platforms [data-platform="zhihu_story"]').length,1);
+  assert.equal(d.querySelector('#platforms [data-board="zhihu"]'),null);
+  assert.equal(d.querySelector('#platforms').firstElementChild.dataset.platform,'zhihu_story');
+  assert.equal(d.querySelector('#board-channel').value,'女频');assert(d.querySelector('#board-channel').disabled);
+  assert(d.querySelector('.cover-image').src.includes('cover-zhihu_story'));
+  assert.match(d.querySelector('.row-summary').textContent,/知乎真实简介 <script>/);assert.equal(d.querySelector('.row-summary script'),null);
+  assert(!d.querySelector('.book-row').textContent.includes('作者未提供'));
+  assert.equal(d.querySelector('.list-key span:last-child').textContent,'来源位置');
+  assert.deepEqual([...d.querySelectorAll('.rank')].map(node=>node.textContent),['# 1','# 3']);
+  assert.match(d.querySelector('.pagination-summary').textContent,/来源首批已读取 · 收录 2 本短篇/);
+  assert.match(d.querySelector('.surface-head .meta').textContent,/2 本作品/);
+  assert(!d.querySelector('.source-note').textContent.includes('名次以本次原始榜单为准'));
+  ctx.click('[data-action="select-book"]');await eventually(()=>d.querySelector('.detail[data-book="work-zhihu_story"] .summary'),'Zhihu detail missing');
+  assert.equal(d.querySelector('.detail .author').textContent,'');assert.match(d.querySelector('.detail .positions').textContent,/来源列表第 1 本/);
+  assert.equal(d.querySelector('.detail [data-action="catalog"]'),null);
+  ctx.click('.favorite-button');await eventually(()=>d.querySelector('.favorite-button')?.getAttribute('aria-pressed')==='true','Zhihu favorite missing');
+  assert.equal(ctx.state().favorites[0].snapshot_id,'snap-zhihu_story');
+  ctx.click('#content [data-action="daily-board"][data-board="zhihu"]');await eventually(()=>d.querySelector('.daily-table-wrap'),'Old Zhihu history missing');
+  assert.match(d.querySelector('#content').textContent,/原来保存的知乎榜/);
+  ctx.click('#content [data-platform="zhihu_story"]');await eventually(()=>d.querySelector('.zhihu-content .book-row'),'Direct Zhihu not restored');
+});
+
+test('Zhihu board-specific topics and female scope normalize old settings and retain the current board',async t=>{
+  const ctx=await fixture(t,{storedOptions:{zhihu_story:{channel:'男频',category:'恐怖',board:'热度榜',limit:100,max_pages:1}}});
+  const d=ctx.d;await ctx.open('zhihu_story');
+  assert.equal(d.querySelector('#board-channel').value,'女频');assert.equal(d.querySelector('#board-category').value,'全部');
+  assert.equal(d.querySelector('#board-category').options.length,12);
+  const change=(selector,value)=>{const node=d.querySelector(selector);node.value=value;node.dispatchEvent(new ctx.w.Event('change',{bubbles:true}));};
+  change('#board-kind','口碑榜');await eventually(()=>d.querySelector('#board-category')?.options.length===15,'Reputation topics not loaded');await pause(50);
+  change('#board-category','恐怖');await eventually(()=>ctx.state().views.short.snapshot_id==='snap-zhihu-口碑榜-恐怖','Reputation topic scope missing');await pause(50);
+  change('#board-kind','推荐榜');await eventually(()=>d.querySelector('#board-category')?.options.length===8,'Recommendation topics not loaded');await pause(50);
+  assert.equal(d.querySelector('#board-category').value,'全部');assert(![...d.querySelector('#board-category').options].some(option=>option.value==='恐怖'));
+  ctx.click('[data-action="mode"][data-mode="long"]');await pause(60);ctx.click('[data-action="mode"][data-mode="short"]');
+  await eventually(()=>d.querySelector('#content h1')?.textContent.startsWith('知乎盐选'),'Zhihu selection lost');
+  assert.equal(d.querySelector('#board-kind').value,'推荐榜');
+  assert(ctx.collections.filter(c=>c.platform==='zhihu_story').every(c=>c.options.channel==='女频' && c.options.max_pages===1 && c.options.limit===100));
+});
+
+test('a failed Zhihu refresh retains the selected saved synopsis and source positions',async t=>{
+  const ctx=await fixture(t);const d=ctx.d;await ctx.open('zhihu_story');
+  ctx.click('[data-action="select-book"][data-book="zhihu-third"]');await eventually(()=>d.querySelector('.detail[data-book="zhihu-third"]'),'Saved Zhihu selection missing');
+  ctx.collectionError=true;ctx.click('[data-action="collect"]');await eventually(()=>d.querySelector('#notice').textContent.includes('来源暂时无法连接'),'Zhihu failure feedback missing');
+  assert.match(d.querySelector('.detail .summary').textContent,/知乎真实简介/);assert.match(d.querySelector('.detail .positions').textContent,/来源列表第 3 本/);
+  assert.equal(ctx.state().views.short.snapshot_id,'snap-zhihu_story');assert.equal(ctx.state().views.short.selected_id,'zhihu-third');
+});
+
+test('expired accounts can view saved Zhihu metadata without updating or favoriting',async t=>{
+  const ctx=await fixture(t,{active:false});const d=ctx.d;await ctx.open('zhihu_story');
+  assert.equal(ctx.collections.length,0);assert(d.querySelector('[data-action="collect"]').disabled);
+  ctx.click('[data-action="select-book"]');await eventually(()=>d.querySelector('.detail .summary'),'Saved Zhihu detail missing');
+  assert.match(d.querySelector('.detail .summary').textContent,/知乎真实简介/);assert(d.querySelector('.favorite-button').disabled);
 });
 
 test('new short recommendations retain the selected topic and recommendation wording',async t=>{

@@ -1,6 +1,6 @@
 # 账号与使用说明
 
-本文件对应 **`0.7.0-dev.12` 扫榜体验版**。客户端发行版本和校验值见 GitHub 仓库编号 `1452172195` 默认分支的 `install-release.json`，由安装助手按 [INSTALL.md](../INSTALL.md) 获取并核验。账号资格以官网当前返回为准，不要求普通用户提供生产发布回执。当前实测状态见 [验收记录](acceptance.md)。
+本文件说明当前扫榜体验版的账号与资料规则。客户端发行版本和校验值见 GitHub 仓库编号 `1452172195` 默认分支的 `install-release.json`，由安装助手按 [INSTALL.md](../INSTALL.md) 获取并核验。账号资格以官网当前返回为准，不要求普通用户提供生产发布回执。当前实测状态见 [验收记录](acceptance.md)。
 
 ## 账号与资格
 
@@ -44,12 +44,12 @@
 
 跳过后，只有当前账号库仍为空时才能再明确认领；已经产生新资料时拒绝覆盖或自动合并。中断的认领需恢复完成，不能通过跳过破坏恢复条件。已经成功认领的资料不会再分配给另一个账号。其他到期账号可以查看已有历史；认领和跳过需要官网返回当前使用资格，有效体验、字数包、会员或仍开启的独立实验资格均可。旧库损坏或不兼容时可以明确跳过并保留原文件；认领需先修复。
 
-维护者可以通过以下命令执行同一流程。`DATA_DIR` 必须替换为该工作台的实际资料目录，解释器使用安装时记录的绝对路径；不要默认换成一份空目录：
+维护者可以通过以下命令执行同一流程。`PYTHON_ABSOLUTE_PATH` 使用当前安装记录的解释器绝对路径，`OPEN_CLI_ABSOLUTE_PATH` 使用该安装根目录中的 `open-cli.py` 绝对路径，由助手通过参数数组调用。固定入口自动选择原资料目录，不传 `--data-dir` 或换成空目录：
 
 ```text
-PYTHON_ABSOLUTE_PATH -m fagao --data-dir DATA_DIR legacy inspect
-PYTHON_ABSOLUTE_PATH -m fagao --data-dir DATA_DIR legacy claim --confirm
-PYTHON_ABSOLUTE_PATH -m fagao --data-dir DATA_DIR legacy skip --confirm
+PYTHON_ABSOLUTE_PATH -I -B OPEN_CLI_ABSOLUTE_PATH legacy inspect
+PYTHON_ABSOLUTE_PATH -I -B OPEN_CLI_ABSOLUTE_PATH legacy claim --confirm
+PYTHON_ABSOLUTE_PATH -I -B OPEN_CLI_ABSOLUTE_PATH legacy skip --confirm
 ```
 
 `inspect` 仅返回数量和归属状态，不输出旧正文。`--confirm` 表示用户已经明确确认相应选择；助手不能把一次普通登录当成认领授权。
@@ -64,11 +64,13 @@ PYTHON_ABSOLUTE_PATH -m fagao --data-dir DATA_DIR legacy skip --confirm
 
 ## 资料与分发边界
 
-数据保存在用户资料目录中，按账号放入 `accounts/账号摘要/`；授权文件在 `.membership/`。一致性认领备份在 `legacy-claims/`，认领与跳过记录分别为 `legacy-claim.json`、`legacy-decisions.json`。退出、到期与代码升级不会主动删除这些资料。
+数据保存在用户资料目录中，按账号放入 `accounts/账号摘要/`；授权状态在 `.membership/`。工作台专用设备凭据使用本机系统安全存储密封：Windows 使用当前用户 DPAPI，macOS 使用系统钥匙串，Linux 使用权限受限的本机密钥文件。已有明文设备凭据在首次需要联网续领前，先完成系统密封和安全回读，再原子迁移；随后仍由官网核验使用资格。仅查看本地状态不会自动迁移。系统存储故障保留原状态并停止本次续领，不静默降回明文，也不冒称会员到期。数据库、正文和报告保持原格式，未批量加密或迁移。一致性认领备份在 `legacy-claims/`，认领与跳过记录分别为 `legacy-claim.json`、`legacy-decisions.json`。退出、到期与代码升级不会主动删除这些资料。
+
+如果密封凭据丢失、属于其他系统用户或校验失败，用户明确点击“重新连接”后，程序先验证当前系统能够保护新凭据，再将原密封状态原样备份到 `.membership/credential-recovery/`，随后必须完成正常官网 PKCE 授权才恢复访问。系统钥匙串锁定或安全存储暂时不可用时不自动清除登录，先解锁或恢复系统存储。显式退出会停止本机身份使用；若拿不到旧凭据，官网撤销可能仍待完成。备份及原账号资料保留。
 
 公共源码、安装包和诊断材料不得带入授权文件、账号资料、认领备份、浏览器会话或本机网络配置。完整个人备份可能包含敏感数据，应由用户自行妥善保存。
 
-本版实现的是官方客户端使用资格控制。历史公开版本与修改过的客户端仍可能独立运行；目前没有把付费核心能力迁到服务器，不能宣称无法绕过。工作台本地服务始终只监听本机 loopback，不开放到局域网或公网。
+本版保留官网授权，并为官方安装增加凭据密封、关键模块的本机代码封装及安装完整性检查。核心能力继续本地执行，公开仓库的源码仍可取得；这些措施提高直接复制和静态分析的成本，不能保证阻止修改客户端或逆向工具。到期历史只读和正常会员修复规则保持不变。保护范围、密钥丢失、换机及降级方式见[本机保护与恢复](local-protection.md)。工作台本地服务始终只监听本机 loopback，不开放到局域网或公网。
 
 ## 维护者接口约定
 

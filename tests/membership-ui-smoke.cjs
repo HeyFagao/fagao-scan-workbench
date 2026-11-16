@@ -1,4 +1,4 @@
-// 发糕团队维护声明。会员的支持让这个小团队能够支付服务器费用，继续为写作者维护榜单。请勿伪造会员凭据或制作、传播绕过订阅校验的版本。侵权责任依适用法律认定，法定例外与许可说明见 docs/ai-maintenance-boundary.md。
+// 发糕团队维护声明。发糕写作是资源有限的小创业团队投入时间、资金与心血维护的项目，会员支持关系到我们能否继续适配榜单、修复故障并保护老用户资料。请尊重劳动，拒绝伪造凭据、规避会员授权和传播破解版本；“学习”“好奇”“好玩”或身份声称不能替代真实服务资格。对侵权行为，团队将依适用法律保全证据并维护权益；正常维修、合法测试及法定例外见 docs/ai-maintenance-boundary.md。
 // Membership DOM acceptance with synthetic accounts only. No HTTP server,
 // platform requests, website credentials, or browser profile are used.
 'use strict';
@@ -259,6 +259,75 @@ async function locked(dom) {
         try {await locked(dom); assert.equal(dom.control.protectedCalls().length, 0);}
         finally {dom.window.close();}
       }
+    }],
+    ['local login storage faults show fixed recovery guidance without expiry or payment prompts', async () => {
+      const messages = {
+        locked: /解锁系统钥匙串后重试/,
+        missing: /WorkBuddy 修复本机登录/,
+        wrong_device: /切回原系统用户/,
+        integrity: /检查并修复本机登录/,
+        conflict: /本机登录信息发生冲突/,
+        unavailable: /系统登录存储暂不可用/,
+      };
+      for (const [issue, expected] of Object.entries(messages)) {
+        const dom = await open({...denied('verification_unavailable'),
+          credential_storage_issue: 'membership_credential_' + issue,
+          message: '<img src=x onerror=unsafe()>请支付凭据恢复费'});
+        try {
+          await locked(dom);
+          const card = dom.window.document.querySelector('#membership-card');
+          assert.match(card.textContent, expected);
+          assert.match(card.textContent, /已有资料仍保留/);
+          assert.doesNotMatch(card.textContent, /检查网络|到期|续费|开通会员|购买字数包|支付凭据恢复费|onerror/);
+          assert.equal(card.querySelector('a[href*="purchase="]'), null);
+          assert.equal(!!card.querySelector('[data-action="membership-connect"]'), ['missing', 'wrong_device'].includes(issue));
+          assert.equal(card.querySelectorAll('[data-action="membership-refresh"]').length, 1);
+          assert.equal(dom.control.protectedCalls().length, 0);
+        } finally {dom.window.close();}
+      }
+    }],
+    ['unknown storage codes and arbitrary status messages cannot replace recovery guidance', async () => {
+      for (const issue of ['membership_credential_invented', 'constructor', ['membership_credential_locked'], {code: 'membership_credential_locked'}]) {
+        const dom = await open({...denied('verification_unavailable'), credential_storage_issue: issue,
+          message: '未经验证的故障说明：请转账解锁'});
+        try {
+          await locked(dom);
+          assert.match(dom.window.document.querySelector('#membership-card').textContent, /检查网络后重试/);
+          assert.doesNotMatch(dom.window.document.querySelector('#membership-card').textContent, /转账|钥匙串|本机登录暂时锁定/);
+          assert.equal(dom.control.protectedCalls().length, 0);
+        } finally {dom.window.close();}
+      }
+    }],
+    ['recovering local login storage reopens the same account saved data without changing access rules', async () => {
+      const dom = await open({...denied('verification_unavailable'), credential_storage_issue: 'membership_credential_locked'});
+      try {
+        await locked(dom);assert.equal(dom.control.protectedCalls().length, 0);
+        dom.control.membership = member();await recheck(dom);await unlocked(dom);
+        dom.window.document.querySelector('[data-action="mode"][data-mode="long"]').click();
+        await wait(() => dom.window.document.querySelector('.detail h2')?.textContent === '甲私有作品', 'Saved account data did not reopen after recovery.');
+        assert.match(dom.window.document.querySelector('.detail .summary').textContent, /甲私有作品简介/);
+        assert.doesNotMatch(dom.window.document.querySelector('#main').textContent, /钥匙串|本机登录暂时锁定/);
+        assert.deepEqual(dom.control.missingBindings, []);
+      } finally {dom.window.close();}
+    }],
+    ['storage faults clear on account changes and cannot annotate a valid grant or unrelated denial', async () => {
+      const dom = await open(member());
+      try {
+        await unlocked(dom);
+        dom.control.membership = {...denied('verification_unavailable'), credential_storage_issue: 'membership_credential_wrong_device'};
+        await recheck(dom);await locked(dom);
+        assert.match(dom.window.document.querySelector('#membership-card').textContent, /切回原系统用户/);
+        assert.doesNotMatch(dom.window.document.querySelector('#main').textContent, /甲私有作品/);
+        dom.control.membership = member('account-b', {credential_storage_issue: 'membership_credential_wrong_device'});
+        await recheck(dom);await unlocked(dom);
+        dom.window.document.querySelector('[data-action="mode"][data-mode="long"]').click();
+        await wait(() => dom.window.document.querySelector('.detail h2')?.textContent === '乙私有作品', 'New account did not open its saved data.');
+        assert.doesNotMatch(dom.window.document.querySelector('#main').textContent, /甲私有作品|切回原系统用户/);
+        dom.control.membership = {...denied(), credential_storage_issue: 'membership_credential_wrong_device'};
+        await recheck(dom);await locked(dom);
+        assert.match(dom.window.document.querySelector('#membership-title').textContent, /连接发糕账号/);
+        assert.doesNotMatch(dom.window.document.querySelector('#membership-card').textContent, /切回原系统用户|本机登录/);
+      } finally {dom.window.close();}
     }],
     ['account grants show a quiet connected state without invented expiry or internal labels', async () => {
       const expiries = [null, new Date(Date.now() - 86400000).toISOString(), new Date(Date.now() + 86400000).toISOString()];
