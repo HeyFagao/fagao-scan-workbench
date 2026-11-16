@@ -9,13 +9,13 @@
   "repository": "HeyFagao/fagao-scan-workbench",
   "repository_id": 1452172195,
   "owner_id": 153971533,
-  "app_version": "0.7.0-dev.19",
-  "source_commit": "fdaae7adfb90a388e23f60df1f2a1eb6e6c6c88f",
-  "release_tag": "v0.7.0-dev.19",
-  "installer_url": "https://raw.githubusercontent.com/HeyFagao/fagao-scan-workbench/fdaae7adfb90a388e23f60df1f2a1eb6e6c6c88f/scripts/bootstrap.py",
-  "installer_sha256": "ce83225cce4c6f69d21ea6dec18e788adc31daac698a4c7c37c659a7e00cb0fa",
-  "source_archive_url": "https://codeload.github.com/HeyFagao/fagao-scan-workbench/zip/fdaae7adfb90a388e23f60df1f2a1eb6e6c6c88f",
-  "source_archive_sha256": "3612d1d3c22fc9903882f1989b1809cc082376e3204ce9820b9481f91ee1a8da",
+  "app_version": "0.7.0-dev.20",
+  "source_commit": "6766b72d0068a24778296a865e068947437d9fab",
+  "release_tag": "v0.7.0-dev.20",
+  "installer_url": "https://raw.githubusercontent.com/HeyFagao/fagao-scan-workbench/6766b72d0068a24778296a865e068947437d9fab/scripts/bootstrap.py",
+  "installer_sha256": "0527d827904d41c01e83e58fca446d43b023ee38bad599d7173c2b1e50481f43",
+  "source_archive_url": "https://codeload.github.com/HeyFagao/fagao-scan-workbench/zip/6766b72d0068a24778296a865e068947437d9fab",
+  "source_archive_sha256": "9d649dc85078c6c3eb698a3505e8f302d04cc9794d0041dbe49cbdc5788d51e5",
   "components": {
     "submission": [
       {
@@ -50,25 +50,32 @@
       }
     ]
   },
-  "verified_at": "2026-11-16T03:58:42.845488+00:00",
+  "verified_at": "2026-11-16T05:56:28.249666+00:00",
   "verification": {
-    "source_tree": "b58f2175c3b3eecba9355470bbb281bbbf851664",
-    "python_tests": 873,
+    "source_tree": "d770ff0f517f4b6debbec62114dcd0c0bb0068a0",
+    "python_tests": 994,
+    "python_skipped": 2,
     "windows_native_ci_tested": true,
     "windows_install_tested": true,
-    "windows_ci_run_url": "https://github.com/HeyFagao/fagao-scan-workbench/actions/runs/43801022822",
-    "windows_artifact_sha256": "sha256:ff12ab87dd64a87a109c192410cf7a40ec6afcc089084835ded48dd8ab76d018",
+    "windows_ci_run_url": "https://github.com/HeyFagao/fagao-scan-workbench/actions/runs/43812894236",
+    "windows_artifact_sha256": "sha256:2d72885c04ac1c5c5a7717b9ea00d125dee8debedce9a9e4fe75814c373fff52",
     "windows_repeat_preserved_data": true,
-    "windows_new_source_ui_tests": 8,
+    "windows_new_source_ui_tests": 12,
     "windows_discovery_platforms": [
       "dianzhong",
       "fanqie_recommend",
       "hongguo_official",
-      "shuqi"
+      "shuqi",
+      "zhihu_story"
     ],
     "windows_synthetic_browser": true,
+    "windows_local_hardening_verified": true,
+    "windows_code_seal_modules": 3,
+    "windows_credential_provider": "windows-dpapi",
+    "windows_same_sha_repair_verified": true,
+    "windows_parent_upgrade_verified": true,
     "security": {
-      "credential_scan_run_url": "https://github.com/HeyFagao/fagao-scan-workbench/actions/runs/43801022621"
+      "credential_scan_run_url": "https://github.com/HeyFagao/fagao-scan-workbench/actions/runs/43812894237"
     },
     "workbuddy_app_interaction_tested": false
   }
