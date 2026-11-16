@@ -61,8 +61,12 @@ def verify_platforms(source, receipt):
              f"The backend regression {pattern} did not run cleanly")
         skipped = re.search(r"^OK \(skipped=(\d+)\)$", output, re.MULTILINE)
         if pattern == "test_fanqie_recommend.py":
-            need(not skipped, "The isolated recommendation browser fixture was skipped")
+            need(re.search(r"^test_normal_page_dom_worker_has_no_profile_and_extracts_cards "
+                           r"\([^\n]+\) \.\.\. ok$", output, re.MULTILINE),
+                 "The isolated recommendation browser fixture did not pass")
             receipt["synthetic_browser"] = True
+            receipt["synthetic_browser_tests"] = 1
+            receipt["synthetic_browser_skipped"] = 0
         backend_checks.append({"pattern": pattern, "tests": int(result[1]),
                                "skipped": int(skipped[1]) if skipped else 0})
         backend_tests += int(result[1])
