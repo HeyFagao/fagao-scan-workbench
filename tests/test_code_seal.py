@@ -326,7 +326,24 @@ print(json.dumps({'permit':membership.MAX_PERMIT_SECONDS,'network':network.POLIC
         self.assertEqual(result['permit'], 900)
         self.assertEqual(result['context'], 'AccountContext')
         self.assertEqual(result['network'], 'isolated-system-proxy-v1')
-        self.assertTrue(all(Path(path).parent == (actual / 'fagao').resolve() for path in result['modules']))
+        expected = ('fagao/membership.py', 'fagao/network.py', 'fagao/runtime.py')
+        self.assertEqual(len(result['modules']), len(expected))
+        for observed, relative in zip(result['modules'], expected):
+            # Windows TEMP may be exposed through an 8.3 alias. Compare actual
+            # existing files, not differently spelled parents of the same path.
+            self.assertEqual(Path(observed).resolve(strict=True),
+                             (actual / relative).resolve(strict=True))
+
+    def test_loader_preserves_a_valid_path_alias_but_still_loads_the_exact_module_file(self):
+        self.protect()
+        self.receipt()
+        alias = self.release / 'fagao' / '..' / 'fagao' / 'membership.py'
+        namespace = {'__name__': 'fagao.membership', '__package__': 'fagao', '__file__': str(alias)}
+        with patch.object(seal, 'SecretProtector', return_value=self.protector):
+            seal.load_module('fagao.membership', namespace)
+        self.assertEqual(Path(namespace['LOCATION'][2]).resolve(strict=True),
+                         (self.release / 'fagao/membership.py').resolve(strict=True))
+        self.assertEqual(namespace['SOURCE_SENTINEL'], 'private-source-for-fagao.membership')
 
     def test_unpromoted_stage_cleanup_targets_only_its_own_envelope(self):
         old_metadata = self.protect()
